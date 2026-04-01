@@ -2,6 +2,8 @@
 
 This document defines the HTTP protocol that a DigitalMe agent must implement to communicate with the DigitalMe platform. If you are building a custom agent in any language or framework, implement the endpoints and authentication described here.
 
+See [GLOSSARY.md](GLOSSARY.md) for definitions of key terms (conversation, session, task, turn).
+
 **Protocol version:** v1
 
 ---
