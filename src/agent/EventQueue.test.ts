@@ -52,6 +52,24 @@ test('close after buffered items still yields buffered items first', async () =>
   assert.equal(second.done, true);
 });
 
+test('push after close still buffers the value', async () => {
+  const queue = new EventQueue<string>();
+  queue.close();
+  queue.push('late');
+
+  // The value is buffered in the internal array but the iterator
+  // returns done:true immediately since closed is already set.
+  const iter = queue[Symbol.asyncIterator]();
+  const result = await iter.next();
+  // After close, next() checks buffered values first — 'late' was
+  // pushed into the values array so it is still yielded.
+  assert.equal(result.value, 'late');
+  assert.equal(result.done, false);
+
+  const end = await iter.next();
+  assert.equal(end.done, true);
+});
+
 test('multiple waiters are each resolved', async () => {
   const queue = new EventQueue<number>();
   const iter = queue[Symbol.asyncIterator]();

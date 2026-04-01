@@ -7,10 +7,10 @@ import type { TurnSubmission, AgentEvent } from './types.js';
 
 function makeSubmission(overrides: Partial<TurnSubmission> = {}): TurnSubmission {
   return {
-    requestId: overrides.requestId ?? 'req-1',
-    conversationId: overrides.conversationId ?? 'conv-1',
-    userMessage: overrides.userMessage ?? 'hello',
-    history: overrides.history ?? [],
+    requestId: 'req-1',
+    conversationId: 'conv-1',
+    userMessage: 'hello',
+    history: [],
     ...overrides,
   };
 }
@@ -40,7 +40,7 @@ test('submit dispatches through executor and returns events', async () => {
 });
 
 test('submit rejects duplicate request ids', async () => {
-  let resolveFirst: () => void;
+  let resolveFirst!: () => void;
   const blockingPromise = new Promise<void>((resolve) => { resolveFirst = resolve; });
 
   const agent = new Agent(testConfig, {
@@ -59,8 +59,8 @@ test('submit rejects duplicate request ids', async () => {
   );
 
   // Clean up
-  resolveFirst!();
-  for await (const _ of events1) { /* drain */ }
+  resolveFirst();
+  for await (const event of events1) { /* drain */ }
 });
 
 test('submit rejects when draining', () => {
@@ -88,7 +88,7 @@ test('getHealth returns stats', async () => {
   });
 
   const events = agent.submit(makeSubmission());
-  for await (const _ of events) { /* drain */ }
+  for await (const event of events) { /* drain */ }
 
   const health = agent.getHealth();
   assert.equal(health.model_provider, 'openai');
