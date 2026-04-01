@@ -9,7 +9,7 @@ import { turnRequestSchema } from '../protocol/schemas.js';
 import { initSse, writeSse } from '../streaming/sse.js';
 
 export function registerTurnRoutes(app: Express, config: AgentConfig, agent: Agent) {
-  app.post('/v1/turn', async (req, res) => {
+  app.post('/v1/task', async (req, res) => {
     const startTime = Date.now();
     const abortController = new AbortController();
     res.on('close', () => {

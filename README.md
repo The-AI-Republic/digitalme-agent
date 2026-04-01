@@ -26,7 +26,7 @@ The service exposes:
 
 - `GET /health`
 - `POST /verify`
-- `POST /v1/turn`
+- `POST /v1/task`
 
 Fixed-at-startup model providers currently supported:
 
@@ -71,7 +71,7 @@ Current verification coverage includes:
 
 - runtime queue ordering and loop behavior
 - HMAC validation
-- real HTTP route coverage for `/verify` and `/v1/turn`
+- real HTTP route coverage for `/verify` and `/v1/task`
 - SSE terminal event contract on the happy path
 
 Run:
