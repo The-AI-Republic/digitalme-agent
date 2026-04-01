@@ -44,17 +44,20 @@ export class Agent {
     }
 
     this.activeRequests.add(submission.requestId);
-    return this.queue.submit(submission, async (events) => {
-      try {
+    return this.queue.submit(
+      submission,
+      async (events) => {
         await this.executor.execute(submission, events);
-        this.completedRequests += 1;
-      } catch (error) {
-        this.failedRequests += 1;
-        throw error;
-      } finally {
+      },
+      (failed) => {
         this.activeRequests.delete(submission.requestId);
-      }
-    });
+        if (failed) {
+          this.failedRequests += 1;
+        } else {
+          this.completedRequests += 1;
+        }
+      },
+    );
   }
 
   getHealth() {

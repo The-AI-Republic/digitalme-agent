@@ -66,7 +66,7 @@ export class TurnExecutor {
         if (result.text) {
           events.push({ type: 'text_delta', content: result.text });
         }
-        events.push({ type: 'done', tokenUsage: result.tokenUsage });
+        events.push({ type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage });
         return {
           finalText,
           tokenUsage: result.tokenUsage,

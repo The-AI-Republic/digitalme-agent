@@ -10,11 +10,12 @@ COPY src ./src
 
 RUN npm run build
 
-COPY entrypoint.sh ./
 RUN adduser --disabled-password --no-create-home agent \
-    && chown -R agent:agent /app \
-    && chmod +x /app/entrypoint.sh
+    && mkdir -p /app/.digital_me_agent \
+    && chown -R agent:agent /app
+
+USER agent
 
 EXPOSE 8088
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["npm", "start"]

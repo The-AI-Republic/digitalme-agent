@@ -4,16 +4,7 @@ Platform-facing execution runtime for one creator-owned DigitalMe deployment.
 
 ## Status
 
-This repository implements the MVP agent contract from:
-
-- `/.ai_design/digital_me_agent/implementation_design.md`
-- `/.ai_design/digital_me_agent/implementation_plan.md`
-
-Pinned BrowserX extraction baseline:
-
-- Commit: `d9031cb42899698e9d71ee0dba98056c92ec7ecf`
-
-That SHA is the source of truth for any BrowserX-derived runtime/model code in this agent.
+MVP implementation. Design documents are in `.ai_design/`.
 
 ## Local Run
 

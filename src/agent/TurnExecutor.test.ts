@@ -144,7 +144,7 @@ test('TurnExecutor ends the loop when the model returns final assistant text', a
 
   assert.deepEqual(collected, [
     { type: 'text_delta', content: 'final answer' },
-    { type: 'done', tokenUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } },
+    { type: 'done', truncated: undefined, tokenUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } },
   ]);
 });
 
@@ -185,7 +185,7 @@ test('TurnExecutor continues after a tool call and ends on the next final text s
     { type: 'tool_start', name: 'test_tool', callId: 'call-1' },
     { type: 'tool_end', name: 'test_tool', callId: 'call-1', success: true },
     { type: 'text_delta', content: 'tool-informed answer' },
-    { type: 'done', tokenUsage: undefined },
+    { type: 'done', truncated: undefined, tokenUsage: undefined },
   ]);
 });
 
