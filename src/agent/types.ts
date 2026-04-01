@@ -14,7 +14,7 @@ export type AgentEvent =
   | { type: 'text_delta'; content: string }
   | { type: 'tool_start'; name: string; callId: string }
   | { type: 'tool_end'; name: string; callId: string; success: boolean }
-  | { type: 'done'; tokenUsage?: TokenUsage }
+  | { type: 'done'; truncated?: boolean; tokenUsage?: TokenUsage }
   | { type: 'error'; message: string };
 
 export interface TurnExecutionResult {

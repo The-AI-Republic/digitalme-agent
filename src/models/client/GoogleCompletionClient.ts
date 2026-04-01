@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 import {
   GoogleGenerativeAI,
   type Content,
@@ -25,7 +27,6 @@ export class GoogleCompletionClient extends ModelClient {
   private readonly genAI: GoogleGenerativeAI;
   private readonly model: string;
   private readonly baseUrl?: string;
-  private callCounter = 0;
 
   constructor(config: GoogleCompletionClientConfig) {
     super();
@@ -78,7 +79,7 @@ export class GoogleCompletionClient extends ModelClient {
       }
       if (part.functionCall) {
         toolCalls.push({
-          id: `google_call_${++this.callCounter}`,
+          id: `google_call_${crypto.randomUUID()}`,
           type: 'function',
           function: {
             name: part.functionCall.name,
@@ -101,6 +102,7 @@ export class GoogleCompletionClient extends ModelClient {
     return {
       type: 'final_text',
       text: textParts.join(''),
+      truncated: candidate.finishReason === 'MAX_TOKENS',
       tokenUsage: usage,
     };
   }

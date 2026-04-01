@@ -34,6 +34,11 @@ export class EventQueue<T> implements AsyncIterable<T> {
           this.waiters.push(resolve);
         });
       },
+      return: () => {
+        this.close();
+        this.values.length = 0;
+        return Promise.resolve({ value: undefined as T, done: true });
+      },
     };
   }
 }

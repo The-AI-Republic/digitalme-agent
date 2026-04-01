@@ -78,6 +78,7 @@ export class OpenAICompatibleClient extends ModelClient {
     return {
       type: 'final_text',
       text: typeof choice.message.content === 'string' ? choice.message.content : '',
+      truncated: choice.finish_reason === 'length',
       tokenUsage: usage,
     };
   }

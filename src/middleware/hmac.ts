@@ -13,9 +13,9 @@ function getHeader(req: Request, name: string): string {
 }
 
 function timingSafeEqualString(actual: string, expected: string): boolean {
-  const actualBuffer = Buffer.from(actual, 'utf8');
-  const expectedBuffer = Buffer.from(expected, 'utf8');
-  return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
+  const actualHash = crypto.createHash('sha256').update(actual).digest();
+  const expectedHash = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(actualHash, expectedHash);
 }
 
 export function verifyRequestSignature(req: Request, config: AgentConfig) {
@@ -33,7 +33,10 @@ export function verifyRequestSignature(req: Request, config: AgentConfig) {
     throw new Error('replay_rejected');
   }
 
-  const rawBody = (req as Request & { rawBody?: string }).rawBody ?? '';
+  const rawBody = (req as Request & { rawBody?: string }).rawBody;
+  if (rawBody === undefined) {
+    throw new Error('missing_body');
+  }
 
   const expected = crypto
     .createHmac('sha256', config.auth.signing_secret)

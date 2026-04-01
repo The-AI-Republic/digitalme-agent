@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const historyMessageSchema = z.object({
   role: z.enum(['user', 'assistant']),
-  content: z.string(),
+  content: z.string().max(100_000),
 });
 
 export const agentConfigSchema = z.object({
