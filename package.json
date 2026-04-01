@@ -1,0 +1,25 @@
+{
+  "name": "digitalme-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --loader ts-node/esm src/index.ts",
+    "start": "node dist/index.js",
+    "test": "bash -c 'shopt -s globstar && node --loader ts-node/esm --test src/**/*.test.ts src/**/*.integration.test.ts'"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "express": "^4.21.2",
+    "openai": "^6.6.0",
+    "yaml": "^2.8.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.5.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,35 @@
+persona:
+  name: "Agent Name"
+  default_system_prompt: |
+    You are a helpful assistant representing the creator.
+    Be friendly and informative.
+  tools:
+    allow_web_search: false
+
+server:
+  port: 8088
+  bind: "0.0.0.0"
+
+auth:
+  api_key: ${DIGITALME_API_KEY}
+  signing_secret: ${DIGITALME_SIGNING_SECRET}
+
+platform:
+  base_url: http://host.docker.internal:8080
+  heartbeat_interval_seconds: 20
+
+model:
+  provider: openai
+  name: gpt-4o
+  api_key: ${MODEL_API_KEY}
+  base_url:
+
+limits:
+  max_message_length: 4000
+  max_history_messages: 100
+  max_turns: 10
+  max_concurrent: 50
+  max_pending: 1000
+
+security:
+  hmac_tolerance_seconds: 300

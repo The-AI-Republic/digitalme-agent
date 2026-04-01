@@ -1,0 +1,27 @@
+services:
+  digitalme-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8088:8088"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      DIGITALME_CONFIG: /app/config.yaml
+    volumes:
+      - ./config.example.yaml:/app/config.yaml:ro
+      - rollouts:/app/.digital_me_agent/rollouts
+    networks:
+      - default
+      - platform
+
+networks:
+  platform:
+    external: true
+    name: platform_default
+
+volumes:
+  rollouts:
