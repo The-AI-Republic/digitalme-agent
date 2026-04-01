@@ -102,6 +102,7 @@ export class GoogleCompletionClient extends ModelClient {
     return {
       type: 'final_text',
       text: textParts.join(''),
+      truncated: candidate.finishReason === 'MAX_TOKENS',
       tokenUsage: usage,
     };
   }
