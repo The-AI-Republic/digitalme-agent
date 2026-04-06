@@ -17,11 +17,18 @@ export interface ToolCall {
   };
 }
 
+export interface SystemPromptBlock {
+  text: string;
+  cachePolicy: 'stable' | 'volatile';
+}
+
 export interface CompletionRequest {
   model: string;
   messages: Message[];
   tools?: ToolDefinition[];
   signal?: AbortSignal;
+  /** Structured system prompt blocks for providers that support per-block cache control. */
+  systemPromptBlocks?: SystemPromptBlock[];
 }
 
 export interface TokenUsage {

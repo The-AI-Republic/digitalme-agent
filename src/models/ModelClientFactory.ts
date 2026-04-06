@@ -1,4 +1,5 @@
 import type { AgentConfig } from '../config/schema.js';
+import { AnthropicClient } from './client/AnthropicClient.js';
 import { GoogleCompletionClient } from './client/GoogleCompletionClient.js';
 import { OpenAICompatibleClient } from './client/OpenAICompatibleClient.js';
 import { OpenAIChatCompletionClient } from './client/OpenAIChatCompletionClient.js';
@@ -29,6 +30,15 @@ export class ModelClientFactory {
 
     if (provider === 'openai') {
       this.client = new OpenAIChatCompletionClient({
+        apiKey,
+        model,
+        baseUrl,
+      });
+      return this.client;
+    }
+
+    if (provider === 'anthropic') {
+      this.client = new AnthropicClient({
         apiKey,
         model,
         baseUrl,

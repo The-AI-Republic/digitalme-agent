@@ -30,6 +30,7 @@ export const agentConfigSchema = z.object({
   model: z.object({
     provider: z.enum([
       'openai',
+      'anthropic',
       'xai',
       'groq',
       'google-ai-studio',

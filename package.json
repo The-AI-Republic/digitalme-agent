@@ -11,6 +11,7 @@
     "test": "bash -c 'shopt -s globstar && node --loader ts-node/esm --test src/**/*.test.ts src/**/*.integration.test.ts'"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.82.0",
     "@google/generative-ai": "^0.24.1",
     "express": "^4.21.2",
     "openai": "^6.6.0",

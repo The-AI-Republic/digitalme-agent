@@ -55,6 +55,11 @@ export class TurnExecutor {
 
     const builtPrompt = this.systemPromptBuilder.build(promptContext);
 
+    const systemPromptBlocks = builtPrompt.sections.map((s) => ({
+      text: s.content,
+      cachePolicy: s.cachePolicy,
+    }));
+
     const initialMessages = [
       { role: 'system' as const, content: builtPrompt.finalSystemPrompt.join('\n\n') },
       ...history,
@@ -75,6 +80,7 @@ export class TurnExecutor {
         messages: context.messages,
         tools: this.toolRegistry.listDefinitions(),
         signal: context.signal,
+        systemPromptBlocks,
       });
 
       if (result.tokenUsage) {

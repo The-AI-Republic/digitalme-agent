@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory } from './ModelClientFactory.js';
+import { AnthropicClient } from './client/AnthropicClient.js';
 import { GoogleCompletionClient } from './client/GoogleCompletionClient.js';
 import { OpenAICompatibleClient } from './client/OpenAICompatibleClient.js';
 import { OpenAIChatCompletionClient } from './client/OpenAIChatCompletionClient.js';
@@ -52,6 +53,11 @@ function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfi
 test('ModelClientFactory creates the native OpenAI client for openai', () => {
   const client = new ModelClientFactory(makeConfig('openai')).createClient();
   assert.ok(client instanceof OpenAIChatCompletionClient);
+});
+
+test('ModelClientFactory creates the Anthropic client for anthropic', () => {
+  const client = new ModelClientFactory(makeConfig('anthropic')).createClient();
+  assert.ok(client instanceof AnthropicClient);
 });
 
 test('ModelClientFactory creates the native Google client for google-ai-studio', () => {
