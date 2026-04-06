@@ -13,6 +13,13 @@ export const PROMPT_SECTIONS: PromptSectionDefinition[] = [
     boundary: 'static',
   },
   {
+    name: 'security',
+    template: 'security',
+    buildTemplateVars: () => ({}),
+    cachePolicy: 'stable',
+    boundary: 'static',
+  },
+  {
     name: 'tone_style',
     template: 'tone_style',
     buildTemplateVars: () => ({}),

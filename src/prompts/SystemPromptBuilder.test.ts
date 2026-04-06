@@ -20,24 +20,25 @@ function makeBuilder() {
   return new SystemPromptBuilder(new TemplateLoader());
 }
 
-test('SystemPromptBuilder produces 4 sections in correct order', () => {
+test('SystemPromptBuilder produces 5 sections in correct order', () => {
   const builder = makeBuilder();
   const result = builder.build(makeContext());
 
-  assert.equal(result.sections.length, 4);
+  assert.equal(result.sections.length, 5);
   assert.deepEqual(
     result.sections.map((s) => s.name),
-    ['base_system', 'tone_style', 'creator_persona', 'tool_policy'],
+    ['base_system', 'security', 'tone_style', 'creator_persona', 'tool_policy'],
   );
 });
 
-test('staticPrefix contains base_system and tone_style content', () => {
+test('staticPrefix contains base_system, security, and tone_style content', () => {
   const builder = makeBuilder();
   const result = builder.build(makeContext());
 
-  assert.equal(result.staticPrefix.length, 2);
+  assert.equal(result.staticPrefix.length, 3);
   assert.ok(result.staticPrefix[0]!.includes('Agent Operating Rules'));
-  assert.ok(result.staticPrefix[1]!.includes('Response Style'));
+  assert.ok(result.staticPrefix[1]!.includes('Security Policy'));
+  assert.ok(result.staticPrefix[2]!.includes('Response Style'));
 });
 
 test('dynamicTail contains creator_persona and tool_policy content', () => {
@@ -78,10 +79,10 @@ test('creatorSystemPromptAppend adds a final creator_append section', () => {
     makeContext({ creatorSystemPromptAppend: 'Extra instructions.' }),
   );
 
-  assert.equal(result.sections.length, 5);
-  assert.equal(result.sections[4]!.name, 'creator_append');
-  assert.equal(result.sections[4]!.content, 'Extra instructions.');
-  assert.equal(result.sections[4]!.boundary, 'dynamic');
+  assert.equal(result.sections.length, 6);
+  assert.equal(result.sections[5]!.name, 'creator_append');
+  assert.equal(result.sections[5]!.content, 'Extra instructions.');
+  assert.equal(result.sections[5]!.boundary, 'dynamic');
 });
 
 test('override wins over append — append is ignored when override is set', () => {
@@ -123,9 +124,9 @@ test('section ordering matches PROMPT_SECTIONS declaration order', () => {
   const builder = makeBuilder();
   const result = builder.build(makeContext());
 
-  // The 4 core sections should maintain declaration order
   const names = result.sections.map((s) => s.name);
-  assert.ok(names.indexOf('base_system') < names.indexOf('tone_style'));
+  assert.ok(names.indexOf('base_system') < names.indexOf('security'));
+  assert.ok(names.indexOf('security') < names.indexOf('tone_style'));
   assert.ok(names.indexOf('tone_style') < names.indexOf('creator_persona'));
   assert.ok(names.indexOf('creator_persona') < names.indexOf('tool_policy'));
 });
@@ -136,6 +137,7 @@ test('sections have correct boundary assignments', () => {
 
   const byName = Object.fromEntries(result.sections.map((s) => [s.name, s]));
   assert.equal(byName['base_system']!.boundary, 'static');
+  assert.equal(byName['security']!.boundary, 'static');
   assert.equal(byName['tone_style']!.boundary, 'static');
   assert.equal(byName['creator_persona']!.boundary, 'dynamic');
   assert.equal(byName['tool_policy']!.boundary, 'dynamic');
@@ -147,6 +149,7 @@ test('sections have correct cachePolicy assignments', () => {
 
   const byName = Object.fromEntries(result.sections.map((s) => [s.name, s]));
   assert.equal(byName['base_system']!.cachePolicy, 'stable');
+  assert.equal(byName['security']!.cachePolicy, 'stable');
   assert.equal(byName['tone_style']!.cachePolicy, 'stable');
   assert.equal(byName['creator_persona']!.cachePolicy, 'volatile');
   assert.equal(byName['tool_policy']!.cachePolicy, 'volatile');
