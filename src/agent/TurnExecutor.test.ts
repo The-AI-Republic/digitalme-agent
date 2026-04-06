@@ -61,6 +61,7 @@ function makeFakeBuilder(): ISystemPromptBuilder & { lastContext: PromptContext 
         finalSystemPrompt: [content],
       };
     },
+    clearCache() {},
   };
 }
 

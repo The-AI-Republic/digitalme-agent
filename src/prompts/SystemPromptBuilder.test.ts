@@ -1,14 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { SystemPromptBuilder } from './SystemPromptBuilder.js';
 import { TemplateLoader } from './TemplateLoader.js';
 import type { PromptContext } from './types.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const templatesPath = join(__dirname, 'templates');
 
 function makeContext(overrides: Partial<PromptContext> = {}): PromptContext {
   return {
@@ -22,8 +17,7 @@ function makeContext(overrides: Partial<PromptContext> = {}): PromptContext {
 }
 
 function makeBuilder() {
-  const loader = new TemplateLoader(templatesPath);
-  return new SystemPromptBuilder(loader);
+  return new SystemPromptBuilder(new TemplateLoader());
 }
 
 test('SystemPromptBuilder produces 4 sections in correct order', () => {
@@ -56,14 +50,14 @@ test('dynamicTail contains creator_persona and tool_policy content', () => {
   assert.ok(result.dynamicTail[1]!.includes('Approved tools: web_search.'));
 });
 
-test('finalSystemPrompt equals [...staticPrefix, ...dynamicTail]', () => {
+test('finalSystemPrompt preserves section declaration order', () => {
   const builder = makeBuilder();
   const result = builder.build(makeContext());
 
-  assert.deepEqual(result.finalSystemPrompt, [
-    ...result.staticPrefix,
-    ...result.dynamicTail,
-  ]);
+  assert.deepEqual(
+    result.finalSystemPrompt,
+    result.sections.map((s) => s.content),
+  );
 });
 
 test('creatorSystemPromptOverride replaces all sections', () => {
@@ -156,4 +150,38 @@ test('sections have correct cachePolicy assignments', () => {
   assert.equal(byName['tone_style']!.cachePolicy, 'stable');
   assert.equal(byName['creator_persona']!.cachePolicy, 'volatile');
   assert.equal(byName['tool_policy']!.cachePolicy, 'volatile');
+});
+
+test('stable sections return same content reference across builds', () => {
+  const builder = makeBuilder();
+  const first = builder.build(makeContext());
+  const second = builder.build(makeContext());
+
+  const firstBase = first.sections.find((s) => s.name === 'base_system')!;
+  const secondBase = second.sections.find((s) => s.name === 'base_system')!;
+  assert.equal(firstBase, secondBase, 'stable section should return cached object');
+});
+
+test('volatile sections are recomputed across builds', () => {
+  const builder = makeBuilder();
+  const first = builder.build(makeContext());
+  const second = builder.build(makeContext());
+
+  const firstTool = first.sections.find((s) => s.name === 'tool_policy')!;
+  const secondTool = second.sections.find((s) => s.name === 'tool_policy')!;
+  assert.notEqual(firstTool, secondTool, 'volatile section should be a new object');
+  assert.equal(firstTool.content, secondTool.content);
+});
+
+test('clearCache causes stable sections to recompute', () => {
+  const builder = makeBuilder();
+  const first = builder.build(makeContext());
+  const firstBase = first.sections.find((s) => s.name === 'base_system')!;
+
+  builder.clearCache();
+
+  const second = builder.build(makeContext());
+  const secondBase = second.sections.find((s) => s.name === 'base_system')!;
+  assert.notEqual(firstBase, secondBase, 'should be a new object after clearCache');
+  assert.equal(firstBase.content, secondBase.content);
 });

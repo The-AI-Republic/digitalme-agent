@@ -1,6 +1,3 @@
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
 import type { ToolCall } from '../models/ModelClient.js';
@@ -13,10 +10,6 @@ import { EventQueue } from './EventQueue.js';
 import { TurnContext } from './TurnContext.js';
 import type { AgentEvent, TurnExecutionResult, TurnSubmission } from './types.js';
 import type { ActiveTurn } from './ActiveTurn.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// Resolve templates relative to this file — works in both src/ (dev) and dist/ (prod)
-const DEFAULT_TEMPLATES_PATH = join(__dirname, '..', 'prompts', 'templates');
 
 interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
@@ -32,7 +25,7 @@ export class TurnExecutor {
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
     this.toolRegistry = deps.toolRegistry ?? new ToolRegistry(config);
     this.systemPromptBuilder = deps.systemPromptBuilder ??
-      new SystemPromptBuilder(new TemplateLoader(DEFAULT_TEMPLATES_PATH));
+      new SystemPromptBuilder(new TemplateLoader());
     this.modelClientFactory = deps.modelClientFactory ?? new ModelClientFactory(config);
   }
 

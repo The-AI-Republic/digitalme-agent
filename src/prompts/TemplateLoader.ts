@@ -1,31 +1,14 @@
-import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { EMBEDDED_TEMPLATES } from './templates.generated.js';
 
 /**
- * Loads Markdown prompt templates from a directory and caches them for the
- * lifetime of the process. Templates are loaded eagerly at construction time.
+ * Provides access to prompt templates that were embedded at build time.
  *
  * Template variable syntax: {{variableName}} — simple string replacement,
  * no loops, conditionals, or nested expressions.
  */
 export class TemplateLoader {
-  private readonly cache = new Map<string, string>();
-
-  /**
-   * @param basePath Absolute path to the templates directory.
-   *                 Must work in both dev (src/) and production (dist/) layouts.
-   */
-  constructor(basePath: string) {
-    const files = readdirSync(basePath).filter((f) => f.endsWith('.md'));
-    for (const file of files) {
-      const name = file.replace(/\.md$/, '');
-      const content = readFileSync(join(basePath, file), 'utf-8');
-      this.cache.set(name, content);
-    }
-  }
-
   get(templateName: string): string {
-    const content = this.cache.get(templateName);
+    const content = EMBEDDED_TEMPLATES[templateName];
     if (content === undefined) {
       throw new Error(`Unknown prompt template: ${templateName}`);
     }

@@ -4,7 +4,6 @@ export type PromptContext = {
   creatorSystemPromptOverride?: string | null;
   creatorSystemPromptAppend?: string | null;
   approvedToolNames: string[];
-  requestSystemPromptAppend?: string | null;
   modelName: string;
   providerName: string;
 };
@@ -35,4 +34,5 @@ export type BuiltPrompt = {
 
 export interface ISystemPromptBuilder {
   build(context: PromptContext): BuiltPrompt;
+  clearCache(): void;
 }
