@@ -4,6 +4,7 @@ export type PromptContext = {
   soulTone?: string | null;
   soulBoundaries?: string | null;
   soulKnowledge?: string | null;
+  soulOthers?: string | null;
   soulSystemPromptOverride?: string | null;
   soulSystemPromptAppend?: string | null;
   approvedToolNames: string[];

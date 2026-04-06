@@ -49,6 +49,7 @@ export class TurnExecutor {
       soulTone: this.config.soul.tone ?? null,
       soulBoundaries: this.config.soul.boundaries ?? null,
       soulKnowledge: this.config.soul.knowledge ?? null,
+      soulOthers: this.config.soul.others ?? null,
       soulSystemPromptOverride: this.config.soul.system_prompt_override ?? null,
       soulSystemPromptAppend: this.config.soul.system_prompt_append ?? null,
       approvedToolNames: this.toolRegistry.listNames(),

@@ -34,6 +34,7 @@ export const PROMPT_SECTIONS: PromptSectionDefinition[] = [
       if (ctx.soulTone) parts.push(ctx.soulTone);
       if (ctx.soulBoundaries) parts.push(ctx.soulBoundaries);
       if (ctx.soulKnowledge) parts.push(ctx.soulKnowledge);
+      if (ctx.soulOthers) parts.push(ctx.soulOthers);
       return {
         soulName: ctx.soulName,
         soulBody: parts.join('\n\n'),

@@ -16,6 +16,8 @@ export const agentConfigSchema = z.object({
     boundaries: z.string().optional().nullable(),
     /** Domain expertise or topics the agent knows about. */
     knowledge: z.string().optional().nullable(),
+    /** Any additional context the creator wants baked into the agent's soul. */
+    others: z.string().optional().nullable(),
     system_prompt_override: z.string().optional().nullable(),
     system_prompt_append: z.string().optional().nullable(),
     tools: z.object({
