@@ -105,6 +105,59 @@ The two codebases use similar concepts but not always the same names.
 | turn loop iteration | query-loop iteration | one LLM call cycle inside the request/turn |
 | task | background managed task | in `claudy`, `task` usually means internal managed work such as shell jobs or sub-agents, not the top-level user request |
 
+## Component Mapping
+
+The table below is the most useful implementation-oriented correspondence between the two systems. These are not exact 1:1 equivalents, but they are the closest architectural matches.
+
+| DigitalMe Agent Component | Closest Claudy Component | Why They Correspond | Important Mismatch |
+|---|---|---|---|
+| `src/agent/TurnExecutor.ts` | `src/query.ts` | main per-request agent loop: call model, inspect result, execute tools, continue until done | `claudy` has much richer continuation, compaction, streaming, and retry paths |
+| `src/agent/SessionRuntime.ts` | `src/QueryEngine.ts` | owns conversation-scoped execution lifecycle and persists runtime state across requests/turns | `QueryEngine` also carries more session infrastructure such as usage, permissions, file state, SDK compatibility, and session persistence hooks |
+| `src/agent/SessionState.ts` | `QueryEngine` mutable message state plus `sessionStorage.ts` transcript state | keeps canonical history and prompt-facing history for one conversation/session | `claudy` splits more of this across in-memory state, transcript records, compaction artifacts, and file/attribution state |
+| `src/agent/SessionManager.ts` | `QueryEngine` construction + surrounding session bootstrap | creates, reuses, and evicts per-conversation runtimes | `claudy` does not center this in one TTL cache manager because it is primarily an interactive app runtime rather than an HTTP session cache |
+| `src/agent/Agent.ts` | `src/main.tsx` plus runtime bootstrap and top-level health/state plumbing | process-level coordination: admission, health, drain behavior, runtime ownership | `claudy` spreads this across bootstrap, REPL/server entrypoints, and global app state rather than one narrow service class |
+| `src/prompts/PromptComposer.ts` | `src/constants/prompts.ts` + `src/utils/systemPrompt.ts` + `src/utils/queryContext.ts` | builds the system prompt and gathers prompt-side context | `claudy` separates prompt sections, precedence, and context fetch much more explicitly |
+| `src/tools/registry.ts` and `src/tools/types.ts` | `src/tools.ts` + `src/Tool.ts` | tool catalog plus tool contract | `claudy` tool definitions are much richer: permissions, validation, concurrency safety, result mapping, progress, and hook integration |
+| inline tool execution in `TurnExecutor.ts` | `src/services/tools/toolOrchestration.ts` + `src/services/tools/toolExecution.ts` + `src/services/tools/StreamingToolExecutor.ts` | executes model-requested tools and feeds results back into the loop | `claudy` has a real execution subsystem; `digitalme-agent` currently performs direct per-call dispatch |
+| `src/agent/RolloutRecorder.ts` | `src/utils/sessionStorage.ts` + `src/utils/toolResultStorage.ts` | durable internal operational records | `claudy` stores richer transcript and artifact types, plus content-replacement records and resume-safe metadata |
+| `src/agent/EventQueue.ts` and `src/agent/types.ts` | internal hook/event surfaces across query, tools, and app state | stream and record runtime lifecycle information | `claudy` uses a broader event/hook surface and projects only some of it outward |
+
+### Practical Reading Map
+
+If someone is working on a specific `digitalme-agent` subsystem, these are the most relevant `claudy` references to read first:
+
+- prompt management
+  - `src/prompts/PromptComposer.ts`
+  - read `src/constants/prompts.ts`, `src/utils/systemPrompt.ts`, `src/utils/queryContext.ts`
+- context management
+  - `src/agent/SessionState.ts`, `src/agent/TurnExecutor.ts`
+  - read `src/query.ts` and the compaction modules under `src/services/compact/`
+- tool runtime
+  - `src/tools/registry.ts`, `src/tools/types.ts`, `src/agent/TurnExecutor.ts`
+  - read `src/Tool.ts`, `src/services/tools/toolOrchestration.ts`, `src/services/tools/toolExecution.ts`, `src/services/tools/StreamingToolExecutor.ts`
+- conversation runtime
+  - `src/agent/SessionRuntime.ts`, `src/agent/SessionManager.ts`
+  - read `src/QueryEngine.ts`
+- runtime state and observers
+  - `src/agent/Agent.ts`, `src/agent/SessionManager.ts`
+  - read `src/state/AppStateStore.ts`, `src/state/onChangeAppState.ts`
+- transcript and artifacts
+  - `src/agent/RolloutRecorder.ts`
+  - read `src/utils/sessionStorage.ts`, `src/utils/toolResultStorage.ts`
+
+### Mapping Boundaries
+
+Some `claudy` pieces should be treated as reference patterns, not direct counterparts:
+
+- `src/state/AppStateStore.ts`
+  - useful as a state-layering reference
+  - not something `digitalme-agent` should mirror directly
+- `src/main.tsx`
+  - useful as a bootstrap/composition root reference
+  - not a runtime equivalent to one single `digitalme-agent` class
+- MCP, plugins, bridge, slash commands, REPL UI
+  - mostly out of scope for a public-facing creator agent runtime
+
 ## The Main Architectural Insight
 
 `claudy` is useful as a reference not because it is “bigger,” but because it has already solved several hard runtime problems that `digitalme-agent` will eventually hit:

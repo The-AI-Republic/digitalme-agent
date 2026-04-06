@@ -23,6 +23,14 @@ Today the prompt path is mostly:
 - `src/prompts/PromptComposer.ts`
 - `src/agent/TurnExecutor.ts`
 
+Today the implementation is very small:
+
+- `PromptComposer.compose(history, latestUserMessage)` returns the full `Message[]`
+- the system prompt is one inline string:
+  - `config.persona.default_system_prompt`
+  - plus a generated approved-tool sentence
+- `TurnExecutor` depends directly on `IPromptComposer`
+
 That is enough for MVP, but prompt construction is still too tightly coupled to execution.
 
 ## Claudy Patterns Worth Borrowing
@@ -76,6 +84,97 @@ Do not move all prompt logic into Markdown. Template files should not own:
 - runtime context fetching
 - request-scoped override policy
 
+## Concrete First-Cut Contracts
+
+These contracts should be treated as part of the implementation plan, not deferred to coding time.
+
+### PromptContext
+
+`PromptContextBuilder` should return a concrete shape like:
+
+```ts
+type PromptContext = {
+  creatorName: string
+  creatorDefaultSystemPrompt: string
+  creatorSystemPromptOverride?: string | null
+  creatorSystemPromptAppend?: string | null
+  approvedToolNames: string[]
+  requestSystemPromptAppend?: string | null
+  modelName: string
+  providerName: string
+}
+```
+
+Field mapping to current code:
+
+- `creatorName`
+  - `config.persona.name`
+- `creatorDefaultSystemPrompt`
+  - `config.persona.default_system_prompt`
+- `approvedToolNames`
+  - `toolRegistry.listNames()`
+- `modelName`
+  - `config.model.name`
+- `providerName`
+  - `config.model.provider`
+
+New config-backed fields to add:
+
+- `creatorSystemPromptOverride`
+- `creatorSystemPromptAppend`
+
+New request-scoped field to plan for:
+
+- `requestSystemPromptAppend`
+
+This first cut should stay intentionally small. Do not add channel metadata or derived conversation context in this track.
+
+### Template Variable Syntax
+
+Use simple placeholder replacement with this syntax:
+
+- `{{variableName}}`
+
+Rules:
+
+- no loops
+- no conditionals
+- no helper functions
+- no nested expressions
+- missing variables should render as empty string or fail fast in tests, depending on template criticality
+
+This should be implemented as a very small renderer, not a full template engine.
+
+### BuiltPrompt
+
+Use `sections` as the source of truth.
+
+```ts
+type BuiltPromptSection = {
+  name: string
+  template?: string
+  content: string
+  cachePolicy: 'stable' | 'volatile'
+  boundary: 'static' | 'dynamic'
+}
+
+type BuiltPrompt = {
+  sections: BuiltPromptSection[]
+  staticPrefix: string[]
+  dynamicTail: string[]
+  finalSystemPrompt: string[]
+}
+```
+
+Relationship rules:
+
+- `sections` is canonical
+- `staticPrefix` is derived from sections where `boundary === 'static'`
+- `dynamicTail` is derived from sections where `boundary === 'dynamic'`
+- `finalSystemPrompt` is `[..., staticPrefix, ...dynamicTail]`
+
+The builder should never mutate these separately after derivation.
+
 ### What Claudy Actually Does
 
 The useful implementation details are more specific than "compose a better prompt."
@@ -102,6 +201,7 @@ For `digitalme-agent`, the equivalent should be:
   - `template`
   - `buildTemplateVars(context)`
   - `cachePolicy`
+  - `boundary`
   - `enabledWhen(context)` optional
 - `PromptSectionResolver`
   - resolves sections in a stable order
@@ -149,12 +249,13 @@ This does not require implementing prompt caching immediately, but the builder s
 
 The important lesson is not the exact ordering, but that ordering is explicit and centralized.
 
-For `digitalme-agent`, define and document one precedence path:
+For the first cut of `digitalme-agent`, define and document this precedence path:
 
-1. deployment-level hard override
-2. creator base prompt
-3. runtime-generated default sections
-4. request-scoped append instructions
+1. creator-level hard override
+2. runtime-generated default sections
+3. creator base prompt section
+4. creator append instructions
+5. request-scoped append instructions if later introduced
 
 Do not allow multiple files/classes to apply overrides independently. One builder should own the final decision.
 
@@ -199,7 +300,6 @@ Suggested template directory:
 - `src/prompts/templates/tone_style.md`
 - `src/prompts/templates/tool_policy.md`
 - `src/prompts/templates/creator_persona.md`
-- `src/prompts/templates/channel_context.md`
 
 Template files should stay mostly content-oriented. Keep logic out of them beyond simple variable placeholders.
 
@@ -246,22 +346,45 @@ Everything else should prefer stable section output.
 
 ## Target Design for DigitalMe Agent
 
+### Initial Section Set
+
+The first implementation should start with only these sections:
+
+1. `base_system`
+   - template-backed
+   - static
+   - public-agent operating rules
+2. `tone_style`
+   - template-backed
+   - static
+   - response style and formatting expectations
+3. `creator_persona`
+   - template-backed
+   - dynamic
+   - built from `config.persona.default_system_prompt`
+4. `tool_policy`
+   - template-backed or code-rendered
+   - dynamic
+   - built from approved tool names
+
+Defer other sections such as `channel_context` and `runtime_capabilities` until there is real input data for them.
+
 ### New Modules
 
 - `src/prompts/SystemPromptBuilder.ts`
   - build the base system prompt from creator config and runtime capabilities
-- `src/prompts/TemplateLoader.ts`
-  - load Markdown prompt templates from disk and cache stable templates
-- `src/prompts/TemplateRenderer.ts`
-  - render templates with structured prompt context inputs
 - `src/prompts/PromptSections.ts`
   - define named prompt sections, template mapping, and cache policies
-- `src/prompts/PromptContextBuilder.ts`
-  - collect dynamic prompt context
-- `src/prompts/PromptSectionResolver.ts`
-  - resolve sections in stable order and apply cache policy
+- `src/prompts/TemplateLoader.ts`
+  - load Markdown prompt templates from disk and cache stable templates
 - `src/prompts/types.ts`
   - prompt section and prompt context types
+
+Defer for later unless the first implementation proves the need:
+
+- `src/prompts/TemplateRenderer.ts`
+- `src/prompts/PromptContextBuilder.ts`
+- `src/prompts/PromptSectionResolver.ts`
 
 ### Template Directory
 
@@ -269,7 +392,6 @@ Everything else should prefer stable section output.
 - `src/prompts/templates/tone_style.md`
 - `src/prompts/templates/tool_policy.md`
 - `src/prompts/templates/creator_persona.md`
-- `src/prompts/templates/channel_context.md`
 
 ### Existing Files To Change
 
@@ -321,47 +443,87 @@ The builder should also preserve a clear boundary between:
 - stable reusable sections
 - request/session-scoped dynamic sections
 
-## Recommended Prompt Assembly Contract
+## Builder Interface and Template Lifecycle
 
 The prompt subsystem should expose one main entrypoint:
 
-- `buildEffectivePrompt(input): BuiltPrompt`
-
-Suggested return shape:
-
 ```ts
-type BuiltPrompt = {
-  sections: Array<{
-    name: string
-    template?: string
-    content: string
-    cachePolicy: 'stable' | 'volatile'
-  }>
-  staticPrefix: string[]
-  dynamicTail: string[]
-  finalSystemPrompt: string[]
+interface ISystemPromptBuilder {
+  build(context: PromptContext): BuiltPrompt
 }
 ```
 
-This gives the runtime:
+`BuiltPrompt` is defined once in `Concrete First-Cut Contracts` above and should not be redefined elsewhere in the code or docs.
 
-- a final prompt for model calls
-- section-level visibility for tests
-- room for future cache-aware behavior without redesigning the builder
+`TemplateLoader` should:
+
+- load templates once at construction time
+- cache them for the lifetime of the process
+- fail fast on missing required templates
+
+Hot-reload is not required for the first implementation.
 
 ## Suggested Data Flow
 
 The flow should be:
 
-1. `PromptContextBuilder` gathers prompt inputs in parallel
-2. `TemplateLoader` loads the referenced Markdown templates
-3. `PromptSections` declares ordered section definitions
-4. `PromptSectionResolver` computes the active sections
-5. `TemplateRenderer` renders the active sections with structured inputs
-6. `SystemPromptBuilder` applies precedence rules
-5. `PromptComposer` becomes a thin compatibility wrapper or is retired
+1. `TurnExecutor` prepares a small `PromptContext`
+2. `SystemPromptBuilder` asks `TemplateLoader` for required templates
+3. `PromptSections` declares the initial ordered section definitions
+4. `SystemPromptBuilder` builds section vars, renders templates, and derives `finalSystemPrompt`
+5. `TurnExecutor` assembles model messages from:
+   - one `system` message using `builtPrompt.finalSystemPrompt.join('\n\n')`
+   - prior history
+   - latest user message
 
 That keeps prompt assembly deterministic and away from request-loop control logic.
+
+## TurnExecutor Integration
+
+The current call path is:
+
+```ts
+const initialMessages = this.promptComposer.compose(history, submission.userMessage)
+```
+
+The first implementation should change that shape explicitly.
+
+Target flow:
+
+```ts
+const promptContext = {
+  creatorName: this.config.persona.name,
+  creatorDefaultSystemPrompt: this.config.persona.default_system_prompt,
+  creatorSystemPromptOverride: this.config.persona.system_prompt_override ?? null,
+  creatorSystemPromptAppend: this.config.persona.system_prompt_append ?? null,
+  approvedToolNames: this.toolRegistry.listNames(),
+  modelName: this.config.model.name,
+  providerName: this.config.model.provider,
+}
+
+const builtPrompt = this.systemPromptBuilder.build(promptContext)
+
+const initialMessages: Message[] = [
+  {
+    role: 'system',
+    content: builtPrompt.finalSystemPrompt.join('\n\n'),
+  },
+  ...history,
+  {
+    role: 'user',
+    content: submission.userMessage,
+  },
+]
+```
+
+This plan should retire `IPromptComposer` rather than keep both abstractions alive.
+
+New dependency shape:
+
+- `TurnExecutor` depends on `ISystemPromptBuilder`
+- existing `PromptComposer` is removed after migration
+
+Tests that currently mock `IPromptComposer` should be updated to mock `ISystemPromptBuilder` instead.
 
 ## Suggested Implementation Sequence
 
@@ -370,11 +532,11 @@ That keeps prompt assembly deterministic and away from request-loop control logi
 Files:
 
 - new `src/prompts/SystemPromptBuilder.ts`
-- new `src/prompts/TemplateLoader.ts`
-- new `src/prompts/TemplateRenderer.ts`
 - new `src/prompts/PromptSections.ts`
-- new `src/prompts/PromptSectionResolver.ts`
-- update `src/prompts/PromptComposer.ts`
+- new `src/prompts/TemplateLoader.ts`
+- update `src/agent/TurnExecutor.ts`
+- update or remove `src/prompts/PromptComposer.ts`
+- update `src/config/schema.ts`
 
 Work:
 
@@ -382,25 +544,20 @@ Work:
 - move stable authored prompt text into Markdown templates under `src/prompts/templates/`
 - define named section-oriented prompt construction
 - keep section ordering explicit in code, not implicit in call order spread across files
+- retire `IPromptComposer`
 
 ### Step 2: Extract PromptContextBuilder
 
-Files:
-
-- new `src/prompts/PromptContextBuilder.ts`
-- update `src/prompts/PromptComposer.ts`
-
 Work:
 
-- separate dynamic context gathering from static prompt text
-- fetch prompt inputs in parallel where possible
-- return structured inputs rather than prebuilt strings
+- only do this if prompt inputs spread across enough async sources to justify it
+- until then, keep prompt-context assembly inside `TurnExecutor` or `SystemPromptBuilder`
 
 ### Step 3: Define Override and Append Semantics
 
 Files:
 
-- `src/prompts/PromptComposer.ts`
+- `src/prompts/SystemPromptBuilder.ts`
 - `src/config/schema.ts`
 
 Work:
@@ -424,6 +581,35 @@ Work:
 - make it possible to snapshot-test section ordering
 - keep stable and volatile sections distinguishable
 
+## Config Schema Changes
+
+The current schema has only:
+
+- `persona.default_system_prompt`
+
+The first implementation should add:
+
+```ts
+persona: {
+  name: string
+  default_system_prompt: string
+  system_prompt_override?: string | null
+  system_prompt_append?: string | null
+  tools: { ... }
+}
+```
+
+Semantics:
+
+- `default_system_prompt`
+  - the creator persona content used by the `creator_persona` section
+- `system_prompt_override`
+  - if set, replaces the normal section assembly
+- `system_prompt_append`
+  - appended last after normal assembly
+
+No deployment-level prompt fields need to be introduced in this first cut unless the deployment config already has a natural home for them.
+
 ## Testing Strategy
 
 Add tests for:
@@ -437,6 +623,8 @@ Add tests for:
 - stable vs volatile section behavior
 - dynamic-tail changes not rewriting unrelated stable sections
 - parallel input gathering producing deterministic final output
+- `TurnExecutor` builds the system message from `ISystemPromptBuilder`
+- existing tests are migrated away from `IPromptComposer`
 
 ## Risks
 
@@ -445,6 +633,7 @@ Add tests for:
 - allowing section precedence to be split across multiple entrypoints
 - treating all prompt sections as volatile and losing future cache leverage
 - pushing runtime logic down into Markdown templates
+- introducing too many prompt-specific classes before enough prompt sources exist
 
 ## Success Criteria
 
@@ -454,3 +643,4 @@ Add tests for:
 - prompt sections have stable names and ordering
 - prompt inputs are gathered separately from final assembly
 - stable prompt text lives in `src/prompts/templates/` rather than large inline strings in code
+- `TurnExecutor` no longer depends on `IPromptComposer`
