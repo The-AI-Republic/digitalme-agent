@@ -1,7 +1,12 @@
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
 import type { ToolCall } from '../models/ModelClient.js';
-import { PromptComposer, type IPromptComposer } from '../prompts/PromptComposer.js';
+import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
+import { TemplateLoader } from '../prompts/TemplateLoader.js';
+import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
 import { ToolRegistry, type IToolRegistry } from '../tools/registry.js';
 import type { Tool, ToolExecutionResult } from '../tools/types.js';
 import { EventQueue } from './EventQueue.js';
@@ -9,20 +14,25 @@ import { TurnContext } from './TurnContext.js';
 import type { AgentEvent, TurnExecutionResult, TurnSubmission } from './types.js';
 import type { ActiveTurn } from './ActiveTurn.js';
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// Resolve templates relative to this file — works in both src/ (dev) and dist/ (prod)
+const DEFAULT_TEMPLATES_PATH = join(__dirname, '..', 'prompts', 'templates');
+
 interface TurnExecutorDeps {
-  promptComposer?: IPromptComposer;
+  systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
   toolRegistry?: IToolRegistry;
 }
 
 export class TurnExecutor {
-  private readonly promptComposer: IPromptComposer;
+  private readonly systemPromptBuilder: ISystemPromptBuilder;
   private readonly modelClientFactory: IModelClientFactory;
   private readonly toolRegistry: IToolRegistry;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
     this.toolRegistry = deps.toolRegistry ?? new ToolRegistry(config);
-    this.promptComposer = deps.promptComposer ?? new PromptComposer(config, this.toolRegistry.listNames());
+    this.systemPromptBuilder = deps.systemPromptBuilder ??
+      new SystemPromptBuilder(new TemplateLoader(DEFAULT_TEMPLATES_PATH));
     this.modelClientFactory = deps.modelClientFactory ?? new ModelClientFactory(config);
   }
 
@@ -39,7 +49,25 @@ export class TurnExecutor {
       role: item.role,
       content: item.content,
     }));
-    const initialMessages = this.promptComposer.compose(history, submission.userMessage);
+
+    const promptContext: PromptContext = {
+      creatorName: this.config.persona.name,
+      creatorDefaultSystemPrompt: this.config.persona.default_system_prompt,
+      creatorSystemPromptOverride: this.config.persona.system_prompt_override ?? null,
+      creatorSystemPromptAppend: this.config.persona.system_prompt_append ?? null,
+      approvedToolNames: this.toolRegistry.listNames(),
+      modelName: this.config.model.name,
+      providerName: this.config.model.provider,
+    };
+
+    const builtPrompt = this.systemPromptBuilder.build(promptContext);
+
+    const initialMessages = [
+      { role: 'system' as const, content: builtPrompt.finalSystemPrompt.join('\n\n') },
+      ...history,
+      { role: 'user' as const, content: submission.userMessage },
+    ];
+
     const context = new TurnContext(submission, initialMessages);
     const client = this.modelClientFactory.createClient();
     let toolCallCount = 0;

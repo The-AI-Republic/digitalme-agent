@@ -9,6 +9,8 @@ export const agentConfigSchema = z.object({
   persona: z.object({
     name: z.string().min(1),
     default_system_prompt: z.string().min(1),
+    system_prompt_override: z.string().optional().nullable(),
+    system_prompt_append: z.string().optional().nullable(),
     tools: z.object({
       allow_web_search: z.boolean().default(false),
     }).default({ allow_web_search: false }),

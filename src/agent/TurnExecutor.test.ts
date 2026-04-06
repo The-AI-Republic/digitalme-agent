@@ -5,8 +5,8 @@ import { TurnExecutor } from './TurnExecutor.js';
 import type { CompletionRequest, ModelStepResult, ModelClient } from '../models/ModelClient.js';
 import { EventQueue } from './EventQueue.js';
 import type { AgentEvent, TurnSubmission } from './types.js';
-import type { Message } from '../models/ModelClient.js';
 import type { ToolExecutionResult, Tool, ToolDefinition } from '../tools/types.js';
+import type { ISystemPromptBuilder, BuiltPrompt, PromptContext } from '../prompts/types.js';
 import { testConfig as config } from '../test/fixtures.js';
 
 class FakeModelClient implements ModelClient {
@@ -48,6 +48,22 @@ class FakeTool implements Tool {
   }
 }
 
+function makeFakeBuilder(): ISystemPromptBuilder & { lastContext: PromptContext | null } {
+  return {
+    lastContext: null,
+    build(context: PromptContext): BuiltPrompt {
+      this.lastContext = context;
+      const content = 'test-system';
+      return {
+        sections: [{ name: 'test', content, cachePolicy: 'stable', boundary: 'static' }],
+        staticPrefix: [content],
+        dynamicTail: [],
+        finalSystemPrompt: [content],
+      };
+    },
+  };
+}
+
 async function collectEvents(queue: EventQueue<AgentEvent>) {
   const events: AgentEvent[] = [];
   for await (const event of queue) {
@@ -60,15 +76,7 @@ function makeExecutor(steps: ModelStepResult[]) {
   const tool = new FakeTool();
   const client = new FakeModelClient([...steps]);
   return new TurnExecutor(config, {
-    promptComposer: {
-      compose(history: Message[], latestUserMessage: string) {
-        return [
-          { role: 'system', content: 'test-system' },
-          ...history,
-          { role: 'user', content: latestUserMessage },
-        ];
-      },
-    },
+    systemPromptBuilder: makeFakeBuilder(),
     modelClientFactory: {
       createClient() {
         return client;
@@ -92,15 +100,7 @@ function makeExecutorWithClient(steps: ModelStepResult[]) {
   const tool = new FakeTool();
   const client = new FakeModelClient([...steps]);
   const executor = new TurnExecutor(config, {
-    promptComposer: {
-      compose(history: Message[], latestUserMessage: string) {
-        return [
-          { role: 'system', content: 'test-system' },
-          ...history,
-          { role: 'user', content: latestUserMessage },
-        ];
-      },
-    },
+    systemPromptBuilder: makeFakeBuilder(),
     modelClientFactory: {
       createClient() {
         return client;
@@ -345,4 +345,35 @@ test('TurnExecutor exposes committed prompt messages for session reuse', async (
     },
     { role: 'assistant', content: 'final answer' },
   ]);
+});
+
+test('TurnExecutor passes correct PromptContext fields to builder', async () => {
+  const builder = makeFakeBuilder();
+  const tool = new FakeTool();
+  const client = new FakeModelClient([
+    { type: 'final_text', text: 'ok' },
+  ]);
+
+  const executor = new TurnExecutor(config, {
+    systemPromptBuilder: builder,
+    modelClientFactory: { createClient() { return client; } },
+    toolRegistry: {
+      listDefinitions() { return [tool.definition]; },
+      listNames() { return [tool.name]; },
+      get(name: string) { return name === tool.name ? tool : undefined; },
+    },
+  });
+
+  const events = new EventQueue<AgentEvent>();
+  await executor.run(
+    { requestId: 'req-ctx', conversationId: 'conv-ctx', userMessage: 'hi', history: [] },
+    events,
+  );
+
+  assert.ok(builder.lastContext);
+  assert.equal(builder.lastContext.creatorName, 'Test Agent');
+  assert.equal(builder.lastContext.creatorDefaultSystemPrompt, 'You are a test agent.');
+  assert.deepEqual(builder.lastContext.approvedToolNames, ['test_tool']);
+  assert.equal(builder.lastContext.modelName, 'gpt-4o');
+  assert.equal(builder.lastContext.providerName, 'openai');
 });
