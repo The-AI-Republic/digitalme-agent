@@ -50,6 +50,7 @@ export class GoogleCompletionClient extends ModelClient {
         model: request.model || this.model,
         ...(systemInstruction ? { systemInstruction } : {}),
         ...(tools ? { tools } : {}),
+        ...(request.maxOutputTokens ? { generationConfig: { maxOutputTokens: request.maxOutputTokens } } : {}),
       },
       {
         apiVersion: 'v1beta',

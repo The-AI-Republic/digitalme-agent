@@ -1,7 +1,9 @@
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
 import type { ToolCall } from '../models/ModelClient.js';
-import { PromptComposer, type IPromptComposer } from '../prompts/PromptComposer.js';
+import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
+import { TemplateLoader } from '../prompts/TemplateLoader.js';
+import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
 import { ToolRegistry, type IToolRegistry } from '../tools/registry.js';
 import type { Tool, ToolExecutionResult } from '../tools/types.js';
 import { EventQueue } from './EventQueue.js';
@@ -10,19 +12,20 @@ import type { AgentEvent, TurnExecutionResult, TurnSubmission } from './types.js
 import type { ActiveTurn } from './ActiveTurn.js';
 
 interface TurnExecutorDeps {
-  promptComposer?: IPromptComposer;
+  systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
   toolRegistry?: IToolRegistry;
 }
 
 export class TurnExecutor {
-  private readonly promptComposer: IPromptComposer;
+  private readonly systemPromptBuilder: ISystemPromptBuilder;
   private readonly modelClientFactory: IModelClientFactory;
   private readonly toolRegistry: IToolRegistry;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
     this.toolRegistry = deps.toolRegistry ?? new ToolRegistry(config);
-    this.promptComposer = deps.promptComposer ?? new PromptComposer(config, this.toolRegistry.listNames());
+    this.systemPromptBuilder = deps.systemPromptBuilder ??
+      new SystemPromptBuilder(new TemplateLoader());
     this.modelClientFactory = deps.modelClientFactory ?? new ModelClientFactory(config);
   }
 
@@ -39,7 +42,34 @@ export class TurnExecutor {
       role: item.role,
       content: item.content,
     }));
-    const initialMessages = this.promptComposer.compose(history, submission.userMessage);
+
+    const promptContext: PromptContext = {
+      soulName: this.config.soul.name,
+      soulDescription: this.config.soul.description,
+      soulTone: this.config.soul.tone ?? null,
+      soulBoundaries: this.config.soul.boundaries ?? null,
+      soulKnowledge: this.config.soul.knowledge ?? null,
+      soulOthers: this.config.soul.others ?? null,
+      soulSystemPromptOverride: this.config.soul.system_prompt_override ?? null,
+      soulSystemPromptAppend: this.config.soul.system_prompt_append ?? null,
+      approvedToolNames: this.toolRegistry.listNames(),
+      modelName: this.config.model.name,
+      providerName: this.config.model.provider,
+    };
+
+    const builtPrompt = this.systemPromptBuilder.build(promptContext);
+
+    const systemPromptBlocks = builtPrompt.sections.map((s) => ({
+      text: s.content,
+      cachePolicy: s.cachePolicy,
+    }));
+
+    const initialMessages = [
+      { role: 'system' as const, content: builtPrompt.finalSystemPrompt.join('\n\n') },
+      ...history,
+      { role: 'user' as const, content: submission.userMessage },
+    ];
+
     const context = new TurnContext(submission, initialMessages);
     const client = this.modelClientFactory.createClient();
     let toolCallCount = 0;
@@ -54,6 +84,8 @@ export class TurnExecutor {
         messages: context.messages,
         tools: this.toolRegistry.listDefinitions(),
         signal: context.signal,
+        systemPromptBlocks,
+        maxOutputTokens: this.config.model.max_output_tokens,
       });
 
       if (result.tokenUsage) {

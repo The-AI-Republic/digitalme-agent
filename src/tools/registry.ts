@@ -6,7 +6,7 @@ export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
 
   constructor(config: AgentConfig) {
-    if (config.persona.tools.allow_web_search) {
+    if (config.soul.tools.allow_web_search) {
       this.register(new WebSearchTool());
     }
   }
