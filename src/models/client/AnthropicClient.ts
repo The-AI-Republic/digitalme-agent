@@ -2,7 +2,6 @@ import type {
   CompletionRequest,
   Message,
   ModelStepResult,
-  SystemPromptBlock,
   TokenUsage,
   ToolCall,
 } from '../ModelClient.js';
@@ -14,8 +13,9 @@ interface AnthropicClientConfig {
   baseUrl?: string;
 }
 
-// Lazily resolved SDK types — the Anthropic SDK is dynamically imported
-// to avoid ESM/ts-node resolution issues at load time.
+// TODO: Replace these local type stubs with SDK types (TextBlockParam, MessageParam)
+// once the Anthropic SDK ESM import issue with ts-node is resolved.
+// The SDK is dynamically imported in getClient() to work around the load-time crash.
 type TextBlockParam = { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
 type AnthropicMessageParam = { role: 'user' | 'assistant'; content: string | any[] };
 
@@ -39,7 +39,7 @@ export class AnthropicClient extends ModelClient {
 
     const response = await client.messages.create({
       model: request.model || this.model,
-      max_tokens: 8192,
+      max_tokens: request.maxOutputTokens ?? 8192,
       system,
       messages,
       ...(request.tools && request.tools.length > 0 ? {

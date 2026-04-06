@@ -35,6 +35,7 @@ const TEST_CONFIG: AgentConfig = {
     provider: 'openai',
     name: 'gpt-4o',
     api_key: 'unused',
+    max_output_tokens: 8192,
     base_url: null,
   },
   limits: {

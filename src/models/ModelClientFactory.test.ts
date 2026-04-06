@@ -33,6 +33,7 @@ function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfi
       provider: modelProvider,
       name: 'test-model',
       api_key: 'model-key',
+      max_output_tokens: 8192,
       base_url: null,
     },
     limits: {

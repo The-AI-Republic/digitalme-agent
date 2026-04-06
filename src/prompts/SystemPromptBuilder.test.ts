@@ -188,3 +188,35 @@ test('clearCache causes stable sections to recompute', () => {
   assert.notEqual(firstBase, secondBase, 'should be a new object after clearCache');
   assert.equal(firstBase.content, secondBase.content);
 });
+
+test('optional soul fields render into the soul section content', () => {
+  const builder = makeBuilder();
+  const result = builder.build(makeContext({
+    soulTone: 'Warm but direct.',
+    soulBoundaries: 'No medical advice.',
+    soulKnowledge: 'Expert in TypeScript.',
+    soulOthers: 'Always greet by name.',
+  }));
+
+  const soul = result.sections.find((s) => s.name === 'soul')!;
+  assert.ok(soul.content.includes('Warm but direct.'));
+  assert.ok(soul.content.includes('No medical advice.'));
+  assert.ok(soul.content.includes('Expert in TypeScript.'));
+  assert.ok(soul.content.includes('Always greet by name.'));
+});
+
+test('soul section omits empty optional fields cleanly', () => {
+  const builder = makeBuilder();
+  const result = builder.build(makeContext({
+    soulTone: null,
+    soulBoundaries: null,
+    soulKnowledge: null,
+    soulOthers: null,
+  }));
+
+  const soul = result.sections.find((s) => s.name === 'soul')!;
+  assert.ok(soul.content.includes('Test Creator'));
+  assert.ok(soul.content.includes('You are a helpful test agent.'));
+  // Should not have extra blank lines from empty fields
+  assert.ok(!soul.content.includes('\n\n\n'));
+});

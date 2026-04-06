@@ -85,6 +85,7 @@ export class TurnExecutor {
         tools: this.toolRegistry.listDefinitions(),
         signal: context.signal,
         systemPromptBlocks,
+        maxOutputTokens: this.config.model.max_output_tokens,
       });
 
       if (result.tokenUsage) {

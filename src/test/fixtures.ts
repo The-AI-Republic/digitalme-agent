@@ -25,6 +25,7 @@ export const testConfig: AgentConfig = {
     name: 'gpt-4o',
     api_key: 'model-key',
     base_url: null,
+    max_output_tokens: 8192,
   },
   limits: {
     max_message_length: 4000,

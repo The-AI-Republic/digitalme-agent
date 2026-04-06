@@ -29,6 +29,7 @@ export class OpenAICompatibleClient extends ModelClient {
     const client = await this.getClient();
     const response = await client.chat.completions.create({
       model: request.model || this.model,
+      ...(request.maxOutputTokens ? { max_tokens: request.maxOutputTokens } : {}),
       messages: request.messages.map((message) => ({
         role: message.role,
         content: message.content,

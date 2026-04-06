@@ -29,6 +29,7 @@ const config: AgentConfig = {
     provider: 'openai',
     name: 'gpt-4o',
     api_key: 'model-key',
+    max_output_tokens: 8192,
     base_url: null,
   },
   limits: {

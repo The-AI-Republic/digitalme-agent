@@ -49,6 +49,7 @@ export const agentConfigSchema = z.object({
     name: z.string().min(1),
     api_key: z.string().min(1),
     base_url: z.string().optional().nullable(),
+    max_output_tokens: z.number().int().positive().default(8192),
   }),
   limits: z.object({
     max_message_length: z.number().int().positive().default(4000),
