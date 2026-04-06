@@ -44,10 +44,13 @@ export class TurnExecutor {
     }));
 
     const promptContext: PromptContext = {
-      creatorName: this.config.persona.name,
-      creatorDefaultSystemPrompt: this.config.persona.default_system_prompt,
-      creatorSystemPromptOverride: this.config.persona.system_prompt_override ?? null,
-      creatorSystemPromptAppend: this.config.persona.system_prompt_append ?? null,
+      soulName: this.config.soul.name,
+      soulDescription: this.config.soul.description,
+      soulTone: this.config.soul.tone ?? null,
+      soulBoundaries: this.config.soul.boundaries ?? null,
+      soulKnowledge: this.config.soul.knowledge ?? null,
+      soulSystemPromptOverride: this.config.soul.system_prompt_override ?? null,
+      soulSystemPromptAppend: this.config.soul.system_prompt_append ?? null,
       approvedToolNames: this.toolRegistry.listNames(),
       modelName: this.config.model.name,
       providerName: this.config.model.provider,

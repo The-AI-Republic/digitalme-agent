@@ -1,8 +1,11 @@
 export type PromptContext = {
-  creatorName: string;
-  creatorDefaultSystemPrompt: string;
-  creatorSystemPromptOverride?: string | null;
-  creatorSystemPromptAppend?: string | null;
+  soulName: string;
+  soulDescription: string;
+  soulTone?: string | null;
+  soulBoundaries?: string | null;
+  soulKnowledge?: string | null;
+  soulSystemPromptOverride?: string | null;
+  soulSystemPromptAppend?: string | null;
   approvedToolNames: string[];
   modelName: string;
   providerName: string;

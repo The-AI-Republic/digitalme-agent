@@ -15,9 +15,9 @@ import type { TemplateLoader } from './TemplateLoader.js';
  * cachePolicy 'volatile' are recomputed on every call.
  *
  * Precedence (highest wins):
- *   1. creatorSystemPromptOverride — replaces everything, append is ignored
+ *   1. soulSystemPromptOverride — replaces everything, append is ignored
  *   2. Normal section assembly from PROMPT_SECTIONS
- *   3. creatorSystemPromptAppend — appended as final section (only when no override)
+ *   3. soulSystemPromptAppend — appended as final section (only when no override)
  */
 export class SystemPromptBuilder implements ISystemPromptBuilder {
   private readonly sectionCache = new Map<string, BuiltPromptSection>();
@@ -25,8 +25,8 @@ export class SystemPromptBuilder implements ISystemPromptBuilder {
   constructor(private readonly templateLoader: TemplateLoader) {}
 
   build(context: PromptContext): BuiltPrompt {
-    if (context.creatorSystemPromptOverride) {
-      return this.buildOverride(context.creatorSystemPromptOverride);
+    if (context.soulSystemPromptOverride) {
+      return this.buildOverride(context.soulSystemPromptOverride);
     }
 
     const sections: BuiltPromptSection[] = [];
@@ -69,10 +69,10 @@ export class SystemPromptBuilder implements ISystemPromptBuilder {
       sections.push(section);
     }
 
-    if (context.creatorSystemPromptAppend) {
+    if (context.soulSystemPromptAppend) {
       sections.push({
-        name: 'creator_append',
-        content: context.creatorSystemPromptAppend,
+        name: 'soul_append',
+        content: context.soulSystemPromptAppend,
         cachePolicy: 'volatile',
         boundary: 'dynamic',
       });

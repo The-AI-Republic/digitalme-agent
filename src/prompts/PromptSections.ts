@@ -27,12 +27,18 @@ export const PROMPT_SECTIONS: PromptSectionDefinition[] = [
     boundary: 'static',
   },
   {
-    name: 'creator_persona',
-    template: 'creator_persona',
-    buildTemplateVars: (ctx) => ({
-      creatorName: ctx.creatorName,
-      creatorDefaultSystemPrompt: ctx.creatorDefaultSystemPrompt,
-    }),
+    name: 'soul',
+    template: 'soul',
+    buildTemplateVars: (ctx) => {
+      const parts: string[] = [ctx.soulDescription];
+      if (ctx.soulTone) parts.push(ctx.soulTone);
+      if (ctx.soulBoundaries) parts.push(ctx.soulBoundaries);
+      if (ctx.soulKnowledge) parts.push(ctx.soulKnowledge);
+      return {
+        soulName: ctx.soulName,
+        soulBody: parts.join('\n\n'),
+      };
+    },
     cachePolicy: 'volatile',
     boundary: 'dynamic',
   },

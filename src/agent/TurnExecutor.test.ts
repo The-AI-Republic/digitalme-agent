@@ -372,8 +372,8 @@ test('TurnExecutor passes correct PromptContext fields to builder', async () => 
   );
 
   assert.ok(builder.lastContext);
-  assert.equal(builder.lastContext.creatorName, 'Test Agent');
-  assert.equal(builder.lastContext.creatorDefaultSystemPrompt, 'You are a test agent.');
+  assert.equal(builder.lastContext.soulName, 'Test Agent');
+  assert.equal(builder.lastContext.soulDescription, 'You are a test agent.');
   assert.deepEqual(builder.lastContext.approvedToolNames, ['test_tool']);
   assert.equal(builder.lastContext.modelName, 'gpt-4o');
   assert.equal(builder.lastContext.providerName, 'openai');

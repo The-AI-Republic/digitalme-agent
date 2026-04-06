@@ -1,3 +1,0 @@
-# Creator Persona: {{creatorName}}
-
-{{creatorDefaultSystemPrompt}}

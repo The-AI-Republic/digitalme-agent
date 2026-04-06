@@ -7,8 +7,8 @@ import type { PromptContext } from './types.js';
 
 function makeContext(overrides: Partial<PromptContext> = {}): PromptContext {
   return {
-    creatorName: 'Test Creator',
-    creatorDefaultSystemPrompt: 'You are a helpful test agent.',
+    soulName: 'Test Creator',
+    soulDescription: 'You are a helpful test agent.',
     approvedToolNames: ['web_search'],
     modelName: 'gpt-4o',
     providerName: 'openai',
@@ -27,7 +27,7 @@ test('SystemPromptBuilder produces 5 sections in correct order', () => {
   assert.equal(result.sections.length, 5);
   assert.deepEqual(
     result.sections.map((s) => s.name),
-    ['base_system', 'security', 'tone_style', 'creator_persona', 'tool_policy'],
+    ['base_system', 'security', 'tone_style', 'soul', 'tool_policy'],
   );
 });
 
@@ -41,7 +41,7 @@ test('staticPrefix contains base_system, security, and tone_style content', () =
   assert.ok(result.staticPrefix[2]!.includes('Response Style'));
 });
 
-test('dynamicTail contains creator_persona and tool_policy content', () => {
+test('dynamicTail contains soul and tool_policy content', () => {
   const builder = makeBuilder();
   const result = builder.build(makeContext());
 
@@ -61,10 +61,10 @@ test('finalSystemPrompt preserves section declaration order', () => {
   );
 });
 
-test('creatorSystemPromptOverride replaces all sections', () => {
+test('soulSystemPromptOverride replaces all sections', () => {
   const builder = makeBuilder();
   const result = builder.build(
-    makeContext({ creatorSystemPromptOverride: 'Custom override prompt.' }),
+    makeContext({ soulSystemPromptOverride: 'Custom override prompt.' }),
   );
 
   assert.equal(result.sections.length, 1);
@@ -73,14 +73,14 @@ test('creatorSystemPromptOverride replaces all sections', () => {
   assert.deepEqual(result.finalSystemPrompt, ['Custom override prompt.']);
 });
 
-test('creatorSystemPromptAppend adds a final creator_append section', () => {
+test('soulSystemPromptAppend adds a final soul_append section', () => {
   const builder = makeBuilder();
   const result = builder.build(
-    makeContext({ creatorSystemPromptAppend: 'Extra instructions.' }),
+    makeContext({ soulSystemPromptAppend: 'Extra instructions.' }),
   );
 
   assert.equal(result.sections.length, 6);
-  assert.equal(result.sections[5]!.name, 'creator_append');
+  assert.equal(result.sections[5]!.name, 'soul_append');
   assert.equal(result.sections[5]!.content, 'Extra instructions.');
   assert.equal(result.sections[5]!.boundary, 'dynamic');
 });
@@ -89,8 +89,8 @@ test('override wins over append — append is ignored when override is set', () 
   const builder = makeBuilder();
   const result = builder.build(
     makeContext({
-      creatorSystemPromptOverride: 'Override only.',
-      creatorSystemPromptAppend: 'Should be ignored.',
+      soulSystemPromptOverride: 'Override only.',
+      soulSystemPromptAppend: 'Should be ignored.',
     }),
   );
 
@@ -127,8 +127,8 @@ test('section ordering matches PROMPT_SECTIONS declaration order', () => {
   const names = result.sections.map((s) => s.name);
   assert.ok(names.indexOf('base_system') < names.indexOf('security'));
   assert.ok(names.indexOf('security') < names.indexOf('tone_style'));
-  assert.ok(names.indexOf('tone_style') < names.indexOf('creator_persona'));
-  assert.ok(names.indexOf('creator_persona') < names.indexOf('tool_policy'));
+  assert.ok(names.indexOf('tone_style') < names.indexOf('soul'));
+  assert.ok(names.indexOf('soul') < names.indexOf('tool_policy'));
 });
 
 test('sections have correct boundary assignments', () => {
@@ -139,7 +139,7 @@ test('sections have correct boundary assignments', () => {
   assert.equal(byName['base_system']!.boundary, 'static');
   assert.equal(byName['security']!.boundary, 'static');
   assert.equal(byName['tone_style']!.boundary, 'static');
-  assert.equal(byName['creator_persona']!.boundary, 'dynamic');
+  assert.equal(byName['soul']!.boundary, 'dynamic');
   assert.equal(byName['tool_policy']!.boundary, 'dynamic');
 });
 
@@ -151,7 +151,7 @@ test('sections have correct cachePolicy assignments', () => {
   assert.equal(byName['base_system']!.cachePolicy, 'stable');
   assert.equal(byName['security']!.cachePolicy, 'stable');
   assert.equal(byName['tone_style']!.cachePolicy, 'stable');
-  assert.equal(byName['creator_persona']!.cachePolicy, 'volatile');
+  assert.equal(byName['soul']!.cachePolicy, 'volatile');
   assert.equal(byName['tool_policy']!.cachePolicy, 'volatile');
 });
 

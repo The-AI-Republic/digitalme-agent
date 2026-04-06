@@ -1,9 +1,9 @@
 import type { AgentConfig } from '../config/schema.js';
 
 export const testConfig: AgentConfig = {
-  persona: {
+  soul: {
     name: 'Test Agent',
-    default_system_prompt: 'You are a test agent.',
+    description: 'You are a test agent.',
     tools: {
       allow_web_search: false,
     },

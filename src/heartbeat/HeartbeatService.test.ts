@@ -6,9 +6,9 @@ import { Agent } from '../agent/Agent.js';
 import { HeartbeatService } from './HeartbeatService.js';
 
 const config: AgentConfig = {
-  persona: {
+  soul: {
     name: 'Test Agent',
-    default_system_prompt: 'You are a test agent.',
+    description: 'You are a test agent.',
     tools: {
       allow_web_search: false,
     },

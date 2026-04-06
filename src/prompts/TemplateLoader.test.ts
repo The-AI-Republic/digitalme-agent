@@ -42,6 +42,6 @@ test('TemplateLoader loads all 5 initial templates', () => {
   assert.ok(loader.get('base_system'));
   assert.ok(loader.get('security'));
   assert.ok(loader.get('tone_style'));
-  assert.ok(loader.get('creator_persona'));
+  assert.ok(loader.get('soul'));
   assert.ok(loader.get('tool_policy'));
 });

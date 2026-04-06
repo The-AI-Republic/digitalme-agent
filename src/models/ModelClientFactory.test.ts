@@ -10,9 +10,9 @@ import { OpenAIChatCompletionClient } from './client/OpenAIChatCompletionClient.
 
 function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfig {
   return {
-    persona: {
+    soul: {
       name: 'Test Agent',
-      default_system_prompt: 'You are a test agent.',
+      description: 'You are a test agent.',
       tools: {
         allow_web_search: false,
       },

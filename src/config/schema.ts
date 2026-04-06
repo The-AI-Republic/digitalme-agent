@@ -6,9 +6,16 @@ export const historyMessageSchema = z.object({
 });
 
 export const agentConfigSchema = z.object({
-  persona: z.object({
+  soul: z.object({
     name: z.string().min(1),
-    default_system_prompt: z.string().min(1),
+    /** One-line description of who this agent is. */
+    description: z.string().min(1),
+    /** How the agent speaks — warm, blunt, formal, playful, etc. */
+    tone: z.string().optional().nullable(),
+    /** What the agent won't do or discuss. */
+    boundaries: z.string().optional().nullable(),
+    /** Domain expertise or topics the agent knows about. */
+    knowledge: z.string().optional().nullable(),
     system_prompt_override: z.string().optional().nullable(),
     system_prompt_append: z.string().optional().nullable(),
     tools: z.object({

@@ -12,9 +12,9 @@ import type { EventQueue } from './agent/EventQueue.js';
 import type { AgentEvent, TurnSubmission } from './agent/types.js';
 
 const TEST_CONFIG: AgentConfig = {
-  persona: {
+  soul: {
     name: 'Test Creator',
-    default_system_prompt: 'You are a helpful creator agent.',
+    description: 'You are a helpful creator agent.',
     tools: {
       allow_web_search: false,
     },
