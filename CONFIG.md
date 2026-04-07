@@ -2,12 +2,18 @@
 
 All configuration is defined in `config.yaml`. Values using `${VAR}` syntax are interpolated from environment variables at startup.
 
-## persona
+## soul
 
 | Parameter | Required | Description |
 |---|---|---|
-| `name` | Yes | Display name for the agent. Typically matches the creator's name. |
-| `default_system_prompt` | Yes | The system prompt that defines the agent's personality and behavior. Supports multi-line YAML strings. |
+| `name` | Yes | Display name for the agent. |
+| `description` | Yes | One-line description of who this agent is. |
+| `tone` | No | How the agent speaks — warm, blunt, formal, playful, etc. |
+| `boundaries` | No | What the agent won't do or discuss. |
+| `knowledge` | No | Domain expertise or topics the agent knows about. |
+| `others` | No | Any additional context for the agent's personality. |
+| `system_prompt_override` | No | Replaces the auto-generated system prompt entirely. |
+| `system_prompt_append` | No | Appended to the auto-generated system prompt. |
 | `tools.allow_web_search` | No | Enable the web search tool. Default: `false`. |
 
 ## server
@@ -51,6 +57,7 @@ LLM provider configuration.
 | Provider | Value | Models (examples) |
 |---|---|---|
 | OpenAI | `openai` | `gpt-4o`, `gpt-4o-mini`, `o1` |
+| Anthropic | `anthropic` | `claude-sonnet-4-6`, `claude-haiku-4-5-20251001` |
 | xAI | `xai` | `grok-2`, `grok-3` |
 | Groq | `groq` | `llama-3.3-70b-versatile`, `mixtral-8x7b-32768` |
 | Google AI Studio | `google-ai-studio` | `gemini-2.0-flash`, `gemini-2.5-pro` |
