@@ -44,6 +44,21 @@ test('history exceeding max length throws', () => {
   );
 });
 
+test('individual history message exceeding max length throws', () => {
+  const payload: TurnRequest = {
+    request_id: 'req-1',
+    conversation_id: 'conv-1',
+    message: 'hello',
+    history: [
+      { role: 'user', content: 'x'.repeat(testConfig.limits.max_message_length + 1) },
+    ],
+  };
+  assert.throws(
+    () => validateTurnLimits(testConfig, payload),
+    { message: 'history_message_too_long' },
+  );
+});
+
 test('message exactly at limit passes', () => {
   const payload: TurnRequest = {
     request_id: 'req-1',
