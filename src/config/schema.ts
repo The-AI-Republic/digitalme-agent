@@ -63,6 +63,16 @@ export const agentConfigSchema = z.object({
   security: z.object({
     hmac_tolerance_seconds: z.number().int().positive().default(300),
   }),
+  forked_agents: z.object({
+    enabled: z.boolean().default(true),
+    max_concurrent: z.number().int().positive().default(2),
+  }).default({}),
+  hooks: z.object({
+    post_turn: z.object({
+      enabled: z.boolean().default(true),
+      timeout_ms: z.number().int().positive().default(30000),
+    }).default({}),
+  }).default({}),
 });
 
 export type AgentConfig = z.infer<typeof agentConfigSchema>;

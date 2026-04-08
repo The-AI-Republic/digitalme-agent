@@ -39,4 +39,14 @@ export const testConfig: AgentConfig = {
   security: {
     hmac_tolerance_seconds: 300,
   },
+  forked_agents: {
+    enabled: true,
+    max_concurrent: 2,
+  },
+  hooks: {
+    post_turn: {
+      enabled: true,
+      timeout_ms: 30000,
+    },
+  },
 };

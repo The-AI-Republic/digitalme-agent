@@ -11,16 +11,19 @@ import type { AgentEvent, TurnSubmission, TurnExecutionResult } from './types.js
 class FakeTurnExecutor {
   readonly runs: Array<{ submission: TurnSubmission; promptHistory: Message[] }> = [];
 
-  async run(submission: TurnSubmission): Promise<TurnExecutionResult> {
+  async *run(submission: TurnSubmission): AsyncGenerator<AgentEvent, TurnExecutionResult> {
     const promptHistory = submission.promptHistory ?? [];
     this.runs.push({ submission, promptHistory });
+    const finalText = `answer:${submission.userMessage}`;
+    yield { type: 'text_delta', content: finalText };
+    yield { type: 'done' };
     return {
-      finalText: `answer:${submission.userMessage}`,
+      finalText,
       completedTurns: 1,
       toolCallCount: 0,
       promptMessages: [
         { role: 'user', content: submission.userMessage },
-        { role: 'assistant', content: `answer:${submission.userMessage}` },
+        { role: 'assistant', content: finalText },
       ],
     };
   }
