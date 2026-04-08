@@ -1,25 +1,68 @@
-import type { AgentEvent, TurnExecutionResult, TurnSubmission } from './types.js';
+import type { AgentEvent, ForkedAgentHandle, TurnExecutionResult, TurnSubmission } from './types.js';
+import { consumeGenerator } from './types.js';
+import type { TurnExecutorLike } from './types.js';
 import { ActiveTurn } from './ActiveTurn.js';
 import { EventQueue } from './EventQueue.js';
 import type { IRolloutRecorder } from './RolloutRecorder.js';
 import { SessionState } from './SessionState.js';
-import { TurnExecutor } from './TurnExecutor.js';
+import { ForkSemaphore } from './fork/ForkSemaphore.js';
+import { PostTurnHookRegistry } from './hooks/PostTurnHooks.js';
 
 interface SessionRuntimeDeps {
-  turnExecutor: Pick<TurnExecutor, 'run'>;
+  turnExecutor: TurnExecutorLike;
   rolloutRecorder: IRolloutRecorder;
+}
+
+export interface SessionRuntimeConfig {
+  forkedAgentsEnabled?: boolean;
+  maxConcurrentForks?: number;
+  hooksEnabled?: boolean;
+  hookTimeoutMs?: number;
 }
 
 export class SessionRuntime {
   private activeTurn?: ActiveTurn;
+  private readonly activeForkedAgents = new Map<string, ForkedAgentHandle>();
+  readonly forkSemaphore: ForkSemaphore;
+  readonly hookRegistry: PostTurnHookRegistry;
+  private readonly forkedAgentsEnabled: boolean;
+  private readonly hooksEnabled: boolean;
 
   constructor(
     readonly state: SessionState,
     private readonly deps: SessionRuntimeDeps,
-  ) {}
+    runtimeConfig?: SessionRuntimeConfig,
+  ) {
+    this.forkedAgentsEnabled = runtimeConfig?.forkedAgentsEnabled ?? true;
+    this.hooksEnabled = runtimeConfig?.hooksEnabled ?? true;
+    this.forkSemaphore = new ForkSemaphore(runtimeConfig?.maxConcurrentForks ?? 2);
+    this.hookRegistry = new PostTurnHookRegistry(runtimeConfig?.hookTimeoutMs ?? 30_000);
+  }
 
   hasActiveTurn() {
     return Boolean(this.activeTurn);
+  }
+
+  hasActiveWork(): boolean {
+    return this.hasActiveTurn() || this.activeForkedAgents.size > 0;
+  }
+
+  registerForkedAgent(handle: ForkedAgentHandle): void {
+    this.activeForkedAgents.set(handle.id, handle);
+    handle.promise.finally(() => {
+      this.activeForkedAgents.delete(handle.id);
+    });
+  }
+
+  abortForkedAgents(): void {
+    for (const handle of this.activeForkedAgents.values()) {
+      handle.abort();
+    }
+    this.activeForkedAgents.clear();
+  }
+
+  getActiveForkedAgentCount(): number {
+    return this.activeForkedAgents.size;
   }
 
   async execute(submission: TurnSubmission, events: EventQueue<AgentEvent>) {
@@ -51,11 +94,30 @@ export class SessionRuntime {
     });
 
     try {
-      const result = await this.deps.turnExecutor.run({
-        ...submission,
-        promptHistory: this.state.getPromptHistory(),
-      }, events, activeTurn);
+      const result = await consumeGenerator(
+        this.deps.turnExecutor.run(
+          { ...submission, promptHistory: this.state.getPromptHistory() },
+          undefined,
+          activeTurn,
+        ),
+        (event) => events.push(event),
+      );
       this.commitResult(submission, result, activeTurn);
+
+      // Fire-and-forget: launch post-turn hooks AFTER committing result
+      if (this.hooksEnabled && this.hookRegistry.size > 0) {
+        this.hookRegistry.runAll({
+          sessionState: this.state,
+          sessionRuntime: this,
+          forkSemaphore: this.forkSemaphore,
+          turnExecutor: this.deps.turnExecutor,
+          conversationId: submission.conversationId,
+          lastResult: result,
+        }).catch(() => {
+          // Swallowed — hook errors never crash the main agent
+        });
+      }
+
       await this.deps.rolloutRecorder.record({
         type: 'task_completed',
         conversationId: submission.conversationId,
@@ -94,6 +156,7 @@ export class SessionRuntime {
     return {
       session: this.state.snapshot(),
       activeTurn: this.activeTurn?.snapshot(),
+      activeForkedAgents: this.activeForkedAgents.size,
     };
   }
 

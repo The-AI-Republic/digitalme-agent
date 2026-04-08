@@ -47,6 +47,7 @@ export class SessionState {
   private nextTurnId = 1;
   private lastAccessedAt = Date.now();
   private readonly createdAt = Date.now();
+  private revision = 0;
 
   constructor(
     readonly conversationId: string,
@@ -70,6 +71,10 @@ export class SessionState {
     return turnId;
   }
 
+  getRevision(): number {
+    return this.revision;
+  }
+
   getPromptHistory(): Message[] {
     return this.promptHistory.map(clonePromptMessage);
   }
@@ -88,11 +93,13 @@ export class SessionState {
     }
     this.canonicalHistory = history.map((item) => ({ ...item }));
     this.promptHistory = canonicalToPromptHistory(history);
+    this.revision++;
     return 'reseeded' as const;
   }
 
   commitTask(userMessage: string, finalText: string, promptMessages: Message[]) {
     this.touch();
+    this.revision++;
     this.canonicalHistory.push(
       { role: 'user', content: userMessage },
       { role: 'assistant', content: finalText },
@@ -100,6 +107,19 @@ export class SessionState {
     for (const message of promptMessages) {
       this.promptHistory.push(clonePromptMessage(message));
     }
+  }
+
+  /**
+   * Destructive mutation — only safe if state hasn't advanced since the fork started.
+   * Returns false if revision has advanced (caller should discard the stale result).
+   */
+  compactHistory(summary: string, startRevision: number): boolean {
+    if (this.revision !== startRevision) {
+      return false;
+    }
+    this.revision++;
+    this.promptHistory = [{ role: 'assistant', content: summary }];
+    return true;
   }
 
   snapshot() {
@@ -110,6 +130,7 @@ export class SessionState {
       canonicalHistoryCount: this.canonicalHistory.length,
       promptHistoryCount: this.promptHistory.length,
       nextTurnId: this.nextTurnId,
+      revision: this.revision,
     };
   }
 }

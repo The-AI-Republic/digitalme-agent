@@ -7,3 +7,4 @@ config.yaml
 data/
 .DS_Store
 CLAUDE.md
+src/prompts/templates.generated.ts

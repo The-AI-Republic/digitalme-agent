@@ -6,9 +6,20 @@ export const historyMessageSchema = z.object({
 });
 
 export const agentConfigSchema = z.object({
-  persona: z.object({
+  soul: z.object({
     name: z.string().min(1),
-    default_system_prompt: z.string().min(1),
+    /** One-line description of who this agent is. */
+    description: z.string().min(1),
+    /** How the agent speaks — warm, blunt, formal, playful, etc. */
+    tone: z.string().optional().nullable(),
+    /** What the agent won't do or discuss. */
+    boundaries: z.string().optional().nullable(),
+    /** Domain expertise or topics the agent knows about. */
+    knowledge: z.string().optional().nullable(),
+    /** Any additional context the creator wants baked into the agent's soul. */
+    others: z.string().optional().nullable(),
+    system_prompt_override: z.string().optional().nullable(),
+    system_prompt_append: z.string().optional().nullable(),
     tools: z.object({
       allow_web_search: z.boolean().default(false),
     }).default({ allow_web_search: false }),
@@ -28,6 +39,7 @@ export const agentConfigSchema = z.object({
   model: z.object({
     provider: z.enum([
       'openai',
+      'anthropic',
       'xai',
       'groq',
       'google-ai-studio',
@@ -37,6 +49,7 @@ export const agentConfigSchema = z.object({
     name: z.string().min(1),
     api_key: z.string().min(1),
     base_url: z.string().optional().nullable(),
+    max_output_tokens: z.number().int().positive().default(8192),
   }),
   limits: z.object({
     max_message_length: z.number().int().positive().default(4000),
@@ -50,6 +63,16 @@ export const agentConfigSchema = z.object({
   security: z.object({
     hmac_tolerance_seconds: z.number().int().positive().default(300),
   }),
+  forked_agents: z.object({
+    enabled: z.boolean().default(true),
+    max_concurrent: z.number().int().positive().default(2),
+  }).default({}),
+  hooks: z.object({
+    post_turn: z.object({
+      enabled: z.boolean().default(true),
+      timeout_ms: z.number().int().positive().default(30000),
+    }).default({}),
+  }).default({}),
 });
 
 export type AgentConfig = z.infer<typeof agentConfigSchema>;

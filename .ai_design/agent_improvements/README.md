@@ -15,6 +15,7 @@ Detailed implementation-track docs live in:
 - `05_transcript_and_artifact_storage/IMPLEMENTATION_PLAN.md`
 - `06_runtime_state_and_observers/IMPLEMENTATION_PLAN.md`
 - `07_internal_events_and_observability/IMPLEMENTATION_PLAN.md`
+- `08_forked_and_subagents/IMPLEMENTATION_PLAN.md`
 
 The two systems serve different purposes:
 

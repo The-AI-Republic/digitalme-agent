@@ -1,9 +1,9 @@
 import type { AgentConfig } from '../config/schema.js';
 
 export const testConfig: AgentConfig = {
-  persona: {
+  soul: {
     name: 'Test Agent',
-    default_system_prompt: 'You are a test agent.',
+    description: 'You are a test agent.',
     tools: {
       allow_web_search: false,
     },
@@ -25,6 +25,7 @@ export const testConfig: AgentConfig = {
     name: 'gpt-4o',
     api_key: 'model-key',
     base_url: null,
+    max_output_tokens: 8192,
   },
   limits: {
     max_message_length: 4000,
@@ -37,5 +38,15 @@ export const testConfig: AgentConfig = {
   },
   security: {
     hmac_tolerance_seconds: 300,
+  },
+  forked_agents: {
+    enabled: true,
+    max_concurrent: 2,
+  },
+  hooks: {
+    post_turn: {
+      enabled: true,
+      timeout_ms: 30000,
+    },
   },
 };
