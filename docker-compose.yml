@@ -8,11 +8,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       DIGITALME_CONFIG: /app/config.yaml
     volumes:
-      - ./config.example.yaml:/app/config.yaml:ro
+      - ./config.yaml:/app/config.yaml:ro
       - rollouts:/app/.digital_me_agent/rollouts
     networks:
       - default
