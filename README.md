@@ -80,11 +80,20 @@ The agent owns all conversation logic. The platform handles user auth, moderatio
 
 ## Docker
 
+Make sure you've already created `config.yaml` (step 2 above), then set up your `.env`:
+
+```bash
+cp .env.example .env
+# Edit .env with your API keys
+```
+
+Then run:
+
 ```bash
 docker compose up --build
 ```
 
-Or build and run directly:
+Or build and run directly (without Compose):
 
 ```bash
 docker build -t digitalme-agent .
