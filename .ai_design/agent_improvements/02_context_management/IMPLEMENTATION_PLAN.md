@@ -55,6 +55,70 @@ Today the relevant runtime pieces are:
 
 Claudy implements a graduated, multi-layer context management strategy. Below is a detailed analysis of each layer and how it maps to DigitalMe.
 
+### Code Organization: Centralized Context Management
+
+Claudy's context management is **not scattered across the agent loop** — it's organized into a dedicated `src/services/compact/` directory with clean interfaces:
+
+```
+src/services/compact/
+├── microCompact.ts          # Lightweight: clears old tool results (no LLM)
+├── apiMicrocompact.ts       # API-native context_management config
+├── autoCompact.ts           # Triggers compaction at token thresholds
+├── compact.ts               # Full summarization compaction (~60KB, complex)
+├── sessionMemoryCompact.ts  # Session memory-based compaction
+├── grouping.ts              # Groups messages for compaction units
+├── prompt.ts                # Prompts for the compaction model
+├── compactWarningState.ts   # UI warning suppression state
+├── compactWarningHook.ts    # Hook for compact warnings
+├── postCompactCleanup.ts    # Cleanup after compaction
+├── timeBasedMCConfig.ts     # Time-based microcompact configuration
+└── reactiveCompact.ts       # Emergency recovery on API overflow (feature-gated)
+```
+
+**Key architectural decision:** Context management is injected into the main query loop via a `QueryDeps` interface (`src/query/deps.ts`):
+
+```typescript
+export type QueryDeps = {
+  callModel: typeof queryModelWithStreaming
+  microcompact: typeof microcompactMessages   // ← context mgmt injection
+  autocompact: typeof autoCompactIfNeeded     // ← context mgmt injection
+  uuid: () => string
+}
+
+export function productionDeps(): QueryDeps {
+  return {
+    callModel: queryModelWithStreaming,
+    microcompact: microcompactMessages,
+    autocompact: autoCompactIfNeeded,
+    uuid: randomUUID,
+  }
+}
+```
+
+This design provides:
+1. **Testability** — tests inject fakes directly instead of module-level spies
+2. **Separation of concerns** — query loop doesn't know compaction internals
+3. **Single responsibility** — each file in `compact/` has one job
+
+**Compaction hierarchy in Claudy:**
+
+| Level | File | When | Cost |
+|-------|------|------|------|
+| 1. Microcompact | `microCompact.ts` | Before every API call | Zero (no LLM) |
+| 2. Session Memory | `sessionMemoryCompact.ts` | At autocompact trigger | Zero at trigger (pre-extracted) |
+| 3. Auto-compact | `autoCompact.ts` | When tokens > threshold | High (LLM summarization) |
+| 4. Reactive compact | `reactiveCompact.ts` | On API overflow error | High (emergency LLM call) |
+
+**DigitalMe adaptation:** Follow the same pattern — create `src/agent/context/` with:
+- `TokenBudget.ts` — pressure assessment
+- `Microcompact.ts` — cheap clearing
+- `SessionMemory.ts` — continuous extraction
+- `PromptProjector.ts` — context projection
+- `ReactiveCompact.ts` — overflow recovery
+- `index.ts` — exports and injection interface
+
+Inject via a `ContextDeps` interface into `TurnExecutor` or `SessionRuntime`, same pattern as Claudy's `QueryDeps`.
+
 ### Pipeline Execution Order
 
 Claudy runs these in a strict sequence each query loop iteration. Order matters — cheap passes run first, expensive ones only when needed:
@@ -123,16 +187,42 @@ Preview (first 2 KB):
 
 Claudy's microcompact runs before every API call. It's a pure message-rewriting pass — no LLM call, no expensive I/O.
 
-**Time-based trigger:** If the gap since the last assistant message exceeds a threshold (default 60 minutes), old tool results are cleared and replaced with `'[Old tool result content cleared]'`. A configurable number of recent tool results are preserved (default 5).
+**Two microcompact strategies in Claudy:**
+
+1. **Cached Microcompact** (primary, for Anthropic internal users):
+   - Uses Claude API's `cache_edits` feature to delete tool results from server-side cache
+   - Does NOT modify local message content — sends `cache_edits` directives to the API
+   - Preserves the cached prompt prefix (saves money on cache misses)
+   - Triggered when tool count exceeds a threshold, keeps N most recent
+
+2. **Time-based Microcompact** (fallback):
+   - Triggers when gap since last assistant message exceeds threshold (default 60 min)
+   - Actually replaces tool result content with `'[Old tool result content cleared]'`
+   - Used when server cache is presumed cold anyway (so no benefit to cache editing)
+
+**Which tools get compacted** (from `microCompact.ts:41-50`):
+```typescript
+const COMPACTABLE_TOOLS = new Set<string>([
+  FILE_READ_TOOL_NAME,
+  ...SHELL_TOOL_NAMES,
+  GREP_TOOL_NAME,
+  GLOB_TOOL_NAME,
+  WEB_SEARCH_TOOL_NAME,
+  WEB_FETCH_TOOL_NAME,
+  FILE_EDIT_TOOL_NAME,
+  FILE_WRITE_TOOL_NAME,
+])
+```
 
 **Key insight:** This is the cheapest way to reclaim context tokens. When a fan returns after a gap, old tool results from earlier turns are dead weight.
 
-**DigitalMe adaptation:** Directly applicable. DigitalMe conversations can span hours/days via the platform.
+**DigitalMe adaptation:** Use the time-based strategy only (we don't have Claude's cache_edits API):
 
 - Clear tool result content for messages older than a configurable gap
 - Preserve the N most recent tool results verbatim
 - Replace cleared content with a marker like `'[Previous tool output cleared]'`
 - Run this pass before prompt composition on every turn
+- Define which tools are "compactable" (e.g., web search results, file reads)
 
 ### Layer 3: Session Memory (continuous extraction)
 
@@ -193,13 +283,40 @@ For DigitalMe, extraction would be triggered after each turn completion (not mid
 
 When context exceeds the autocompact threshold and session memory compaction is unavailable, Claudy generates a full AI summary.
 
-**Threshold calculation:**
-```
-autocompact_threshold = effective_context_window - AUTOCOMPACT_BUFFER_TOKENS (13,000)
-effective_context_window = model_context_window - reserved_for_output
+**Threshold calculation** (from `autoCompact.ts`):
+```typescript
+// Reserve this many tokens for output during compaction
+const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
+
+function getEffectiveContextWindowSize(model: string): number {
+  const reservedTokensForSummary = Math.min(
+    getMaxOutputTokensForModel(model),
+    MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+  )
+  return contextWindow - reservedTokensForSummary
+}
+
+// Buffer constants
+const AUTOCOMPACT_BUFFER_TOKENS = 13_000
+const WARNING_THRESHOLD_BUFFER_TOKENS = 20_000
+const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
+
+function getAutoCompactThreshold(model: string): number {
+  return getEffectiveContextWindowSize(model) - AUTOCOMPACT_BUFFER_TOKENS
+}
 ```
 
-**Circuit breaker:** `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3` — stops retrying after 3 consecutive failures.
+So for a 200K context window model:
+- Effective window: 200K - 20K (output reserve) = 180K
+- Autocompact triggers at: 180K - 13K = 167K tokens
+
+**Circuit breaker** (from `autoCompact.ts:70`):
+```typescript
+const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
+```
+
+This stops retrying after 3 consecutive failures. The comment explains why:
+> BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272) in a single session, wasting ~250K API calls/day globally.
 
 **Summarization prompt:** The LLM is instructed to:
 - Analyze chronologically
