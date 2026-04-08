@@ -9,12 +9,12 @@ import { turnRequestSchema } from '../protocol/schemas.js';
 import { initSse, writeSse } from '../streaming/sse.js';
 
 export function registerTurnRoutes(app: Express, config: AgentConfig, agent: Agent) {
-  app.post('/v1/turn', async (req, res) => {
+  app.post('/v1/task', async (req, res) => {
     const startTime = Date.now();
     const abortController = new AbortController();
     res.on('close', () => {
       if (!res.writableFinished) {
-        console.log('[turn] client disconnected after %dms', Date.now() - startTime);
+        console.log('[task] client disconnected after %dms', Date.now() - startTime);
         abortController.abort();
       }
     });
@@ -55,13 +55,13 @@ export function registerTurnRoutes(app: Express, config: AgentConfig, agent: Age
       for await (const event of events) {
         writeSse(res, event);
       }
-      console.log('[turn] completed after %dms', Date.now() - startTime);
+      console.log('[task] completed after %dms', Date.now() - startTime);
     } catch (error) {
       if (abortController.signal.aborted || res.writableEnded) {
-        console.log('[turn] aborted/closed after %dms', Date.now() - startTime);
+        console.log('[task] aborted/closed after %dms', Date.now() - startTime);
         return;
       }
-      console.error('[turn] stream error after %dms', Date.now() - startTime, error);
+      console.error('[task] stream error after %dms', Date.now() - startTime, error);
     } finally {
       if (!res.writableEnded) {
         res.end();

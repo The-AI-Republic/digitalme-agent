@@ -123,7 +123,7 @@ test('POST /verify echoes the signed challenge', async () => {
   }
 });
 
-test('POST /v1/turn streams tool and terminal events over SSE', async () => {
+test('POST /v1/task streams tool and terminal events over SSE', async () => {
   const eventsToEmit: AgentEvent[] = [
     { type: 'tool_start', name: 'web_search', callId: 'call_1' },
     { type: 'tool_end', name: 'web_search', callId: 'call_1', success: true },
@@ -149,7 +149,7 @@ test('POST /v1/turn streams tool and terminal events over SSE', async () => {
       message: 'Hello',
       history: [{ role: 'user', content: 'Earlier' }],
     });
-    const response = await fetch(`${server.baseUrl}/v1/turn`, {
+    const response = await fetch(`${server.baseUrl}/v1/task`, {
       method: 'POST',
       headers: {
         Accept: 'text/event-stream',
@@ -166,7 +166,7 @@ test('POST /v1/turn streams tool and terminal events over SSE', async () => {
   }
 });
 
-test('POST /v1/turn rejects replayed requests with stale timestamps', async () => {
+test('POST /v1/task rejects replayed requests with stale timestamps', async () => {
   const agent = new Agent(TEST_CONFIG, {
     executor: {
       async execute() {
@@ -189,7 +189,7 @@ test('POST /v1/turn rejects replayed requests with stale timestamps', async () =
       .update(`${staleTimestamp}:${body}`)
       .digest('hex');
 
-    const response = await fetch(`${server.baseUrl}/v1/turn`, {
+    const response = await fetch(`${server.baseUrl}/v1/task`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -207,7 +207,7 @@ test('POST /v1/turn rejects replayed requests with stale timestamps', async () =
   }
 });
 
-test('POST /v1/turn rejects invalid signatures before opening SSE', async () => {
+test('POST /v1/task rejects invalid signatures before opening SSE', async () => {
   const agent = new Agent(TEST_CONFIG, {
     executor: {
       async execute() {
@@ -224,7 +224,7 @@ test('POST /v1/turn rejects invalid signatures before opening SSE', async () => 
       message: 'Hello',
       history: [],
     });
-    const response = await fetch(`${server.baseUrl}/v1/turn`, {
+    const response = await fetch(`${server.baseUrl}/v1/task`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

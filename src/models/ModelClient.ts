@@ -31,7 +31,7 @@ export interface TokenUsage {
 }
 
 export type ModelStepResult =
-  | { type: 'final_text'; text: string; tokenUsage?: TokenUsage }
+  | { type: 'final_text'; text: string; truncated?: boolean; tokenUsage?: TokenUsage }
   | { type: 'tool_calls'; calls: ToolCall[]; tokenUsage?: TokenUsage };
 
 export abstract class ModelClient {

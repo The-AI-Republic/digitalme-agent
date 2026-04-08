@@ -10,10 +10,14 @@ COPY src ./src
 
 RUN npm run build
 
+RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && adduser --disabled-password --no-create-home agent \
+    && mkdir -p /app/.digital_me_agent \
+    && chown -R agent:agent /app
+
 COPY entrypoint.sh ./
-RUN adduser --disabled-password --no-create-home agent \
-    && chown -R agent:agent /app \
-    && chmod +x /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8088
 

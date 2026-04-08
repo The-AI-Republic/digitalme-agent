@@ -11,41 +11,48 @@ export class SubmissionQueue {
 
   constructor(private readonly config: AgentConfig) {}
 
-  submit(submission: TurnSubmission, run: (events: EventQueue<AgentEvent>) => Promise<void>): EventQueue<AgentEvent> {
+  submit(
+    submission: TurnSubmission,
+    run: (events: EventQueue<AgentEvent>) => Promise<void>,
+    onComplete?: (failed: boolean) => void,
+  ): EventQueue<AgentEvent> {
     if (this.draining) {
       throw new AgentRequestError('shutting_down', 503);
     }
 
-    if (this.activeCount >= this.config.limits.max_concurrent && !this.activeConversations.has(submission.conversationId)) {
+    const isNewConversation = !this.activeConversations.has(submission.conversationId);
+    if (this.activeCount >= this.config.limits.max_concurrent && isNewConversation) {
       throw new AgentRequestError('queue_full', 429);
     }
 
     const events = new EventQueue<AgentEvent>();
+
     const execute = async () => {
-      this.activeConversations.add(submission.conversationId);
-      this.activeCount += 1;
+      let failed = false;
       try {
         await run(events);
       } catch (error) {
+        failed = true;
         const message = error instanceof Error ? error.message : String(error);
         events.push({ type: 'error', message });
       } finally {
         events.close();
-        this.activeConversations.delete(submission.conversationId);
-        this.activeCount = Math.max(0, this.activeCount - 1);
+        onComplete?.(failed);
         this.startNext(submission.conversationId);
       }
     };
 
-    if (this.activeConversations.has(submission.conversationId)) {
+    if (isNewConversation) {
+      this.activeConversations.add(submission.conversationId);
+      this.activeCount += 1;
+      void execute();
+    } else {
       const pending = this.pendingByConversation.get(submission.conversationId) ?? [];
       if (pending.length >= this.config.limits.max_pending) {
         throw new AgentRequestError('queue_full', 429);
       }
       pending.push(execute);
       this.pendingByConversation.set(submission.conversationId, pending);
-    } else {
-      void execute();
     }
 
     return events;
@@ -53,16 +60,14 @@ export class SubmissionQueue {
 
   private startNext(conversationId: string) {
     const pending = this.pendingByConversation.get(conversationId);
-    if (!pending || pending.length === 0) {
-      this.pendingByConversation.delete(conversationId);
-      return;
-    }
-    const next = pending.shift();
+    const next = pending?.shift();
     if (!next) {
       this.pendingByConversation.delete(conversationId);
+      this.activeConversations.delete(conversationId);
+      this.activeCount = Math.max(0, this.activeCount - 1);
       return;
     }
-    if (pending.length === 0) {
+    if (pending!.length === 0) {
       this.pendingByConversation.delete(conversationId);
     }
     void next();
