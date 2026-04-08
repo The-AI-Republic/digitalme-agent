@@ -1,5 +1,6 @@
 import type { HistoryMessage } from '../protocol/types.js';
 import type { Message, TokenUsage } from '../models/ModelClient.js';
+import type { IToolRegistry } from '../tools/registry.js';
 
 export interface TurnSubmission {
   requestId: string;
@@ -23,4 +24,48 @@ export interface TurnExecutionResult {
   promptMessages: Message[];
   completedTurns: number;
   toolCallCount: number;
+}
+
+export interface ExecutionOptions {
+  /** Override max turns (default: config.limits.max_turns) */
+  maxTurns?: number;
+  /** Override max output tokens (default: config.model.max_output_tokens) */
+  maxOutputTokens?: number;
+  /** Override model name (default: config.model.name) */
+  model?: string;
+  /** Override tool registry (default: constructor-injected registry) */
+  toolRegistry?: IToolRegistry;
+}
+
+export interface ForkedAgentConfig {
+  forkLabel: string;
+  skipTranscript?: boolean;
+}
+
+export interface ForkedAgentResult {
+  totalUsage: TokenUsage;
+  finalText: string;
+}
+
+export interface ForkedAgentHandle {
+  id: string;
+  forkLabel: string;
+  abort: () => void;
+  promise: Promise<ForkedAgentResult>;
+}
+
+/**
+ * Consumes an async generator, forwarding each yielded value to `onEvent`,
+ * and returns the generator's return value.
+ */
+export async function consumeGenerator<TYield, TReturn>(
+  gen: AsyncGenerator<TYield, TReturn>,
+  onEvent: (event: TYield) => void,
+): Promise<TReturn> {
+  let result = await gen.next();
+  while (!result.done) {
+    onEvent(result.value);
+    result = await gen.next();
+  }
+  return result.value;
 }

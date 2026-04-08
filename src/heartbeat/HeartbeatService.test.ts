@@ -44,14 +44,16 @@ const config: AgentConfig = {
   security: {
     hmac_tolerance_seconds: 300,
   },
+  forked_agents: { enabled: true, max_concurrent: 2 },
+  hooks: { post_turn: { enabled: true, timeout_ms: 30000 } },
 };
 
 test('HeartbeatService does not start overlapping heartbeat requests', async () => {
   const agent = new Agent(config, {
-    executor: {
-      async execute() {
-        throw new Error('not_used');
-      },
+    sessionManager: {
+      async execute() { throw new Error('not_used'); },
+      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+      beginDrain() {},
     },
   });
   const service = new HeartbeatService(config, agent);

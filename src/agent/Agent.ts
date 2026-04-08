@@ -2,7 +2,6 @@ import type { AgentConfig } from '../config/schema.js';
 import { AgentRequestError } from './errors.js';
 import { SessionManager } from './SessionManager.js';
 import { SubmissionQueue } from './SubmissionQueue.js';
-import { TurnExecutor } from './TurnExecutor.js';
 import { ShutdownController } from './shutdown.js';
 import type { AgentEvent } from './types.js';
 import type { TurnSubmission } from './types.js';
@@ -10,7 +9,6 @@ import type { EventQueue } from './EventQueue.js';
 
 interface AgentDeps {
   queue?: SubmissionQueue;
-  executor?: Pick<TurnExecutor, 'execute'>;
   sessionManager?: Pick<SessionManager, 'execute' | 'getStats' | 'beginDrain'>;
 }
 
@@ -28,10 +26,7 @@ export class Agent {
 
   constructor(private readonly config: AgentConfig, deps: AgentDeps = {}) {
     this.queue = deps.queue ?? new SubmissionQueue(config);
-    this.executor =
-      deps.sessionManager ??
-      deps.executor ??
-      new SessionManager(config);
+    this.executor = deps.sessionManager ?? new SessionManager(config);
   }
 
   submit(submission: TurnSubmission) {

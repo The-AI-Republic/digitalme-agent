@@ -50,6 +50,8 @@ const TEST_CONFIG: AgentConfig = {
   security: {
     hmac_tolerance_seconds: 300,
   },
+  forked_agents: { enabled: true, max_concurrent: 2 },
+  hooks: { post_turn: { enabled: true, timeout_ms: 30000 } },
 };
 
 function buildHeaders(body: string) {
@@ -98,10 +100,10 @@ async function readSse(response: Response) {
 
 test('POST /verify echoes the signed challenge', async () => {
   const agent = new Agent(TEST_CONFIG, {
-    executor: {
-      async execute() {
-        throw new Error('not_used');
-      },
+    sessionManager: {
+      async execute() { throw new Error('not_used'); },
+      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+      beginDrain() {},
     },
   });
   const server = await startTestServer(agent);
@@ -133,12 +135,14 @@ test('POST /v1/task streams tool and terminal events over SSE', async () => {
   ];
 
   const agent = new Agent(TEST_CONFIG, {
-    executor: {
+    sessionManager: {
       async execute(_submission: TurnSubmission, events: EventQueue<AgentEvent>) {
         for (const event of eventsToEmit) {
           events.push(event);
         }
       },
+      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+      beginDrain() {},
     },
   });
   const server = await startTestServer(agent);
@@ -169,10 +173,10 @@ test('POST /v1/task streams tool and terminal events over SSE', async () => {
 
 test('POST /v1/task rejects replayed requests with stale timestamps', async () => {
   const agent = new Agent(TEST_CONFIG, {
-    executor: {
-      async execute() {
-        throw new Error('not_used');
-      },
+    sessionManager: {
+      async execute() { throw new Error('not_used'); },
+      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+      beginDrain() {},
     },
   });
   const server = await startTestServer(agent);
@@ -210,10 +214,10 @@ test('POST /v1/task rejects replayed requests with stale timestamps', async () =
 
 test('POST /v1/task rejects invalid signatures before opening SSE', async () => {
   const agent = new Agent(TEST_CONFIG, {
-    executor: {
-      async execute() {
-        throw new Error('not_used');
-      },
+    sessionManager: {
+      async execute() { throw new Error('not_used'); },
+      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+      beginDrain() {},
     },
   });
   const server = await startTestServer(agent);
