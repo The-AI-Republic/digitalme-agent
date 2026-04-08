@@ -35,15 +35,18 @@ export class PostTurnHookRegistry {
 
   async runAll(context: PostTurnHookContext): Promise<void> {
     for (const hook of this.hooks) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
           hook(context),
-          new Promise<void>((_, reject) =>
-            setTimeout(() => reject(new Error('hook_timeout')), this.timeoutMs),
-          ),
+          new Promise<void>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('hook_timeout')), this.timeoutMs);
+          }),
         ]);
       } catch {
         // Swallow — never crash the main agent
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
       }
     }
   }

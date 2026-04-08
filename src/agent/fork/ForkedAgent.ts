@@ -64,13 +64,14 @@ export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentH
       };
       await onResult?.(forkedResult);
       return forkedResult;
-    } catch (err) {
-      // Don't call onResult on error/abort
-      throw err;
     } finally {
       forkSemaphore.release();
     }
   })();
+
+  // Suppress unhandled rejection — fork errors are fire-and-forget.
+  // Callers that care about errors can await handle.promise directly.
+  promise.catch(() => {});
 
   const handle: ForkedAgentHandle = {
     id: `fork-${config.forkLabel}-${randomUUID()}`,

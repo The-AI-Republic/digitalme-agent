@@ -109,7 +109,7 @@ export class SessionRuntime {
       this.commitResult(submission, result, activeTurn);
 
       // Fire-and-forget: launch post-turn hooks AFTER committing result
-      if (this.hooksEnabled && this.forkedAgentsEnabled && this.hookRegistry.size > 0) {
+      if (this.hooksEnabled && this.hookRegistry.size > 0) {
         this.hookRegistry.runAll({
           sessionState: this.state,
           sessionRuntime: this,

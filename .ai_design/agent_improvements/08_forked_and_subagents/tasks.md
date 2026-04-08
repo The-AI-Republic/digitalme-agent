@@ -36,7 +36,6 @@ and are documented here only as examples of how the infrastructure is used.
 - [ ] Add `getRevision(): number`.
 - [ ] Increment `revision` in `commitTask()`.
 - [ ] Increment `revision` in `reconcileWithPlatformHistory()` on reseed.
-- [ ] Add `addMemories(memories)` — additive, no revision check.
 - [ ] Add `compactHistory(summary, startRevision): boolean` — CAS-guarded, returns false if stale.
 
 ### Validation
@@ -54,7 +53,6 @@ and are documented here only as examples of how the infrastructure is used.
 - [ ] Abort signal terminates the generator.
 - [ ] `SessionState.revision` increments on `commitTask` and reseed.
 - [ ] `compactHistory()` succeeds when revision matches, returns false when stale.
-- [ ] `addMemories()` succeeds regardless of revision.
 
 ---
 
