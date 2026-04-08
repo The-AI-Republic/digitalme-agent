@@ -6,161 +6,477 @@ Make request execution continuation and retry behavior explicit, bounded, and in
 
 This track should make `digitalme-agent` better at:
 
-- recovering from model or context failures
-- continuing long responses cleanly
+- recovering from model API errors and context overflow
+- continuing long responses cleanly when output is truncated
 - avoiding retry death spirals
 - recording why the runtime took another loop iteration
+- gracefully degrading instead of hard-failing
 
 ## Current State
 
-Today the main request loop lives in:
+The main request loop lives in `src/agent/TurnExecutor.ts` (lines 47-115). The loop structure is:
 
-- `src/agent/TurnExecutor.ts`
+```
+while (turnCount < max_turns) {
+  result = client.generate(...)
+  if result is final_text → return
+  if result is tool_calls → execute tools → continue
+}
+throw max_turns_exceeded
+```
 
-The current loop is structurally correct, but recovery behavior is still relatively simple:
+**What is missing today:**
 
-- final text -> done
-- tool calls -> execute tools -> continue
-- max turns -> fail
-
-That is not enough once prompt compaction, larger outputs, or provider fallback become important.
+- No retry on model API errors — a single 429/529/5xx kills the entire request
+- No context overflow handling — full history is always sent, no compaction
+- No token-aware limits — only message count limits exist
+- No max-output recovery — truncated output is flagged but not continued
+- No continuation tracking — no record of why an iteration happened
+- No fallback model support
+- No graceful degradation — `max_turns` is a hard error, not a graceful conclusion
 
 ## Claudy Patterns Worth Borrowing
 
-Relevant source references:
+### Source References
 
-- `/home/rich/dev/study/claudy/src/query.ts`
+| File | Purpose |
+|------|---------|
+| `claudy/src/query.ts` | Main query loop, recovery orchestration (lines 219-1730) |
+| `claudy/src/query/transitions.ts` | Terminal and Continue reason types |
+| `claudy/src/query/tokenBudget.ts` | Token budget continuation logic |
+| `claudy/src/services/compact/autoCompact.ts` | Proactive compaction, circuit breaker |
+| `claudy/src/services/api/withRetry.ts` | API retry loop, fallback trigger |
+| `claudy/src/services/api/errors.ts` | Error categorization |
 
-The key pattern is not “retry on failure.” The key pattern is explicit continuation reasons with guards.
+### Key Architectural Insight: Distributed Recovery, Not Centralized
 
-Useful recovery classes:
+Claudy does **not** use a centralized recovery manager. Recovery logic is distributed inline within the loop, with each recovery path following the same pattern:
 
-- normal tool-result continuation
-- fallback model retry
-- overflow recovery after prompt-too-long
-- max-output continuation
-- bounded retry counts
-- terminal reasons
+1. Check guards/counters (e.g., `hasAttemptedReactiveCompact`, `maxOutputTokensRecoveryCount < 3`)
+2. Update state with appropriate counters incremented
+3. Set `state.transition = { reason: 'specific_reason' }` — explicit continuation reason
+4. `continue` to next iteration
+
+This works because each recovery path is small (10-20 lines) and the guard checks prevent infinite loops. A centralized manager would add indirection without reducing complexity.
+
+**Recommendation for digitalme:** Follow the distributed pattern. The loop in `TurnExecutor.ts` is already simple enough that inline recovery paths will be readable. A centralized `RecoveryManager` is unnecessary unless the loop grows beyond 5-6 recovery paths.
+
+### Explicit Transition Tracking
+
+Claudy tracks a `transition` field on loop state. Every `continue` statement assigns a reason:
+
+**Terminal reasons** (loop returns):
+- `completed` — normal completion (model gave final text, no tool calls)
+- `max_turns` — turn limit reached
+- `prompt_too_long` — 413 error, recovery exhausted
+- `model_error` — unrecoverable API failure
+- `aborted_streaming` — user/caller cancelled during streaming
+- `aborted_tools` — user/caller cancelled during tool execution
+
+**Continuation reasons** (loop iterates again):
+- `tool_use` — model returned tool calls (normal flow)
+- `reactive_compact_retry` — compacted context after 413, retrying
+- `max_output_tokens_recovery` — model truncated mid-response, resuming
+- `max_output_tokens_escalate` — bumping output limit from low default to full
+- `collapse_drain_retry` — drained staged context collapses after overflow
+
+### Bounded Recovery With Guards
+
+Every recovery path in claudy has an explicit bound:
+
+| Recovery | Guard | Limit |
+|----------|-------|-------|
+| Reactive compact | `hasAttemptedReactiveCompact` boolean | 1 attempt |
+| Max-output recovery | `maxOutputTokensRecoveryCount` counter | 3 attempts |
+| Collapse drain | `transition.reason !== 'collapse_drain_retry'` | 1 attempt |
+| Auto-compact failures | `consecutiveFailures` counter | 3 then circuit-break |
+| API 529 fallback | `consecutive529Errors` counter | 3 then trigger fallback |
+
+Pattern: boolean flags for one-shot recovery, integer counters for bounded multi-attempt recovery. Circuit breakers (stop trying entirely) for paths that keep failing.
+
+### Error Withholding During Streaming
+
+Claudy captures recoverable errors (413, max_output_tokens) during streaming but does **not** yield them to the consumer immediately. Recovery logic runs post-streaming. Only if recovery fails does the error get surfaced.
+
+This prevents the caller from seeing transient errors that the loop can handle internally.
+
+### Proactive vs Reactive Compaction
+
+- **Proactive:** fires before each API call when token count approaches threshold (context window minus 13k buffer). Uses circuit breaker after 3 consecutive failures.
+- **Reactive:** fires after a 413 error. One-shot attempt to summarize and strip media to get under limit. Guarded by `hasAttempted` flag.
 
 ## Target Design for DigitalMe Agent
 
-### New Modules
+### New Type Definitions
 
-- `src/agent/RecoveryManager.ts`
-  - owns retry and continuation decisions
-- `src/agent/types/recovery.ts`
-  - continuation reasons, retry state, terminal reasons
+**File:** `src/agent/types/recovery.ts`
 
-### Existing Files To Change
+```typescript
+// --- Continuation reasons (why the loop iterated again) ---
 
-- `src/agent/TurnExecutor.ts`
-- `src/agent/types.ts`
+export type ContinuationReason =
+  | { reason: 'tool_use'; toolNames: string[] }
+  | { reason: 'reactive_compact_retry' }
+  | { reason: 'max_output_recovery'; attempt: number }
+  | { reason: 'api_retry'; attempt: number; errorType: ApiErrorCategory }
+  | { reason: 'fallback_model'; fromModel: string; toModel: string };
 
-## Suggested Runtime Model
+// --- Terminal reasons (why the loop stopped) ---
 
-Each request execution should track:
+export type TerminalReason =
+  | { reason: 'completed' }
+  | { reason: 'max_turns' }
+  | { reason: 'prompt_too_long' }
+  | { reason: 'model_error'; error: string }
+  | { reason: 'aborted'; phase: 'streaming' | 'tools' }
+  | { reason: 'max_output_exhausted' };
 
-- `iterationIndex`
-- `continuationReason`
-- `terminalReason`
-- `fallbackAttempted`
-- `hasAttemptedReactiveCompact`
-- `maxOutputContinuationCount`
+// --- API error categories (for retry decisions) ---
 
-That state should be visible to:
+export type ApiErrorCategory =
+  | 'rate_limit'       // 429
+  | 'overloaded'       // 529
+  | 'server_error'     // 5xx
+  | 'context_overflow'  // 413
+  | 'auth_error'       // 401/403
+  | 'unknown';
 
-- transcript recording
-- internal events
-- health/observability
+// --- Recovery state tracked across loop iterations ---
 
-## Recommended Recovery Paths
+export interface RecoveryState {
+  hasAttemptedReactiveCompact: boolean;
+  maxOutputRecoveryCount: number;
+  apiRetryCount: number;
+  fallbackAttempted: boolean;
+  lastTransition: ContinuationReason | undefined;
+}
 
-### 1. Normal Tool-Result Continuation
+export const RECOVERY_LIMITS = {
+  MAX_OUTPUT_RECOVERY_ATTEMPTS: 3,
+  MAX_API_RETRIES: 3,
+  FALLBACK_AFTER_CONSECUTIVE_529: 3,
+} as const;
 
-This already exists conceptually.
+export function initialRecoveryState(): RecoveryState {
+  return {
+    hasAttemptedReactiveCompact: false,
+    maxOutputRecoveryCount: 0,
+    apiRetryCount: 0,
+    fallbackAttempted: false,
+    lastTransition: undefined,
+  };
+}
+```
 
-It should become explicit:
+### Changes to TurnExecutor Loop
 
-- record why the loop continued
-- record which tools caused the continuation
+**File:** `src/agent/TurnExecutor.ts`
 
-### 2. Overflow Recovery
+The loop gains recovery state and inline recovery paths. Pseudocode for the new structure:
 
-When prompt projection still produces too much context:
+```typescript
+async run(context, events, activeTurn?) {
+  const recovery = initialRecoveryState();
 
-- run `ReactiveCompact`
-- retry once or within a bounded count
-- record the continuation reason
+  while (context.turnCount < this.config.limits.max_turns) {
+    this.throwIfAborted(context.signal);
+    context.turnCount += 1;
 
-### 3. Fallback Model Retry
+    // --- Call model (with error capture, not immediate throw) ---
+    const result = await this.callModelWithRecovery(context, recovery);
 
-If configured:
+    // --- Handle context overflow (413) ---
+    if (result.type === 'context_overflow') {
+      if (!recovery.hasAttemptedReactiveCompact) {
+        const compacted = await this.tryReactiveCompact(context);
+        if (compacted) {
+          recovery.hasAttemptedReactiveCompact = true;
+          recovery.lastTransition = { reason: 'reactive_compact_retry' };
+          events.push({ type: 'recovery', reason: 'reactive_compact_retry' });
+          continue;
+        }
+      }
+      // Recovery exhausted
+      events.push({ type: 'done', terminalReason: { reason: 'prompt_too_long' } });
+      return result;
+    }
 
-- retry using a designated fallback model
-- do not loop indefinitely across providers
+    // --- Handle max output truncation ---
+    if (result.type === 'final_text' && result.truncated) {
+      if (recovery.maxOutputRecoveryCount < RECOVERY_LIMITS.MAX_OUTPUT_RECOVERY_ATTEMPTS) {
+        recovery.maxOutputRecoveryCount += 1;
+        context.messages.push({
+          role: 'user',
+          content: 'Output limit reached. Resume exactly where you stopped.',
+        });
+        recovery.lastTransition = {
+          reason: 'max_output_recovery',
+          attempt: recovery.maxOutputRecoveryCount,
+        };
+        events.push({ type: 'recovery', reason: 'max_output_recovery' });
+        continue;
+      }
+      // Exhausted — return what we have
+      events.push({ type: 'done', terminalReason: { reason: 'max_output_exhausted' } });
+      return result;
+    }
 
-### 4. Max-Output Continuation
+    // --- Normal final text ---
+    if (result.type === 'final_text') {
+      events.push({ type: 'done', terminalReason: { reason: 'completed' } });
+      return result;
+    }
 
-If the model runs out of output budget but clearly has more work:
+    // --- Tool calls (normal continuation) ---
+    for (const call of result.calls) {
+      const toolResult = await this.executeTool(call, context, events);
+      context.messages.push(toolResult);
+    }
+    recovery.lastTransition = {
+      reason: 'tool_use',
+      toolNames: result.calls.map(c => c.name),
+    };
+    // Reset per-iteration counters that should not persist across tool continuations
+    recovery.apiRetryCount = 0;
+  }
 
-- append a continuation or “resume mid-thought” instruction
-- continue the request loop
-- bound the continuation count
+  // Max turns reached
+  events.push({ type: 'done', terminalReason: { reason: 'max_turns' } });
+  throw new Error('max_turns_exceeded');
+}
+```
 
-## Suggested Implementation Sequence
+### API Retry With Fallback
 
-### Step 1: Recovery State Types
+**New method on TurnExecutor** or extracted to a helper:
 
-Files:
+```typescript
+private async callModelWithRecovery(
+  context: TurnContext,
+  recovery: RecoveryState,
+): Promise<ModelStepResult | { type: 'context_overflow' }> {
+  let consecutive529 = 0;
 
-- new `src/agent/types/recovery.ts`
-- update `src/agent/types.ts`
+  for (let attempt = 0; attempt <= RECOVERY_LIMITS.MAX_API_RETRIES; attempt++) {
+    try {
+      return await this.client.generate({ messages: context.messages });
+    } catch (error) {
+      const category = categorizeApiError(error);
 
-Work:
+      if (category === 'context_overflow') {
+        return { type: 'context_overflow' };
+      }
 
-- define continuation reasons
-- define terminal reasons
-- define bounded retry counters
+      if (category === 'overloaded') {
+        consecutive529++;
+        if (consecutive529 >= RECOVERY_LIMITS.FALLBACK_AFTER_CONSECUTIVE_529
+            && this.config.fallbackModel
+            && !recovery.fallbackAttempted) {
+          recovery.fallbackAttempted = true;
+          this.client.switchModel(this.config.fallbackModel);
+          recovery.lastTransition = {
+            reason: 'fallback_model',
+            fromModel: this.config.model,
+            toModel: this.config.fallbackModel,
+          };
+          continue;
+        }
+      }
 
-### Step 2: RecoveryManager
+      if ((category === 'rate_limit' || category === 'overloaded' || category === 'server_error')
+          && attempt < RECOVERY_LIMITS.MAX_API_RETRIES) {
+        await exponentialBackoff(attempt);
+        recovery.apiRetryCount++;
+        recovery.lastTransition = {
+          reason: 'api_retry',
+          attempt: attempt + 1,
+          errorType: category,
+        };
+        continue;
+      }
 
-Files:
+      throw error; // Non-retryable or retries exhausted
+    }
+  }
 
-- new `src/agent/RecoveryManager.ts`
-- update `src/agent/TurnExecutor.ts`
+  throw new Error('api_retries_exhausted');
+}
+```
 
-Work:
+### New Events for Observability
 
-- route continuation decisions through one helper
-- avoid scattered retry logic
+Extend `AgentEvent` in `src/agent/types.ts`:
 
-### Step 3: Wire the First Recovery Paths
+```typescript
+export type AgentEvent =
+  | { type: 'text_delta'; content: string }
+  | { type: 'tool_start'; name: string; callId: string }
+  | { type: 'tool_end'; name: string; callId: string; success: boolean }
+  | { type: 'done'; truncated?: boolean; tokenUsage?: TokenUsage; terminalReason?: TerminalReason }
+  | { type: 'error'; message: string }
+  // New:
+  | { type: 'recovery'; reason: string; detail?: Record<string, unknown> };
+```
 
-Implement in order:
+The `recovery` event makes every extra loop iteration visible to callers, rollout recording, and any future observability tooling.
 
-1. normal tool-result continuation metadata
-2. overflow recovery
-3. fallback model retry
-4. max-output continuation
+### Reactive Compaction (Minimal First Pass)
+
+Full compaction (track 03) is a separate improvement track. For this track, implement a minimal reactive compaction that:
+
+1. Counts tokens in `context.messages` (use tiktoken or model's tokenizer)
+2. When triggered by 413, truncates old messages from the middle of history (keep system prompt + last N exchanges)
+3. If a summarization model call is available, replace truncated messages with a summary
+
+This is intentionally simple. A richer compaction system belongs in its own track. The goal here is that the recovery path exists and is wired, even if the compaction strategy is basic.
+
+```typescript
+private async tryReactiveCompact(context: TurnContext): Promise<boolean> {
+  const messageCount = context.messages.length;
+  if (messageCount <= 4) return false; // Nothing to compact
+
+  // Keep system prompt (first) + last 2 exchanges (last 4 messages)
+  // Summarize or drop everything in between
+  const keep = [context.messages[0], ...context.messages.slice(-4)];
+  context.messages.length = 0;
+  context.messages.push(...keep);
+  return true;
+}
+```
+
+## Implementation Sequence
+
+### Step 1: Recovery Types
+
+**Files:**
+- New: `src/agent/types/recovery.ts`
+- Update: `src/agent/types.ts` (add `recovery` event, `TerminalReason` to `done`)
+
+**Work:**
+- Define `ContinuationReason`, `TerminalReason`, `ApiErrorCategory`
+- Define `RecoveryState` interface and `initialRecoveryState()`
+- Define `RECOVERY_LIMITS` constants
+- Add `recovery` event type and `terminalReason` to existing `AgentEvent`
+
+**Why first:** Types are the foundation. Getting them right means every subsequent step has a clear contract.
+
+### Step 2: API Error Categorization and Retry
+
+**Files:**
+- New: `src/agent/apiRetry.ts`
+- Update: `src/agent/TurnExecutor.ts`
+
+**Work:**
+- Implement `categorizeApiError(error): ApiErrorCategory`
+- Implement `exponentialBackoff(attempt: number): Promise<void>`
+- Extract model call into `callModelWithRecovery()` with bounded retry loop
+- Wire fallback model support (config field + runtime switch)
+
+**Why second:** API retry is the most impactful recovery path. Today a single 429 kills the entire request. This fixes that without touching the loop structure.
+
+### Step 3: Continuation Tracking in the Loop
+
+**Files:**
+- Update: `src/agent/TurnExecutor.ts`
+
+**Work:**
+- Add `RecoveryState` to the loop
+- Record `lastTransition` on every `continue`
+- Emit `recovery` events when non-tool continuations happen
+- Add `terminalReason` to the `done` event
+- Record tool names in `tool_use` continuation reason
+
+**Why third:** This is the observability backbone. After this step, every loop iteration has a recorded reason.
+
+### Step 4: Max-Output Continuation
+
+**Files:**
+- Update: `src/agent/TurnExecutor.ts`
+
+**Work:**
+- Detect `truncated: true` on `final_text` results
+- Inject continuation message and re-enter loop
+- Bound by `maxOutputRecoveryCount < 3`
+- Emit `recovery` event with attempt number
+- Surface `max_output_exhausted` terminal reason when bound is hit
+
+**Why fourth:** Max-output truncation is already detected (the `truncated` flag exists). This step uses it.
+
+### Step 5: Reactive Compaction (Minimal)
+
+**Files:**
+- New: `src/agent/reactiveCompact.ts`
+- Update: `src/agent/TurnExecutor.ts`
+
+**Work:**
+- Detect 413 / context_overflow from model client
+- Implement minimal compaction (drop middle history, keep bookends)
+- Guard with `hasAttemptedReactiveCompact` (one-shot)
+- Emit `recovery` event
+- Surface `prompt_too_long` terminal reason when compaction fails or was already attempted
+
+**Why last:** Context overflow is less common than API errors or output truncation for digitalme's typical workloads (shorter conversations than a coding agent). The recovery path matters more than the compaction quality — quality improves in track 03.
 
 ## Testing Strategy
 
-Add tests for:
+### Unit Tests
 
-- overflow recovery is bounded
-- fallback is attempted at most once where configured
-- continuation messages increase iteration count but do not lose prior state
-- terminal reasons are stable and visible in output metadata
+**Recovery state transitions:**
+- `initialRecoveryState()` returns all zeroes/false
+- After max-output recovery, `maxOutputRecoveryCount` increments
+- After reactive compact, `hasAttemptedReactiveCompact` is true
+- After fallback, `fallbackAttempted` is true
+
+**API error categorization:**
+- 429 → `rate_limit`
+- 529 → `overloaded`
+- 413 → `context_overflow`
+- 5xx → `server_error`
+- 401/403 → `auth_error`
+
+**Bounded retries:**
+- API retry stops at `MAX_API_RETRIES` (3), then throws
+- Max-output recovery stops at 3, then returns with `max_output_exhausted`
+- Reactive compact runs at most once per request
+- Fallback triggers after 3 consecutive 529s, at most once
+
+### Integration Tests
+
+**End-to-end recovery scenarios:**
+- Model returns 429 twice then succeeds → request completes, 2 `recovery` events emitted
+- Model returns 529 three times with fallback configured → switches model, request completes
+- Model returns truncated output → continuation message injected, model completes on retry
+- Model returns 413 → compaction runs, retries once, completes
+- Model returns 413 after compaction already attempted → `prompt_too_long` terminal reason
+
+**State consistency:**
+- Recovery counters reset appropriately between tool-use continuations vs persist across recovery continuations
+- `lastTransition` always reflects the actual reason for the current iteration
+- Events stream includes `recovery` events in correct order
+
+### Observability Verification
+
+- `done` event always includes `terminalReason`
+- Every non-first loop iteration has a recorded `lastTransition`
+- Recovery events are visible in rollout recordings
 
 ## Risks
 
-- too many recovery branches making the loop unreadable
-- retries mutating prompt state in inconsistent ways
-- adding fallback before prompt/projection state is stable
+| Risk | Mitigation |
+|------|------------|
+| Recovery branches making the loop unreadable | Keep each path to 10-20 lines inline. Extract to helper only if it exceeds this. Claudy manages 6+ paths inline in ~700 lines without issue. |
+| Retries mutating prompt state inconsistently | `RecoveryState` is the single source of truth for what has been attempted. Guards prevent double-attempts. |
+| Retry backoff being too slow for user-facing agent | Keep backoff short (100ms, 200ms, 400ms). Digitalme is public-facing — latency matters more than persistence. |
+| Fallback model producing different quality output | Document in agent config. Fallback is opt-in. Creator chooses acceptable fallback. |
+| Compaction losing important context | Minimal compaction (step 5) is intentionally conservative — drops middle history, keeps recent. Better compaction belongs in track 03. |
+| Adding retry before the model client properly surfaces error types | Step 2 starts with `categorizeApiError()` — a single place to handle error shape differences across providers. |
 
 ## Success Criteria
 
-- continuation and retry behavior is explicit
-- every extra loop iteration has a recorded reason
-- retry loops are bounded and testable
-
+- Every loop iteration has a recorded continuation or terminal reason
+- API errors (429, 529, 5xx) are retried up to 3 times with backoff before failing
+- Truncated output is automatically continued up to 3 times
+- Context overflow triggers one compaction attempt before failing
+- All recovery paths are bounded and cannot loop indefinitely
+- Recovery events are visible in the event stream and rollout recordings
+- No regression in normal (no-error) request latency
