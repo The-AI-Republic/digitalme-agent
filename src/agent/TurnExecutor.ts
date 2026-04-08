@@ -1,59 +1,91 @@
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
 import type { ToolCall } from '../models/ModelClient.js';
-import { PromptComposer, type IPromptComposer } from '../prompts/PromptComposer.js';
+import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
+import { TemplateLoader } from '../prompts/TemplateLoader.js';
+import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
 import { ToolRegistry, type IToolRegistry } from '../tools/registry.js';
 import type { Tool, ToolExecutionResult } from '../tools/types.js';
-import { EventQueue } from './EventQueue.js';
 import { TurnContext } from './TurnContext.js';
-import type { AgentEvent, TurnExecutionResult, TurnSubmission } from './types.js';
+import type { AgentEvent, ExecutionOptions, TurnExecutionResult, TurnSubmission } from './types.js';
 import type { ActiveTurn } from './ActiveTurn.js';
 
 interface TurnExecutorDeps {
-  promptComposer?: IPromptComposer;
+  systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
   toolRegistry?: IToolRegistry;
 }
 
 export class TurnExecutor {
-  private readonly promptComposer: IPromptComposer;
+  private readonly systemPromptBuilder: ISystemPromptBuilder;
   private readonly modelClientFactory: IModelClientFactory;
   private readonly toolRegistry: IToolRegistry;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
     this.toolRegistry = deps.toolRegistry ?? new ToolRegistry(config);
-    this.promptComposer = deps.promptComposer ?? new PromptComposer(config, this.toolRegistry.listNames());
+    this.systemPromptBuilder = deps.systemPromptBuilder ??
+      new SystemPromptBuilder(new TemplateLoader());
     this.modelClientFactory = deps.modelClientFactory ?? new ModelClientFactory(config);
   }
 
-  async execute(submission: TurnSubmission, events: EventQueue<AgentEvent>): Promise<void> {
-    await this.run(submission, events);
-  }
-
-  async run(
+  async *run(
     submission: TurnSubmission,
-    events: EventQueue<AgentEvent>,
+    options?: ExecutionOptions,
     activeTurn?: ActiveTurn,
-  ): Promise<TurnExecutionResult> {
+  ): AsyncGenerator<AgentEvent, TurnExecutionResult> {
+    const maxTurns = options?.maxTurns ?? this.config.limits.max_turns;
+    const maxOutputTokens = options?.maxOutputTokens ?? this.config.model.max_output_tokens;
+    const modelName = options?.model ?? this.config.model.name;
+    const toolRegistry = options?.toolRegistry ?? this.toolRegistry;
+
     const history = submission.promptHistory ?? submission.history.map((item) => ({
       role: item.role,
       content: item.content,
     }));
-    const initialMessages = this.promptComposer.compose(history, submission.userMessage);
+
+    const promptContext: PromptContext = {
+      soulName: this.config.soul.name,
+      soulDescription: this.config.soul.description,
+      soulTone: this.config.soul.tone ?? null,
+      soulBoundaries: this.config.soul.boundaries ?? null,
+      soulKnowledge: this.config.soul.knowledge ?? null,
+      soulOthers: this.config.soul.others ?? null,
+      soulSystemPromptOverride: this.config.soul.system_prompt_override ?? null,
+      soulSystemPromptAppend: this.config.soul.system_prompt_append ?? null,
+      approvedToolNames: toolRegistry.listNames(),
+      modelName,
+      providerName: this.config.model.provider,
+    };
+
+    const builtPrompt = this.systemPromptBuilder.build(promptContext);
+
+    const systemPromptBlocks = builtPrompt.sections.map((s) => ({
+      text: s.content,
+      cachePolicy: s.cachePolicy,
+    }));
+
+    const initialMessages = [
+      { role: 'system' as const, content: builtPrompt.finalSystemPrompt.join('\n\n') },
+      ...history,
+      { role: 'user' as const, content: submission.userMessage },
+    ];
+
     const context = new TurnContext(submission, initialMessages);
     const client = this.modelClientFactory.createClient();
     let toolCallCount = 0;
 
-    while (context.turnCount < this.config.limits.max_turns) {
+    while (context.turnCount < maxTurns) {
       this.throwIfAborted(context.signal);
       context.turnCount += 1;
       activeTurn?.turnState.beginModelTurn();
 
       const result = await client.generate({
-        model: this.config.model.name,
+        model: modelName,
         messages: context.messages,
-        tools: this.toolRegistry.listDefinitions(),
+        tools: toolRegistry.listDefinitions(),
         signal: context.signal,
+        systemPromptBlocks,
+        maxOutputTokens,
       });
 
       if (result.tokenUsage) {
@@ -64,9 +96,9 @@ export class TurnExecutor {
       if (result.type === 'final_text') {
         const finalText = result.text ?? '';
         if (result.text) {
-          events.push({ type: 'text_delta', content: result.text });
+          yield { type: 'text_delta', content: result.text };
         }
-        events.push({ type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage });
+        yield { type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage };
         return {
           finalText,
           tokenUsage: result.tokenUsage,
@@ -90,19 +122,19 @@ export class TurnExecutor {
         this.throwIfAborted(context.signal);
         toolCallCount += 1;
         activeTurn?.turnState.registerToolCall(call.id);
-        const tool = this.toolRegistry.get(call.function.name);
+        const tool = toolRegistry.get(call.function.name);
         if (!tool) {
           throw new Error(`Unknown tool: ${call.function.name}`);
         }
 
-        events.push({ type: 'tool_start', name: call.function.name, callId: call.id });
+        yield { type: 'tool_start', name: call.function.name, callId: call.id };
         const toolResult = await this.executeTool(call, context.conversationId, context.signal, tool);
-        events.push({
+        yield {
           type: 'tool_end',
           name: call.function.name,
           callId: call.id,
           success: toolResult.success,
-        });
+        };
         activeTurn?.turnState.resolveToolCall(call.id);
 
         context.messages.push({

@@ -1,20 +1,21 @@
 import type { AgentConfig } from '../config/schema.js';
-import type { AgentEvent, TurnSubmission } from './types.js';
+import type { AgentEvent, TurnExecutorLike, TurnSubmission } from './types.js';
 import { EventQueue } from './EventQueue.js';
 import { RolloutRecorder, type IRolloutRecorder } from './RolloutRecorder.js';
-import { SessionRuntime } from './SessionRuntime.js';
+import { SessionRuntime, type SessionRuntimeConfig } from './SessionRuntime.js';
 import { SessionState } from './SessionState.js';
 import { TurnExecutor } from './TurnExecutor.js';
 
 interface SessionManagerDeps {
-  turnExecutor?: Pick<TurnExecutor, 'run'>;
+  turnExecutor?: TurnExecutorLike;
   rolloutRecorder?: IRolloutRecorder;
 }
 
 export class SessionManager {
   private readonly sessions = new Map<string, SessionRuntime>();
-  private readonly turnExecutor: Pick<TurnExecutor, 'run'>;
+  private readonly turnExecutor: TurnExecutorLike;
   private readonly rolloutRecorder: IRolloutRecorder;
+  private readonly runtimeConfig: SessionRuntimeConfig;
   private draining = false;
 
   constructor(
@@ -23,6 +24,12 @@ export class SessionManager {
   ) {
     this.turnExecutor = deps.turnExecutor ?? new TurnExecutor(config);
     this.rolloutRecorder = deps.rolloutRecorder ?? new RolloutRecorder();
+    this.runtimeConfig = {
+      forkedAgentsEnabled: config.forked_agents?.enabled ?? true,
+      maxConcurrentForks: config.forked_agents?.max_concurrent ?? 2,
+      hooksEnabled: config.hooks?.post_turn?.enabled ?? true,
+      hookTimeoutMs: config.hooks?.post_turn?.timeout_ms ?? 30_000,
+    };
   }
 
   async execute(submission: TurnSubmission, events: EventQueue<AgentEvent>) {
@@ -52,6 +59,9 @@ export class SessionManager {
 
   beginDrain() {
     this.draining = true;
+    for (const runtime of this.sessions.values()) {
+      runtime.abortForkedAgents();
+    }
   }
 
   private getOrCreateRuntime(submission: TurnSubmission) {
@@ -67,6 +77,7 @@ export class SessionManager {
         turnExecutor: this.turnExecutor,
         rolloutRecorder: this.rolloutRecorder,
       },
+      this.runtimeConfig,
     );
     this.sessions.set(submission.conversationId, runtime);
     return runtime;
@@ -76,10 +87,11 @@ export class SessionManager {
     const ttlMs = this.config.limits.session_ttl_seconds * 1000;
     const cutoff = Date.now() - ttlMs;
     for (const [conversationId, runtime] of this.sessions.entries()) {
-      if (runtime.hasActiveTurn()) {
+      if (runtime.hasActiveWork()) {
         continue;
       }
       if (runtime.state.getLastAccessedAt() < cutoff) {
+        runtime.abortForkedAgents();
         this.sessions.delete(conversationId);
       }
     }
@@ -92,7 +104,7 @@ export class SessionManager {
     }
 
     const idleSessions = [...this.sessions.entries()]
-      .filter(([, runtime]) => !runtime.hasActiveTurn())
+      .filter(([, runtime]) => !runtime.hasActiveWork())
       .sort((left, right) => left[1].state.getLastAccessedAt() - right[1].state.getLastAccessedAt());
 
     while (this.sessions.size >= maxActiveSessions && idleSessions.length > 0) {
@@ -100,6 +112,7 @@ export class SessionManager {
       if (!next) {
         break;
       }
+      next[1].abortForkedAgents();
       this.sessions.delete(next[0]);
     }
   }

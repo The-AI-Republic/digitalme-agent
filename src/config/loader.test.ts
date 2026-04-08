@@ -15,9 +15,9 @@ function writeTempConfig(contents: string): string {
 
 test('loadConfig throws the missing env var name during interpolation', () => {
   const filePath = writeTempConfig(`
-persona:
+soul:
   name: Test Agent
-  default_system_prompt: hi
+  description: A test agent.
 auth:
   api_key: \${DIGITALME_TEST_AUTH_KEY}
   signing_secret: secret

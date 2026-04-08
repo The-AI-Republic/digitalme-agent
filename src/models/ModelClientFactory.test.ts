@@ -3,15 +3,16 @@ import test from 'node:test';
 
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory } from './ModelClientFactory.js';
+import { AnthropicClient } from './client/AnthropicClient.js';
 import { GoogleCompletionClient } from './client/GoogleCompletionClient.js';
 import { OpenAICompatibleClient } from './client/OpenAICompatibleClient.js';
 import { OpenAIChatCompletionClient } from './client/OpenAIChatCompletionClient.js';
 
 function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfig {
   return {
-    persona: {
+    soul: {
       name: 'Test Agent',
-      default_system_prompt: 'You are a test agent.',
+      description: 'You are a test agent.',
       tools: {
         allow_web_search: false,
       },
@@ -32,6 +33,7 @@ function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfi
       provider: modelProvider,
       name: 'test-model',
       api_key: 'model-key',
+      max_output_tokens: 8192,
       base_url: null,
     },
     limits: {
@@ -46,12 +48,19 @@ function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfi
     security: {
       hmac_tolerance_seconds: 300,
     },
+    forked_agents: { enabled: true, max_concurrent: 2 },
+    hooks: { post_turn: { enabled: true, timeout_ms: 30000 } },
   };
 }
 
 test('ModelClientFactory creates the native OpenAI client for openai', () => {
   const client = new ModelClientFactory(makeConfig('openai')).createClient();
   assert.ok(client instanceof OpenAIChatCompletionClient);
+});
+
+test('ModelClientFactory creates the Anthropic client for anthropic', () => {
+  const client = new ModelClientFactory(makeConfig('anthropic')).createClient();
+  assert.ok(client instanceof AnthropicClient);
 });
 
 test('ModelClientFactory creates the native Google client for google-ai-studio', () => {
