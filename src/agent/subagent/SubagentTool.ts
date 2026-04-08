@@ -1,14 +1,9 @@
 import type { IToolRegistry } from '../../tools/registry.js';
 import type { Tool, ToolContext, ToolDefinition, ToolExecutionResult } from '../../tools/types.js';
-import type { TurnExecutor } from '../TurnExecutor.js';
-import type { AgentEvent, ExecutionOptions, TurnExecutionResult, TurnSubmission } from '../types.js';
+import type { AgentEvent, ExecutionOptions, TurnExecutionResult, TurnExecutorLike, TurnSubmission } from '../types.js';
 import { consumeGenerator } from '../types.js';
 import type { AgentDefinition } from './AgentDefinition.js';
 import { getBuiltInAgent } from './BuiltInAgents.js';
-
-type TurnExecutorLike = {
-  run: TurnExecutor['run'];
-};
 
 export interface SubagentToolDeps {
   turnExecutor: TurnExecutorLike;

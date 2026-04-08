@@ -1,14 +1,10 @@
 import type { AgentConfig } from '../config/schema.js';
-import type { AgentEvent, TurnSubmission } from './types.js';
+import type { AgentEvent, TurnExecutorLike, TurnSubmission } from './types.js';
 import { EventQueue } from './EventQueue.js';
 import { RolloutRecorder, type IRolloutRecorder } from './RolloutRecorder.js';
 import { SessionRuntime, type SessionRuntimeConfig } from './SessionRuntime.js';
 import { SessionState } from './SessionState.js';
 import { TurnExecutor } from './TurnExecutor.js';
-
-type TurnExecutorLike = {
-  run: TurnExecutor['run'];
-};
 
 interface SessionManagerDeps {
   turnExecutor?: TurnExecutorLike;

@@ -1,6 +1,7 @@
 import type { HistoryMessage } from '../protocol/types.js';
 import type { Message, TokenUsage } from '../models/ModelClient.js';
 import type { IToolRegistry } from '../tools/registry.js';
+import type { TurnExecutor } from './TurnExecutor.js';
 
 export interface TurnSubmission {
   requestId: string;
@@ -36,6 +37,10 @@ export interface ExecutionOptions {
   /** Override tool registry (default: constructor-injected registry) */
   toolRegistry?: IToolRegistry;
 }
+
+export type TurnExecutorLike = {
+  run: TurnExecutor['run'];
+};
 
 export interface ForkedAgentConfig {
   forkLabel: string;

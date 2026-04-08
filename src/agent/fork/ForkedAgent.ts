@@ -1,19 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import type { TurnExecutor } from '../TurnExecutor.js';
 import type {
   AgentEvent,
   ExecutionOptions,
   ForkedAgentConfig,
   ForkedAgentHandle,
   ForkedAgentResult,
+  TurnExecutorLike,
   TurnSubmission,
 } from '../types.js';
 import { consumeGenerator } from '../types.js';
 import type { ForkSemaphore } from './ForkSemaphore.js';
-
-type TurnExecutorLike = {
-  run: TurnExecutor['run'];
-};
 
 interface ForkedAgentLifecycle {
   registerForkedAgent(handle: ForkedAgentHandle): void;

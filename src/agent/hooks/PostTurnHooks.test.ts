@@ -96,3 +96,24 @@ test('PostTurnHookRegistry passes context to hooks', async () => {
   await registry.runAll(makeFakeContext());
   assert.equal(receivedConversationId, 'conv-test');
 });
+
+test('PostTurnHookRegistry clears timeout when hook finishes early', async () => {
+  const originalClearTimeout = globalThis.clearTimeout;
+  let clearCalls = 0;
+
+  globalThis.clearTimeout = ((timer: ReturnType<typeof setTimeout>) => {
+    clearCalls += 1;
+    return originalClearTimeout(timer);
+  }) as typeof clearTimeout;
+
+  try {
+    const registry = new PostTurnHookRegistry(50);
+    registry.register(async () => {});
+
+    await registry.runAll(makeFakeContext());
+
+    assert.equal(clearCalls, 1);
+  } finally {
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});

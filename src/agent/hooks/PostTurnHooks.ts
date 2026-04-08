@@ -1,13 +1,12 @@
-import type { TurnExecutor } from '../TurnExecutor.js';
 import type { ForkSemaphore } from '../fork/ForkSemaphore.js';
 import type { SessionState } from '../SessionState.js';
-import type { TurnExecutionResult, ForkedAgentHandle } from '../types.js';
+import type { TurnExecutionResult, ForkedAgentHandle, TurnExecutorLike } from '../types.js';
 
 export interface PostTurnHookContext {
   sessionState: SessionState;
   sessionRuntime: { registerForkedAgent(handle: ForkedAgentHandle): void };
   forkSemaphore: ForkSemaphore;
-  turnExecutor: { run: TurnExecutor['run'] };
+  turnExecutor: TurnExecutorLike;
   conversationId: string;
   lastResult: TurnExecutionResult;
 }

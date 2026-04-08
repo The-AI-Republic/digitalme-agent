@@ -1,16 +1,12 @@
 import type { AgentEvent, ForkedAgentHandle, TurnExecutionResult, TurnSubmission } from './types.js';
 import { consumeGenerator } from './types.js';
+import type { TurnExecutorLike } from './types.js';
 import { ActiveTurn } from './ActiveTurn.js';
 import { EventQueue } from './EventQueue.js';
 import type { IRolloutRecorder } from './RolloutRecorder.js';
 import { SessionState } from './SessionState.js';
-import type { TurnExecutor } from './TurnExecutor.js';
 import { ForkSemaphore } from './fork/ForkSemaphore.js';
 import { PostTurnHookRegistry } from './hooks/PostTurnHooks.js';
-
-type TurnExecutorLike = {
-  run: TurnExecutor['run'];
-};
 
 interface SessionRuntimeDeps {
   turnExecutor: TurnExecutorLike;
