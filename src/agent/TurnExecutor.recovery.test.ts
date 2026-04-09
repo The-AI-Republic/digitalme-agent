@@ -230,7 +230,7 @@ test('recovery: 529 x3 with fallback configured -> switches model', async () => 
   assert.equal(result.finalText, 'fallback answer');
 });
 
-test('recovery: fallback gets a fresh retry budget', async () => {
+test('recovery: fallback gets a fresh retry budget (full MAX_API_RETRIES attempts)', async () => {
   const fallbackConfig = {
     ...testConfig,
     fallback_model: {
@@ -242,7 +242,8 @@ test('recovery: fallback gets a fresh retry budget', async () => {
     },
   };
 
-  // Primary fails 3x with 529, then fallback fails once with 500 then succeeds
+  // Primary fails 3x with 529, then fallback fails 3x with 500 then succeeds on 4th attempt.
+  // This exercises the full retry budget (MAX_API_RETRIES=3 retries -> 4 total attempts).
   const { executor } = makeExecutor(
     [
       { error: { status: 529, message: 'Overloaded' } },
@@ -251,6 +252,8 @@ test('recovery: fallback gets a fresh retry budget', async () => {
     ],
     [
       { error: { status: 500, message: 'Transient' } },
+      { error: { status: 500, message: 'Transient' } },
+      { error: { status: 500, message: 'Transient' } },
       { type: 'final_text', text: 'fallback recovered' },
     ],
     fallbackConfig,
@@ -258,6 +261,36 @@ test('recovery: fallback gets a fresh retry budget', async () => {
 
   const { result } = await collectEvents(executor.run(submission));
   assert.equal(result.finalText, 'fallback recovered');
+});
+
+test('recovery: fallback uses the fallback model name in requests', async () => {
+  const fallbackConfig = {
+    ...testConfig,
+    fallback_model: {
+      provider: 'openai' as const,
+      name: 'gpt-4o-mini',
+      api_key: 'fallback-key',
+      base_url: null,
+      max_output_tokens: 4096,
+    },
+  };
+
+  const { executor, fallbackClient } = makeExecutor(
+    [
+      { error: { status: 529, message: 'Overloaded' } },
+      { error: { status: 529, message: 'Overloaded' } },
+      { error: { status: 529, message: 'Overloaded' } },
+    ],
+    [{ type: 'final_text', text: 'ok' }],
+    fallbackConfig,
+  );
+
+  await collectEvents(executor.run(submission));
+
+  // The fallback client should receive requests with the fallback model name, not the primary
+  assert.ok(fallbackClient);
+  assert.equal(fallbackClient!.requests.length, 1);
+  assert.equal(fallbackClient!.requests[0]!.model, 'gpt-4o-mini');
 });
 
 // --- Max-Output Continuation Tests ---
@@ -301,7 +334,7 @@ test('recovery: truncation exhausted after MAX_OUTPUT_RECOVERY_ATTEMPTS -> max_o
   assert.equal(doneEvent?.terminalReason?.reason, 'max_output_exhausted');
 });
 
-test('recovery: partial assistant text is preserved in context.messages', async () => {
+test('recovery: partial assistant text is preserved in context.messages for model calls', async () => {
   const { executor, primaryClient } = makeExecutor([
     { type: 'final_text', text: 'partial-', truncated: true },
     { type: 'final_text', text: 'rest' },
@@ -316,6 +349,41 @@ test('recovery: partial assistant text is preserved in context.messages', async 
   // Should also contain the continuation user message
   const contMsg = secondRequest.messages.find(m => m.role === 'user' && m.content?.includes('Resume'));
   assert.ok(contMsg, 'Continuation user message should be in messages');
+});
+
+test('recovery: promptMessages excludes continuation artifacts after successful continuation', async () => {
+  const { executor } = makeExecutor([
+    { type: 'final_text', text: 'part1-', truncated: true },
+    { type: 'final_text', text: 'part2' },
+  ]);
+
+  const { result } = await collectEvents(executor.run(submission));
+
+  // promptMessages should NOT contain the internal "Resume..." prompt or partial assistant
+  const resumeMsg = result.promptMessages.find(m => m.content?.includes('Resume'));
+  assert.equal(resumeMsg, undefined, 'Continuation prompt should not appear in promptMessages');
+  // Should contain user message and the full concatenated assistant message
+  assert.equal(result.promptMessages[0]?.content, 'hello');
+  const lastMsg = result.promptMessages[result.promptMessages.length - 1]!;
+  assert.equal(lastMsg.role, 'assistant');
+  assert.equal(lastMsg.content, 'part1-part2');
+});
+
+test('recovery: promptMessages excludes continuation artifacts on max_output_exhausted', async () => {
+  const { executor } = makeExecutor([
+    { type: 'final_text', text: '1', truncated: true },
+    { type: 'final_text', text: '2', truncated: true },
+    { type: 'final_text', text: '3', truncated: true },
+    { type: 'final_text', text: '4', truncated: true },
+  ]);
+
+  const { result } = await collectEvents(executor.run(submission));
+
+  const resumeMsgs = result.promptMessages.filter(m => m.content?.includes('Resume'));
+  assert.equal(resumeMsgs.length, 0, 'No continuation prompts should appear in promptMessages');
+  const partialAssistants = result.promptMessages.filter(m => m.role === 'assistant');
+  assert.equal(partialAssistants.length, 1, 'Should have exactly one assistant message');
+  assert.equal(partialAssistants[0]!.content, '1234');
 });
 
 // --- Graceful max_turns ---

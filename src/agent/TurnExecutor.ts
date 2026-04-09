@@ -122,6 +122,9 @@ export class TurnExecutor {
     const primaryClient = this.modelClientFactory.createClient();
     let toolCallCount = 0;
     const recovery = initialRecoveryState();
+    // Track indices of internal continuation messages (partial assistant + "Resume..."
+    // prompts) so they can be stripped from promptMessages before persisting.
+    const continuationIndices = new Set<number>();
 
     while (context.turnCount < maxTurns) {
       this.throwIfAborted(context.signal);
@@ -198,9 +201,12 @@ export class TurnExecutor {
           if (result.text) {
             yield { type: 'text_delta', content: result.text };
           }
-          // Preserve the partial assistant text in the conversation
+          // Preserve the partial assistant text in the conversation for the model,
+          // but mark these indices so they're excluded from persisted promptMessages.
+          continuationIndices.add(context.messages.length);
           context.messages.push({ role: 'assistant', content: result.text });
           recovery.accumulatedText += result.text;
+          continuationIndices.add(context.messages.length);
           context.messages.push({
             role: 'user',
             content: 'Output limit reached. Resume exactly where you stopped.',
@@ -223,11 +229,10 @@ export class TurnExecutor {
           tokenUsage: result.tokenUsage,
           completedTurns: context.turnCount,
           toolCallCount,
-          promptMessages: [
-            { role: 'user', content: submission.userMessage },
-            ...context.messages.slice(initialMessages.length),
-            { role: 'assistant', content: recovery.accumulatedText },
-          ],
+          promptMessages: this.buildCleanPromptMessages(
+            submission.userMessage, context.messages, initialMessages.length,
+            continuationIndices, recovery.accumulatedText,
+          ),
         };
       }
 
@@ -243,11 +248,10 @@ export class TurnExecutor {
           tokenUsage: result.tokenUsage,
           completedTurns: context.turnCount,
           toolCallCount,
-          promptMessages: [
-            { role: 'user', content: submission.userMessage },
-            ...context.messages.slice(initialMessages.length),
-            { role: 'assistant', content: fullText },
-          ],
+          promptMessages: this.buildCleanPromptMessages(
+            submission.userMessage, context.messages, initialMessages.length,
+            continuationIndices, fullText,
+          ),
         };
       }
 
@@ -319,11 +323,12 @@ export class TurnExecutor {
    */
   private async callModelWithRecovery(
     primaryClient: ModelClient,
-    request: Parameters<ModelClient['generate']>[0],
+    initialRequest: Parameters<ModelClient['generate']>[0],
     recovery: RecoveryState,
   ): Promise<{ result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] }> {
     let consecutive529 = 0;
     let client = primaryClient;
+    let request = initialRequest;
     const events: AgentEvent[] = [];
 
     for (let attempt = 0; attempt <= RECOVERY_LIMITS.MAX_API_RETRIES; attempt++) {
@@ -346,8 +351,11 @@ export class TurnExecutor {
             recovery.fallbackAttempted = true;
             // Create a new client via factory — don't mutate the primary client
             client = this.modelClientFactory.createFromConfig(this.config.fallback_model);
+            // Switch to the fallback model name so the client uses it
+            request = { ...request, model: this.config.fallback_model.name };
             // Reset retry budget so fallback gets a full chance
-            attempt = 0;
+            // -1 because the for-loop increment runs before the next iteration
+            attempt = -1;
             consecutive529 = 0;
             recovery.lastTransition = {
               reason: 'fallback_model',
@@ -400,6 +408,29 @@ export class TurnExecutor {
       return { success: false, content: `Invalid arguments for tool ${call.function.name}.` };
     }
     return tool.execute(args, { conversationId, signal });
+  }
+
+  /**
+   * Build promptMessages for persisting, excluding internal continuation
+   * artifacts (partial assistant texts and "Resume..." prompts).
+   */
+  private buildCleanPromptMessages(
+    userMessage: string,
+    messages: Array<Record<string, unknown>>,
+    initialMessagesLength: number,
+    continuationIndices: Set<number>,
+    finalAssistantText: string,
+  ): Array<Record<string, unknown>> {
+    const result: Array<Record<string, unknown>> = [
+      { role: 'user', content: userMessage },
+    ];
+    for (let i = initialMessagesLength; i < messages.length; i++) {
+      if (!continuationIndices.has(i)) {
+        result.push(messages[i]!);
+      }
+    }
+    result.push({ role: 'assistant', content: finalAssistantText });
+    return result;
   }
 
   private throwIfAborted(signal?: AbortSignal) {
