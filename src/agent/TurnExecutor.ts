@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
-import type { ToolCall } from '../models/ModelClient.js';
+import type { ToolCall, ModelStepResult } from '../models/ModelClient.js';
+import { type ModelClient } from '../models/ModelClient.js';
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
 import { TemplateLoader } from '../prompts/TemplateLoader.js';
 import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
@@ -14,6 +15,13 @@ import { prepareContextForModelCall, type PrepareContextDeps } from './context/p
 import { TokenBudget } from './context/TokenBudget.js';
 import { ToolResultPersistence } from './context/ToolResultPersistence.js';
 import { Microcompact } from './context/Microcompact.js';
+import {
+  initialRecoveryState,
+  RECOVERY_LIMITS,
+  type RecoveryState,
+} from './types/recovery.js';
+import { categorizeApiError, exponentialBackoff } from './apiRetry.js';
+import { tryReactiveCompact } from './reactiveCompact.js';
 
 interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
@@ -111,8 +119,9 @@ export class TurnExecutor {
     ];
 
     const context = new TurnContext(submission, initialMessages);
-    const client = this.modelClientFactory.createClient();
+    const primaryClient = this.modelClientFactory.createClient();
     let toolCallCount = 0;
+    const recovery = initialRecoveryState();
 
     while (context.turnCount < maxTurns) {
       this.throwIfAborted(context.signal);
@@ -133,39 +142,116 @@ export class TurnExecutor {
         context.messages.push(...prepared.messages);
       }
 
-      const result = await client.generate({
-        model: modelName,
-        messages: context.messages,
-        tools: toolRegistry.listDefinitions(),
-        signal: context.signal,
-        systemPromptBlocks,
-        maxOutputTokens,
-      });
+      // --- Call model (with retry/fallback, error capture) ---
+      const callResult: { result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] } =
+        await this.callModelWithRecovery(
+          primaryClient,
+          { model: modelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
+          recovery,
+        );
+
+      // Emit any recovery events from retry/fallback
+      for (const event of callResult.events) {
+        yield event;
+      }
+
+      const result = callResult.result;
+
+      // --- Handle context overflow (413) ---
+      if (result.type === 'context_overflow') {
+        if (!recovery.hasAttemptedReactiveCompact) {
+          const compacted = tryReactiveCompact(context.messages);
+          if (compacted) {
+            recovery.hasAttemptedReactiveCompact = true;
+            recovery.lastTransition = { reason: 'reactive_compact_retry' };
+            yield { type: 'recovery', reason: 'reactive_compact_retry' };
+            continue;
+          }
+        }
+        // Recovery exhausted
+        const lastText = recovery.accumulatedText || '';
+        yield { type: 'done', terminalReason: { reason: 'prompt_too_long' } };
+        return {
+          finalText: lastText,
+          tokenUsage: context.tokenUsage,
+          completedTurns: context.turnCount,
+          toolCallCount,
+          promptMessages: [
+            { role: 'user', content: submission.userMessage },
+            ...context.messages.slice(initialMessages.length),
+          ],
+        };
+      }
 
       if (result.tokenUsage) {
         context.tokenUsage = result.tokenUsage;
         activeTurn?.turnState.setTokenUsage(result.tokenUsage);
       }
 
-      if (result.type === 'final_text') {
-        const finalText = result.text ?? '';
+      // --- Handle max output truncation ---
+      // Known trade-off: blind concatenation. Models sometimes repeat a few
+      // tokens at seams. Accepted for v1, same as claudy.
+      if (result.type === 'final_text' && result.truncated) {
+        if (recovery.maxOutputRecoveryCount < RECOVERY_LIMITS.MAX_OUTPUT_RECOVERY_ATTEMPTS) {
+          recovery.maxOutputRecoveryCount += 1;
+          // Emit partial text immediately so callers see progress
+          if (result.text) {
+            yield { type: 'text_delta', content: result.text };
+          }
+          // Preserve the partial assistant text in the conversation
+          context.messages.push({ role: 'assistant', content: result.text });
+          recovery.accumulatedText += result.text;
+          context.messages.push({
+            role: 'user',
+            content: 'Output limit reached. Resume exactly where you stopped.',
+          });
+          recovery.lastTransition = {
+            reason: 'max_output_recovery',
+            attempt: recovery.maxOutputRecoveryCount,
+          };
+          yield { type: 'recovery', reason: 'max_output_recovery', detail: { attempt: recovery.maxOutputRecoveryCount } };
+          continue;
+        }
+        // Exhausted — return what we have (accumulated + final partial)
+        recovery.accumulatedText += result.text;
         if (result.text) {
           yield { type: 'text_delta', content: result.text };
         }
-        yield { type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage };
+        yield { type: 'done', terminalReason: { reason: 'max_output_exhausted' }, tokenUsage: result.tokenUsage };
         return {
-          finalText,
+          finalText: recovery.accumulatedText,
           tokenUsage: result.tokenUsage,
           completedTurns: context.turnCount,
           toolCallCount,
           promptMessages: [
             { role: 'user', content: submission.userMessage },
             ...context.messages.slice(initialMessages.length),
-            { role: 'assistant', content: finalText },
+            { role: 'assistant', content: recovery.accumulatedText },
           ],
         };
       }
 
+      // --- Normal final text ---
+      if (result.type === 'final_text') {
+        const fullText = recovery.accumulatedText + result.text;
+        if (result.text) {
+          yield { type: 'text_delta', content: result.text };
+        }
+        yield { type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage, terminalReason: { reason: 'completed' } };
+        return {
+          finalText: fullText,
+          tokenUsage: result.tokenUsage,
+          completedTurns: context.turnCount,
+          toolCallCount,
+          promptMessages: [
+            { role: 'user', content: submission.userMessage },
+            ...context.messages.slice(initialMessages.length),
+            { role: 'assistant', content: fullText },
+          ],
+        };
+      }
+
+      // --- Tool calls (normal continuation) ---
       context.messages.push({
         role: 'assistant',
         content: null,
@@ -202,9 +288,103 @@ export class TurnExecutor {
           timestamp: new Date().toISOString(),
         });
       }
+
+      recovery.lastTransition = {
+        reason: 'tool_use',
+        toolNames: result.calls.map(c => c.function.name),
+      };
+      recovery.apiRetryCount = 0;
     }
 
-    throw new Error('max_turns_exceeded');
+    // Max turns reached — return gracefully, do not throw.
+    const lastText = recovery.accumulatedText || '';
+    yield { type: 'done', terminalReason: { reason: 'max_turns' } };
+    return {
+      finalText: lastText,
+      tokenUsage: context.tokenUsage,
+      completedTurns: context.turnCount,
+      toolCallCount,
+      promptMessages: [
+        { role: 'user', content: submission.userMessage },
+        ...context.messages.slice(initialMessages.length),
+      ],
+    };
+  }
+
+  /**
+   * Call the model with bounded retry and optional fallback.
+   *
+   * Returns the model result or { type: 'context_overflow' } for 413 errors.
+   * Collects recovery events in a buffer (since this is not a generator).
+   */
+  private async callModelWithRecovery(
+    primaryClient: ModelClient,
+    request: Parameters<ModelClient['generate']>[0],
+    recovery: RecoveryState,
+  ): Promise<{ result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] }> {
+    let consecutive529 = 0;
+    let client = primaryClient;
+    const events: AgentEvent[] = [];
+
+    for (let attempt = 0; attempt <= RECOVERY_LIMITS.MAX_API_RETRIES; attempt++) {
+      try {
+        const result = await client.generate(request);
+        return { result, events };
+      } catch (error) {
+        const category = categorizeApiError(error);
+
+        if (category === 'context_overflow') {
+          return { result: { type: 'context_overflow' as const }, events };
+        }
+
+        if (category === 'overloaded') {
+          consecutive529++;
+          if (consecutive529 >= RECOVERY_LIMITS.FALLBACK_AFTER_CONSECUTIVE_529
+              && this.config.fallback_model
+              && !recovery.fallbackAttempted
+              && this.modelClientFactory.createFromConfig) {
+            recovery.fallbackAttempted = true;
+            // Create a new client via factory — don't mutate the primary client
+            client = this.modelClientFactory.createFromConfig(this.config.fallback_model);
+            // Reset retry budget so fallback gets a full chance
+            attempt = 0;
+            consecutive529 = 0;
+            recovery.lastTransition = {
+              reason: 'fallback_model',
+              fromModel: this.config.model.name,
+              toModel: this.config.fallback_model.name,
+            };
+            events.push({
+              type: 'recovery',
+              reason: 'fallback_model',
+              detail: { from: this.config.model.name, to: this.config.fallback_model.name },
+            });
+            continue;
+          }
+        }
+
+        if ((category === 'rate_limit' || category === 'overloaded' || category === 'server_error')
+            && attempt < RECOVERY_LIMITS.MAX_API_RETRIES) {
+          await exponentialBackoff(attempt);
+          recovery.apiRetryCount++;
+          recovery.lastTransition = {
+            reason: 'api_retry',
+            attempt: attempt + 1,
+            errorType: category,
+          };
+          events.push({
+            type: 'recovery',
+            reason: 'api_retry',
+            detail: { attempt: attempt + 1, errorType: category },
+          });
+          continue;
+        }
+
+        throw error; // Non-retryable or retries exhausted
+      }
+    }
+
+    throw new Error('api_retries_exhausted');
   }
 
   private async executeTool(

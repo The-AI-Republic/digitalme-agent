@@ -141,7 +141,7 @@ test('TurnExecutor ends the loop when the model returns final assistant text', a
 
   assert.deepEqual(events, [
     { type: 'text_delta', content: 'final answer' },
-    { type: 'done', truncated: undefined, tokenUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } },
+    { type: 'done', truncated: undefined, tokenUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }, terminalReason: { reason: 'completed' } },
   ]);
 });
 
@@ -179,7 +179,7 @@ test('TurnExecutor continues after a tool call and ends on the next final text s
     { type: 'tool_start', name: 'test_tool', callId: 'call-1' },
     { type: 'tool_end', name: 'test_tool', callId: 'call-1', success: true },
     { type: 'text_delta', content: 'tool-informed answer' },
-    { type: 'done', truncated: undefined, tokenUsage: undefined },
+    { type: 'done', truncated: undefined, tokenUsage: undefined, terminalReason: { reason: 'completed' } },
   ]);
 });
 
@@ -365,7 +365,7 @@ test('TurnExecutor passes correct PromptContext fields to builder', async () => 
 
 // --- ExecutionOptions tests ---
 
-test('ExecutionOptions.maxTurns overrides config default', async () => {
+test('ExecutionOptions.maxTurns overrides config default and returns gracefully', async () => {
   const executor = makeExecutor([
     {
       type: 'tool_calls',
@@ -388,10 +388,13 @@ test('ExecutionOptions.maxTurns overrides config default', async () => {
     requestId: 'req-mt', conversationId: 'conv-mt', userMessage: 'hi', history: [],
   };
 
-  await assert.rejects(
-    () => collectEvents(executor.run(submission, { maxTurns: 1 })),
-    /max_turns_exceeded/,
-  );
+  const { events, result } = await collectEvents(executor.run(submission, { maxTurns: 1 }));
+
+  // max_turns now returns gracefully instead of throwing
+  const doneEvent = events.find(e => e.type === 'done');
+  assert.ok(doneEvent);
+  assert.equal((doneEvent as { terminalReason?: { reason: string } }).terminalReason?.reason, 'max_turns');
+  assert.equal(result.completedTurns, 1);
 });
 
 test('ExecutionOptions.toolRegistry overrides default registry', async () => {

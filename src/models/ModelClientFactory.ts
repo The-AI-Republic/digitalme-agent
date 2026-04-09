@@ -1,16 +1,45 @@
-import type { AgentConfig } from '../config/schema.js';
+import type { AgentConfig, ModelConfig } from '../config/schema.js';
 import { AnthropicClient } from './client/AnthropicClient.js';
 import { GoogleCompletionClient } from './client/GoogleCompletionClient.js';
 import { OpenAICompatibleClient } from './client/OpenAICompatibleClient.js';
 import { OpenAIChatCompletionClient } from './client/OpenAIChatCompletionClient.js';
 import { ModelClient } from './ModelClient.js';
 
-const PROVIDER_BASE_URLS = {
+const PROVIDER_BASE_URLS: Record<string, string> = {
   xai: 'https://api.x.ai/v1',
   groq: 'https://api.groq.com/openai/v1',
   fireworks: 'https://api.fireworks.ai/inference/v1',
   together: 'https://api.together.xyz/v1',
-} as const;
+};
+
+function createClientFromModelConfig(modelConfig: ModelConfig): ModelClient {
+  const provider = modelConfig.provider;
+  const model = modelConfig.name;
+  const apiKey = modelConfig.api_key;
+  const baseUrl = modelConfig.base_url ?? undefined;
+
+  if (provider === 'openai') {
+    return new OpenAIChatCompletionClient({ apiKey, model, baseUrl });
+  }
+
+  if (provider === 'anthropic') {
+    return new AnthropicClient({ apiKey, model, baseUrl });
+  }
+
+  if (provider === 'google-ai-studio') {
+    return new GoogleCompletionClient({ apiKey, model, baseUrl });
+  }
+
+  if (provider === 'xai' || provider === 'groq' || provider === 'fireworks' || provider === 'together') {
+    return new OpenAICompatibleClient({
+      apiKey,
+      model,
+      baseUrl: baseUrl ?? PROVIDER_BASE_URLS[provider],
+    });
+  }
+
+  throw new Error(`Unsupported model provider: ${provider}`);
+}
 
 export class ModelClientFactory {
   private client: ModelClient | undefined;
@@ -22,52 +51,17 @@ export class ModelClientFactory {
     if (this.client) {
       return this.client;
     }
+    this.client = createClientFromModelConfig(this.config.model);
+    return this.client;
+  }
 
-    const provider = this.config.model.provider;
-    const model = this.config.model.name;
-    const apiKey = this.config.model.api_key;
-    const baseUrl = this.config.model.base_url ?? undefined;
-
-    if (provider === 'openai') {
-      this.client = new OpenAIChatCompletionClient({
-        apiKey,
-        model,
-        baseUrl,
-      });
-      return this.client;
-    }
-
-    if (provider === 'anthropic') {
-      this.client = new AnthropicClient({
-        apiKey,
-        model,
-        baseUrl,
-      });
-      return this.client;
-    }
-
-    if (provider === 'google-ai-studio') {
-      this.client = new GoogleCompletionClient({
-        apiKey,
-        model,
-        baseUrl,
-      });
-      return this.client;
-    }
-
-    if (provider === 'xai' || provider === 'groq' || provider === 'fireworks' || provider === 'together') {
-      this.client = new OpenAICompatibleClient({
-        apiKey,
-        model,
-        baseUrl: baseUrl ?? PROVIDER_BASE_URLS[provider],
-      });
-      return this.client;
-    }
-
-    throw new Error(`Unsupported model provider: ${provider}`);
+  /** Creates a fresh (non-singleton) client from an arbitrary model config. */
+  createFromConfig(modelConfig: ModelConfig): ModelClient {
+    return createClientFromModelConfig(modelConfig);
   }
 }
 
 export interface IModelClientFactory {
   createClient(): ModelClient;
+  createFromConfig?(modelConfig: ModelConfig): ModelClient;
 }

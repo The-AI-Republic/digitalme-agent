@@ -5,6 +5,24 @@ export const historyMessageSchema = z.object({
   content: z.string().max(100_000),
 });
 
+export const modelSchema = z.object({
+  provider: z.enum([
+    'openai',
+    'anthropic',
+    'xai',
+    'groq',
+    'google-ai-studio',
+    'fireworks',
+    'together',
+  ]),
+  name: z.string().min(1),
+  api_key: z.string().min(1),
+  base_url: z.string().optional().nullable(),
+  max_output_tokens: z.number().int().positive().default(8192),
+});
+
+export type ModelConfig = z.infer<typeof modelSchema>;
+
 export const agentConfigSchema = z.object({
   soul: z.object({
     name: z.string().min(1),
@@ -36,21 +54,8 @@ export const agentConfigSchema = z.object({
     base_url: z.string().url().optional().nullable(),
     heartbeat_interval_seconds: z.number().positive().default(20),
   }).default({}),
-  model: z.object({
-    provider: z.enum([
-      'openai',
-      'anthropic',
-      'xai',
-      'groq',
-      'google-ai-studio',
-      'fireworks',
-      'together',
-    ]),
-    name: z.string().min(1),
-    api_key: z.string().min(1),
-    base_url: z.string().optional().nullable(),
-    max_output_tokens: z.number().int().positive().default(8192),
-  }),
+  model: modelSchema,
+  fallback_model: modelSchema.optional(),
   limits: z.object({
     max_message_length: z.number().int().positive().default(4000),
     max_history_messages: z.number().int().positive().default(100),
