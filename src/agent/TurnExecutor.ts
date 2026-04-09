@@ -10,6 +10,7 @@ import type { Tool, ToolExecutionResult } from '../tools/types.js';
 import { TurnContext } from './TurnContext.js';
 import type { AgentEvent, ExecutionOptions, TurnExecutionResult, TurnSubmission } from './types.js';
 import type { ActiveTurn } from './ActiveTurn.js';
+import { TurnExecutionState } from './TurnExecutionState.js';
 import { prepareContextForModelCall, type PrepareContextDeps } from './context/prepareContextForModelCall.js';
 import { TokenBudget } from './context/TokenBudget.js';
 import { ToolResultPersistence } from './context/ToolResultPersistence.js';
@@ -112,11 +113,12 @@ export class TurnExecutor {
 
     const context = new TurnContext(submission, initialMessages);
     const client = this.modelClientFactory.createClient();
-    let toolCallCount = 0;
+    const execState = new TurnExecutionState();
 
     while (context.turnCount < maxTurns) {
       this.throwIfAborted(context.signal);
       context.turnCount += 1;
+      execState.beginModelCall();
       activeTurn?.turnState.beginModelTurn();
 
       // Per-model-step context preparation: persistence, microcompact, pressure assessment
@@ -144,11 +146,13 @@ export class TurnExecutor {
 
       if (result.tokenUsage) {
         context.tokenUsage = result.tokenUsage;
+        execState.setTokenUsage(result.tokenUsage);
         activeTurn?.turnState.setTokenUsage(result.tokenUsage);
       }
 
       if (result.type === 'final_text') {
         const finalText = result.text ?? '';
+        execState.dispose('final_text');
         if (result.text) {
           yield { type: 'text_delta', content: result.text };
         }
@@ -157,12 +161,13 @@ export class TurnExecutor {
           finalText,
           tokenUsage: result.tokenUsage,
           completedTurns: context.turnCount,
-          toolCallCount,
+          toolCallCount: execState.toolCallCount,
           promptMessages: [
             { role: 'user', content: submission.userMessage },
             ...context.messages.slice(initialMessages.length),
             { role: 'assistant', content: finalText },
           ],
+          executionState: execState.snapshot(),
         };
       }
 
@@ -174,9 +179,11 @@ export class TurnExecutor {
         timestamp: new Date().toISOString(),
       });
 
+      execState.continuationReason = 'tool_calls';
+
       for (const call of result.calls) {
         this.throwIfAborted(context.signal);
-        toolCallCount += 1;
+        execState.registerToolCall(call.id);
         activeTurn?.turnState.registerToolCall(call.id);
         const tool = toolRegistry.get(call.function.name);
         if (!tool) {
@@ -191,6 +198,7 @@ export class TurnExecutor {
           callId: call.id,
           success: toolResult.success,
         };
+        execState.resolveToolCall(call.id);
         activeTurn?.turnState.resolveToolCall(call.id);
 
         context.messages.push({
@@ -204,6 +212,7 @@ export class TurnExecutor {
       }
     }
 
+    execState.dispose('max_turns');
     throw new Error('max_turns_exceeded');
   }
 

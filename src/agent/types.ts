@@ -25,6 +25,8 @@ export interface TurnExecutionResult {
   promptMessages: Message[];
   completedTurns: number;
   toolCallCount: number;
+  /** Snapshot of the turn's execution state at completion */
+  executionState?: Record<string, unknown>;
 }
 
 export interface ExecutionOptions {

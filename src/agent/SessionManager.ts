@@ -7,10 +7,12 @@ import { RolloutRecorder, type IRolloutRecorder } from './RolloutRecorder.js';
 import { SessionRuntime, type SessionRuntimeConfig } from './SessionRuntime.js';
 import { SessionState } from './SessionState.js';
 import { TurnExecutor } from './TurnExecutor.js';
+import type { ProcessStore } from './ProcessRuntimeState.js';
 
 interface SessionManagerDeps {
   turnExecutor?: TurnExecutorLike;
   rolloutRecorder?: IRolloutRecorder;
+  processStore?: ProcessStore;
 }
 
 export class SessionManager {
@@ -19,7 +21,7 @@ export class SessionManager {
   private readonly rolloutRecorder: IRolloutRecorder;
   private readonly runtimeConfig: SessionRuntimeConfig;
   private readonly storageDir: string;
-  private draining = false;
+  private readonly processStore?: ProcessStore;
 
   constructor(
     private readonly config: AgentConfig,
@@ -28,6 +30,7 @@ export class SessionManager {
     this.turnExecutor = deps.turnExecutor ?? new TurnExecutor(config);
     this.rolloutRecorder = deps.rolloutRecorder ?? new RolloutRecorder();
     this.storageDir = config.context.tool_result_persistence.storage_dir;
+    this.processStore = deps.processStore;
     const sm = config.context.session_memory;
     this.runtimeConfig = {
       forkedAgentsEnabled: config.forked_agents?.enabled ?? true,
@@ -50,13 +53,18 @@ export class SessionManager {
   }
 
   async execute(submission: TurnSubmission, events: EventQueue<AgentEvent>) {
-    if (this.draining) {
+    if (this.processStore?.getState().draining) {
       throw new Error('shutting_down');
     }
 
     this.evictExpiredSessions();
     const runtime = this.getOrCreateRuntime(submission);
-    await runtime.execute(submission, events);
+    this.syncSessionStats();
+    try {
+      await runtime.execute(submission, events);
+    } finally {
+      this.syncSessionStats();
+    }
   }
 
   getStats() {
@@ -75,10 +83,27 @@ export class SessionManager {
   }
 
   beginDrain() {
-    this.draining = true;
+    // Draining is set via processStore in Agent.beginDrain()
     for (const runtime of this.sessions.values()) {
       runtime.abortForkedAgents();
     }
+  }
+
+  private syncSessionStats() {
+    if (!this.processStore) {
+      return;
+    }
+    let activeTurns = 0;
+    for (const runtime of this.sessions.values()) {
+      if (runtime.hasActiveTurn()) {
+        activeTurns += 1;
+      }
+    }
+    this.processStore.setState((s) => ({
+      ...s,
+      activeSessionCount: this.sessions.size,
+      activeTurnCount: activeTurns,
+    }));
   }
 
   private getOrCreateRuntime(submission: TurnSubmission) {
