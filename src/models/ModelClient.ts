@@ -6,6 +6,10 @@ export interface Message {
   toolCalls?: ToolCall[];
   toolCallId?: string;
   toolName?: string;
+  /** Stable UUID, set at message creation time. Internal bookkeeping only — not sent to providers. */
+  id?: string;
+  /** ISO 8601 timestamp, set at message creation time. Used by microcompact for gap detection. */
+  timestamp?: string;
 }
 
 export interface ToolCall {

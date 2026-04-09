@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { AgentEvent, ForkedAgentHandle, TurnExecutionResult, TurnSubmission } from './types.js';
 import { consumeGenerator } from './types.js';
 import type { TurnExecutorLike } from './types.js';
@@ -7,6 +8,8 @@ import type { IRolloutRecorder } from './RolloutRecorder.js';
 import { SessionState } from './SessionState.js';
 import { ForkSemaphore } from './fork/ForkSemaphore.js';
 import { PostTurnHookRegistry } from './hooks/PostTurnHooks.js';
+import { SessionMemory, type SessionMemoryConfig } from './context/SessionMemory.js';
+import { createSessionMemoryHook } from './context/SessionMemoryHook.js';
 
 interface SessionRuntimeDeps {
   turnExecutor: TurnExecutorLike;
@@ -18,6 +21,15 @@ export interface SessionRuntimeConfig {
   maxConcurrentForks?: number;
   hooksEnabled?: boolean;
   hookTimeoutMs?: number;
+  sessionMemoryConfig?: {
+    enabled: boolean;
+    tokensBetweenUpdates: number;
+    toolCallsBetweenUpdates: number;
+    minimumTokensToInit: number;
+    maxTotalTokens: number;
+    maxSectionTokens: number;
+    storageDir: string;
+  };
 }
 
 export class SessionRuntime {
@@ -27,6 +39,7 @@ export class SessionRuntime {
   readonly hookRegistry: PostTurnHookRegistry;
   private readonly forkedAgentsEnabled: boolean;
   private readonly hooksEnabled: boolean;
+  readonly sessionMemory?: SessionMemory;
 
   constructor(
     readonly state: SessionState,
@@ -37,6 +50,21 @@ export class SessionRuntime {
     this.hooksEnabled = runtimeConfig?.hooksEnabled ?? true;
     this.forkSemaphore = new ForkSemaphore(runtimeConfig?.maxConcurrentForks ?? 2);
     this.hookRegistry = new PostTurnHookRegistry(runtimeConfig?.hookTimeoutMs ?? 30_000);
+
+    // Register session memory extraction hook if enabled
+    const smConfig = runtimeConfig?.sessionMemoryConfig;
+    if (smConfig?.enabled) {
+      this.sessionMemory = new SessionMemory({
+        enabled: true,
+        tokensBetweenUpdates: smConfig.tokensBetweenUpdates,
+        toolCallsBetweenUpdates: smConfig.toolCallsBetweenUpdates,
+        minimumTokensToInit: smConfig.minimumTokensToInit,
+        maxTotalTokens: smConfig.maxTotalTokens,
+        maxSectionTokens: smConfig.maxSectionTokens,
+        storagePath: path.join(smConfig.storageDir, state.conversationId, 'session-memory.md'),
+      });
+      this.hookRegistry.register(createSessionMemoryHook(this.sessionMemory));
+    }
   }
 
   hasActiveTurn() {
