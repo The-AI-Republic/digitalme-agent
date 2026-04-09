@@ -47,7 +47,11 @@ export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentH
 
   const childAbort = new AbortController();
   if (submission.signal) {
-    submission.signal.addEventListener('abort', () => childAbort.abort(), { once: true });
+    if (submission.signal.aborted) {
+      childAbort.abort();
+    } else {
+      submission.signal.addEventListener('abort', () => childAbort.abort(), { once: true });
+    }
   }
 
   const promise = (async (): Promise<ForkedAgentResult> => {

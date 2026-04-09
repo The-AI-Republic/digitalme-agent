@@ -169,4 +169,3 @@ Add tests for:
 - request execution can be reconstructed from internal records
 - large artifacts are externalized safely
 - transcript storage remains append-only and bounded
-

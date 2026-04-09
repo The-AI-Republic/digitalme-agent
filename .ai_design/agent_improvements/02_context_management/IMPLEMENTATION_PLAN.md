@@ -852,7 +852,7 @@ Orchestrate session memory extraction after turn completion:
 ```typescript
 async execute(submission, events) {
   // ... existing reconcile + execute ...
-  
+
   // After successful turn completion:
   if (this.sessionMemory?.shouldExtract(currentTokenCount)) {
     // Non-blocking: extract in background, don't block response to fan
