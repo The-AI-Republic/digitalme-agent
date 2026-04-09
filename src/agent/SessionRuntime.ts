@@ -161,7 +161,7 @@ export class SessionRuntime {
   }
 
   private commitResult(submission: TurnSubmission, result: TurnExecutionResult, activeTurn: ActiveTurn) {
-    this.state.commitTask(submission.userMessage, result.finalText, result.promptMessages);
+    this.state.commitTask(submission.userMessage, result.finalText, result.promptMessages, result.toolSummaries);
     activeTurn.complete(result.tokenUsage);
   }
 }

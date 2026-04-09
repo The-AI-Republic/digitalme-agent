@@ -19,12 +19,22 @@ export type AgentEvent =
   | { type: 'done'; truncated?: boolean; tokenUsage?: TokenUsage }
   | { type: 'error'; message: string };
 
+export interface ToolSummaryEntry {
+  callId: string;
+  toolName: string;
+  summary: string;
+  durationMs: number;
+  success: boolean;
+}
+
 export interface TurnExecutionResult {
   finalText: string;
   tokenUsage?: TokenUsage;
   promptMessages: Message[];
   completedTurns: number;
   toolCallCount: number;
+  /** Tool-use summaries for logging/monitoring and future prompt projection. NOT model-facing. */
+  toolSummaries?: ToolSummaryEntry[];
 }
 
 export interface ExecutionOptions {

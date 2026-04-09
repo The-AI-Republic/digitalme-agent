@@ -8,7 +8,7 @@ import { ToolExecutor, type ToolExecutorCallbacks } from '../tools/execution/Too
 import { DefaultToolPolicyChecker, type IToolPolicyChecker } from '../tools/execution/ToolPolicyChecker.js';
 import { ResultBudget } from '../tools/execution/ResultBudget.js';
 import { TurnContext } from './TurnContext.js';
-import type { AgentEvent, ExecutionOptions, TurnExecutionResult, TurnSubmission } from './types.js';
+import type { AgentEvent, ExecutionOptions, ToolSummaryEntry, TurnExecutionResult, TurnSubmission } from './types.js';
 import type { ActiveTurn } from './ActiveTurn.js';
 
 interface TurnExecutorDeps {
@@ -79,6 +79,7 @@ export class TurnExecutor {
     const context = new TurnContext(submission, initialMessages);
     const client = this.modelClientFactory.createClient();
     let toolCallCount = 0;
+    const toolSummaries: ToolSummaryEntry[] = [];
     const resultBudget = new ResultBudget(); // fresh per request
 
     while (context.turnCount < maxTurns) {
@@ -111,6 +112,7 @@ export class TurnExecutor {
           tokenUsage: result.tokenUsage,
           completedTurns: context.turnCount,
           toolCallCount,
+          toolSummaries,
           promptMessages: [
             { role: 'user', content: submission.userMessage },
             ...context.messages.slice(initialMessages.length),
@@ -145,9 +147,16 @@ export class TurnExecutor {
         result.calls, toolContext, resultBudget, callbacks,
       );
 
-      // Yield events and push results to message history
+      // Yield events, collect summaries, and push results to message history
       for (const record of records) {
         toolCallCount += 1;
+        toolSummaries.push({
+          callId: record.callId,
+          toolName: record.toolName,
+          summary: record.summary,
+          durationMs: record.durationMs,
+          success: record.result.success,
+        });
         yield { type: 'tool_start', name: record.toolName, callId: record.callId };
         yield {
           type: 'tool_end',

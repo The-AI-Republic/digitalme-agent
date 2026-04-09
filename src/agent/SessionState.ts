@@ -1,5 +1,6 @@
 import type { Message } from '../models/ModelClient.js';
 import type { HistoryMessage } from '../protocol/types.js';
+import type { ToolSummaryEntry } from './types.js';
 
 function clonePromptMessage(message: Message): Message {
   const cloned: Message = {
@@ -44,6 +45,11 @@ function canonicalToPromptHistory(history: HistoryMessage[]): Message[] {
 export class SessionState {
   private canonicalHistory: HistoryMessage[];
   private promptHistory: Message[];
+  /**
+   * Tool-use summaries stored separately from model-facing prompt content.
+   * Available for future prompt projection / compaction, not immediate model consumption.
+   */
+  private readonly toolUseSummaries: ToolSummaryEntry[] = [];
   private nextTurnId = 1;
   private lastAccessedAt = Date.now();
   private readonly createdAt = Date.now();
@@ -97,7 +103,12 @@ export class SessionState {
     return 'reseeded' as const;
   }
 
-  commitTask(userMessage: string, finalText: string, promptMessages: Message[]) {
+  commitTask(
+    userMessage: string,
+    finalText: string,
+    promptMessages: Message[],
+    toolSummaries?: ToolSummaryEntry[],
+  ) {
     this.touch();
     this.revision++;
     this.canonicalHistory.push(
@@ -107,6 +118,14 @@ export class SessionState {
     for (const message of promptMessages) {
       this.promptHistory.push(clonePromptMessage(message));
     }
+    if (toolSummaries && toolSummaries.length > 0) {
+      this.toolUseSummaries.push(...toolSummaries);
+    }
+  }
+
+  /** Tool-use summaries for future prompt projection. NOT model-facing. */
+  getToolUseSummaries(): readonly ToolSummaryEntry[] {
+    return this.toolUseSummaries;
   }
 
   /**
@@ -129,6 +148,7 @@ export class SessionState {
       lastAccessedAt: new Date(this.lastAccessedAt).toISOString(),
       canonicalHistoryCount: this.canonicalHistory.length,
       promptHistoryCount: this.promptHistory.length,
+      toolUseSummaryCount: this.toolUseSummaries.length,
       nextTurnId: this.nextTurnId,
       revision: this.revision,
     };
