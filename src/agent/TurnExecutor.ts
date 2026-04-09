@@ -1,11 +1,12 @@
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
-import type { ToolCall } from '../models/ModelClient.js';
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
 import { TemplateLoader } from '../prompts/TemplateLoader.js';
 import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
-import { ToolRegistry, type IToolRegistry } from '../tools/registry.js';
-import type { Tool, ToolExecutionResult } from '../tools/types.js';
+import { createToolRegistry, type IToolRegistry } from '../tools/registry.js';
+import { ToolExecutor, type ToolExecutorCallbacks } from '../tools/execution/ToolExecutor.js';
+import { DefaultToolPolicyChecker, type IToolPolicyChecker } from '../tools/execution/ToolPolicyChecker.js';
+import { ResultBudget } from '../tools/execution/ResultBudget.js';
 import { TurnContext } from './TurnContext.js';
 import type { AgentEvent, ExecutionOptions, TurnExecutionResult, TurnSubmission } from './types.js';
 import type { ActiveTurn } from './ActiveTurn.js';
@@ -14,18 +15,23 @@ interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
   toolRegistry?: IToolRegistry;
+  toolPolicyChecker?: IToolPolicyChecker;
+  toolExecutor?: ToolExecutor;
 }
 
 export class TurnExecutor {
   private readonly systemPromptBuilder: ISystemPromptBuilder;
   private readonly modelClientFactory: IModelClientFactory;
   private readonly toolRegistry: IToolRegistry;
+  private readonly toolExecutor: ToolExecutor;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
-    this.toolRegistry = deps.toolRegistry ?? new ToolRegistry(config);
+    this.toolRegistry = deps.toolRegistry ?? createToolRegistry(config);
     this.systemPromptBuilder = deps.systemPromptBuilder ??
       new SystemPromptBuilder(new TemplateLoader());
     this.modelClientFactory = deps.modelClientFactory ?? new ModelClientFactory(config);
+    const policyChecker = deps.toolPolicyChecker ?? new DefaultToolPolicyChecker();
+    this.toolExecutor = deps.toolExecutor ?? new ToolExecutor(this.toolRegistry, policyChecker);
   }
 
   async *run(
@@ -73,6 +79,7 @@ export class TurnExecutor {
     const context = new TurnContext(submission, initialMessages);
     const client = this.modelClientFactory.createClient();
     let toolCallCount = 0;
+    const resultBudget = new ResultBudget(); // fresh per request
 
     while (context.turnCount < maxTurns) {
       this.throwIfAborted(context.signal);
@@ -118,50 +125,46 @@ export class TurnExecutor {
         toolCalls: result.calls,
       });
 
-      for (const call of result.calls) {
-        this.throwIfAborted(context.signal);
-        toolCallCount += 1;
-        activeTurn?.turnState.registerToolCall(call.id);
-        const tool = toolRegistry.get(call.function.name);
-        if (!tool) {
-          throw new Error(`Unknown tool: ${call.function.name}`);
-        }
+      // Delegate all tool execution to ToolExecutor
+      const toolContext = {
+        conversationId: context.conversationId,
+        signal: context.signal ?? new AbortController().signal,
+        policyConfig: {},
+      };
 
-        yield { type: 'tool_start', name: call.function.name, callId: call.id };
-        const toolResult = await this.executeTool(call, context.conversationId, context.signal, tool);
+      const callbacks: ToolExecutorCallbacks = {
+        onToolStart: (name, callId) => {
+          activeTurn?.turnState.registerToolCall(callId);
+        },
+        onToolEnd: (name, callId) => {
+          activeTurn?.turnState.resolveToolCall(callId);
+        },
+      };
+
+      const records = await this.toolExecutor.runTools(
+        result.calls, toolContext, resultBudget, callbacks,
+      );
+
+      // Yield events and push results to message history
+      for (const record of records) {
+        toolCallCount += 1;
+        yield { type: 'tool_start', name: record.toolName, callId: record.callId };
         yield {
           type: 'tool_end',
-          name: call.function.name,
-          callId: call.id,
-          success: toolResult.success,
+          name: record.toolName,
+          callId: record.callId,
+          success: record.result.success,
         };
-        activeTurn?.turnState.resolveToolCall(call.id);
-
         context.messages.push({
           role: 'tool',
-          content: toolResult.content,
-          toolCallId: call.id,
-          toolName: call.function.name,
+          content: record.modelContent,
+          toolCallId: record.callId,
+          toolName: record.toolName,
         });
       }
     }
 
     throw new Error('max_turns_exceeded');
-  }
-
-  private async executeTool(
-    call: ToolCall,
-    conversationId: string,
-    signal: AbortSignal | undefined,
-    tool: Tool,
-  ): Promise<ToolExecutionResult> {
-    let args: Record<string, unknown>;
-    try {
-      args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>;
-    } catch {
-      return { success: false, content: `Invalid arguments for tool ${call.function.name}.` };
-    }
-    return tool.execute(args, { conversationId, signal });
   }
 
   private throwIfAborted(signal?: AbortSignal) {

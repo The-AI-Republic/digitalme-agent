@@ -5,9 +5,10 @@ import { TurnExecutor } from './TurnExecutor.js';
 import type { CompletionRequest, ModelStepResult, ModelClient } from '../models/ModelClient.js';
 import type { AgentEvent, TurnSubmission, TurnExecutionResult, ExecutionOptions } from './types.js';
 import { consumeGenerator } from './types.js';
-import type { ToolExecutionResult, Tool, ToolDefinition } from '../tools/types.js';
+import type { ToolExecutionResult, Tool, ToolDefinition, ToolMetadata } from '../tools/types.js';
 import type { ISystemPromptBuilder, BuiltPrompt, PromptContext } from '../prompts/types.js';
 import { testConfig as config } from '../test/fixtures.js';
+import { z } from 'zod';
 
 class FakeModelClient implements ModelClient {
   public readonly requests: CompletionRequest[] = [];
@@ -39,11 +40,21 @@ class FakeTool implements Tool {
       },
     },
   };
+  readonly metadata: ToolMetadata = {
+    timeoutMs: 10_000,
+    maxResultChars: 20_000,
+    policyCategory: 'search',
+  };
+  readonly inputSchema = z.object({
+    query: z.string().optional(),
+  });
 
   async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    const content = `tool-result:${String(args.query ?? '')}`;
     return {
       success: true,
-      content: `tool-result:${String(args.query ?? '')}`,
+      data: { query: args.query },
+      renderForModel: () => content,
     };
   }
 }
