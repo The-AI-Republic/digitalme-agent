@@ -124,6 +124,7 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool<SubagentInput> 
         conversationId: context.conversationId,
         userMessage: args.prompt,
         history: [],
+        signal: context.signal,
         promptHistory: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: args.prompt },

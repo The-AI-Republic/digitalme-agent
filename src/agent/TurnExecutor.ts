@@ -158,7 +158,12 @@ export class TurnExecutor {
         result.calls, toolContext, resultBudget, callbacks,
       );
 
-      // Yield events in the order they actually fired during execution
+      // Yield events in the order they actually fired during execution.
+      // Note: events are replayed after runTools() completes, not during execution.
+      // This is an inherent limitation of async generators — the generator cannot
+      // yield while awaiting runTools(). The eventLog preserves callback-order
+      // semantics (completion order for concurrent tools), but consumers see all
+      // events batched after execution rather than truly interleaved.
       for (const event of eventLog) {
         yield event;
       }

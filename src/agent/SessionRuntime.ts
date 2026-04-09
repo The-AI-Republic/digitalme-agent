@@ -47,8 +47,12 @@ export class SessionRuntime {
     return this.hasActiveTurn() || this.activeForkedAgents.size > 0;
   }
 
+  /** Whether fork launches are permitted by config. Check before calling launchForkedAgent. */
+  canFork(): boolean {
+    return this.forkedAgentsEnabled;
+  }
+
   registerForkedAgent(handle: ForkedAgentHandle): void {
-    if (!this.forkedAgentsEnabled) return;
     this.activeForkedAgents.set(handle.id, handle);
     handle.promise.then(
       () => this.activeForkedAgents.delete(handle.id),

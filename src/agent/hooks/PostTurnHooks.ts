@@ -4,7 +4,7 @@ import type { TurnExecutionResult, ForkedAgentHandle, TurnExecutorLike } from '.
 
 export interface PostTurnHookContext {
   sessionState: SessionState;
-  sessionRuntime: { registerForkedAgent(handle: ForkedAgentHandle): void };
+  sessionRuntime: { canFork(): boolean; registerForkedAgent(handle: ForkedAgentHandle): void };
   forkSemaphore: ForkSemaphore;
   turnExecutor: TurnExecutorLike;
   conversationId: string;

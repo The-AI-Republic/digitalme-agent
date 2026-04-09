@@ -69,10 +69,11 @@ function makeSubmission(overrides: Partial<TurnSubmission> = {}): TurnSubmission
   };
 }
 
-function makeRuntime() {
+function makeRuntime(opts: { canFork?: boolean } = {}) {
   const handles: ForkedAgentHandle[] = [];
   return {
     handles,
+    canFork() { return opts.canFork ?? true; },
     registerForkedAgent(handle: ForkedAgentHandle) {
       handles.push(handle);
     },
@@ -115,6 +116,18 @@ test('launchForkedAgent returns ForkedAgentResult with finalText and totalUsage'
   const result = await handle.promise;
   assert.equal(result.finalText, 'hello from fork');
   assert.equal(result.totalUsage.totalTokens, 15);
+});
+
+test('launchForkedAgent returns null when canFork is false', () => {
+  const handle = launchForkedAgent({
+    submission: makeSubmission(),
+    turnExecutor: makeFakeExecutor('ignored'),
+    forkSemaphore: new ForkSemaphore(2),
+    sessionRuntime: makeRuntime({ canFork: false }),
+    config: { forkLabel: 'test' },
+  });
+
+  assert.equal(handle, null);
 });
 
 test('launchForkedAgent returns null when semaphore is full', () => {
@@ -287,20 +300,18 @@ function makeDummyDeps() {
   };
 }
 
-test('SessionRuntime.registerForkedAgent is a no-op when forkedAgentsEnabled is false', async () => {
+test('SessionRuntime.canFork returns false when forkedAgentsEnabled is false', () => {
   const runtime = new SessionRuntime(new SessionState('conv-test', []), makeDummyDeps(), {
     forkedAgentsEnabled: false,
   });
+  assert.equal(runtime.canFork(), false);
+});
 
-  const handle: ForkedAgentHandle = {
-    id: 'fork-test-1',
-    forkLabel: 'test',
-    abort: () => {},
-    promise: Promise.resolve({ finalText: 'ok', totalUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }),
-  };
-
-  runtime.registerForkedAgent(handle);
-  assert.equal(runtime.getActiveForkedAgentCount(), 0);
+test('SessionRuntime.canFork returns true when forkedAgentsEnabled is true', () => {
+  const runtime = new SessionRuntime(new SessionState('conv-test', []), makeDummyDeps(), {
+    forkedAgentsEnabled: true,
+  });
+  assert.equal(runtime.canFork(), true);
 });
 
 test('SessionRuntime.registerForkedAgent cleans up without unhandled rejection on failure', async () => {
