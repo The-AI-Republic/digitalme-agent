@@ -23,6 +23,16 @@ import {
 import { categorizeApiError, exponentialBackoff } from './apiRetry.js';
 import { tryReactiveCompact } from './reactiveCompact.js';
 
+/** Wraps a provider error with buffered recovery events for safe propagation. */
+class RecoveryError extends Error {
+  constructor(
+    public readonly cause: unknown,
+    public readonly recoveryEvents: AgentEvent[],
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
 interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
@@ -154,12 +164,12 @@ export class TurnExecutor {
           recovery,
         );
       } catch (error) {
-        // Emit any buffered recovery events before propagating the error
-        const recoveryEvents = (error as { recoveryEvents?: AgentEvent[] }).recoveryEvents;
-        if (recoveryEvents) {
-          for (const event of recoveryEvents) {
+        // Emit any buffered recovery events before propagating the original error
+        if (error instanceof RecoveryError) {
+          for (const event of error.recoveryEvents) {
             yield event;
           }
+          throw error.cause;
         }
         throw error;
       }
@@ -190,10 +200,10 @@ export class TurnExecutor {
           tokenUsage: context.tokenUsage,
           completedTurns: context.turnCount,
           toolCallCount,
-          promptMessages: [
-            { role: 'user', content: submission.userMessage },
-            ...context.messages.slice(initialMessages.length),
-          ],
+          promptMessages: this.buildCleanPromptMessages(
+            submission.userMessage, context.messages, initialMessages.length,
+            continuationIndices, lastText,
+          ),
         };
       }
 
@@ -319,10 +329,10 @@ export class TurnExecutor {
       tokenUsage: context.tokenUsage,
       completedTurns: context.turnCount,
       toolCallCount,
-      promptMessages: [
-        { role: 'user', content: submission.userMessage },
-        ...context.messages.slice(initialMessages.length),
-      ],
+      promptMessages: this.buildCleanPromptMessages(
+        submission.userMessage, context.messages, initialMessages.length,
+        continuationIndices, lastText,
+      ),
     };
   }
 
@@ -399,15 +409,12 @@ export class TurnExecutor {
           continue;
         }
 
-        // Attach buffered events so the caller can emit them before propagating
-        (error as { recoveryEvents?: AgentEvent[] }).recoveryEvents = events;
-        throw error; // Non-retryable or retries exhausted
+        // Wrap in a RecoveryError so buffered events reach the caller
+        throw new RecoveryError(error, events);
       }
     }
 
-    const exhausted = new Error('api_retries_exhausted');
-    (exhausted as { recoveryEvents?: AgentEvent[] }).recoveryEvents = events;
-    throw exhausted;
+    throw new RecoveryError(new Error('api_retries_exhausted'), events);
   }
 
   private async executeTool(
