@@ -123,14 +123,20 @@ export class AnthropicClient extends ModelClient {
       if (message.role === 'system') continue;
 
       if (message.role === 'tool') {
-        result.push({
-          role: 'user',
-          content: [{
-            type: 'tool_result',
-            tool_use_id: message.toolCallId ?? '',
-            content: message.content ?? '',
-          }],
-        });
+        const block = {
+          type: 'tool_result',
+          tool_use_id: message.toolCallId ?? '',
+          content: message.content ?? '',
+        };
+        // Anthropic requires all tool_result blocks for parallel tool_use
+        // in a single user message. Merge consecutive tool messages.
+        const last = result[result.length - 1];
+        if (last && last.role === 'user' && Array.isArray(last.content)
+            && last.content.length > 0 && last.content[0].type === 'tool_result') {
+          last.content.push(block);
+        } else {
+          result.push({ role: 'user', content: [block] });
+        }
         continue;
       }
 

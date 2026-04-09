@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import { ForkSemaphore } from './ForkSemaphore.js';
 import { launchForkedAgent } from './ForkedAgent.js';
+import { SessionRuntime } from '../SessionRuntime.js';
+import { SessionState } from '../SessionState.js';
 import type {
   AgentEvent,
   TurnExecutionResult,
@@ -274,4 +276,58 @@ test('launchForkedAgent passes ExecutionOptions through to run()', async () => {
   assert.ok(handle);
   await handle.promise;
   assert.equal(receivedModel, 'gpt-4o-mini');
+});
+
+// --- SessionRuntime.registerForkedAgent tests ---
+
+function makeDummyDeps() {
+  return {
+    turnExecutor: makeFakeExecutor('ok'),
+    rolloutRecorder: { async record() {} },
+  };
+}
+
+test('SessionRuntime.registerForkedAgent is a no-op when forkedAgentsEnabled is false', async () => {
+  const runtime = new SessionRuntime(new SessionState('conv-test', []), makeDummyDeps(), {
+    forkedAgentsEnabled: false,
+  });
+
+  const handle: ForkedAgentHandle = {
+    id: 'fork-test-1',
+    forkLabel: 'test',
+    abort: () => {},
+    promise: Promise.resolve({ finalText: 'ok', totalUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }),
+  };
+
+  runtime.registerForkedAgent(handle);
+  assert.equal(runtime.getActiveForkedAgentCount(), 0);
+});
+
+test('SessionRuntime.registerForkedAgent cleans up without unhandled rejection on failure', async () => {
+  const runtime = new SessionRuntime(new SessionState('conv-test', []), makeDummyDeps(), {
+    forkedAgentsEnabled: true,
+  });
+
+  let rejectFn: (err: Error) => void;
+  const failingPromise = new Promise<ForkedAgentResult>((_, reject) => {
+    rejectFn = reject;
+  });
+  // Suppress rejection on the original promise (as ForkedAgent.ts does)
+  failingPromise.catch(() => {});
+
+  const handle: ForkedAgentHandle = {
+    id: 'fork-test-2',
+    forkLabel: 'test',
+    abort: () => {},
+    promise: failingPromise,
+  };
+
+  runtime.registerForkedAgent(handle);
+  assert.equal(runtime.getActiveForkedAgentCount(), 1);
+
+  // Reject — should clean up without unhandled rejection
+  rejectFn!(new Error('fork failed'));
+  // Let microtask queue flush
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(runtime.getActiveForkedAgentCount(), 0);
 });

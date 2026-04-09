@@ -48,10 +48,12 @@ export class SessionRuntime {
   }
 
   registerForkedAgent(handle: ForkedAgentHandle): void {
+    if (!this.forkedAgentsEnabled) return;
     this.activeForkedAgents.set(handle.id, handle);
-    handle.promise.finally(() => {
-      this.activeForkedAgents.delete(handle.id);
-    });
+    handle.promise.then(
+      () => this.activeForkedAgents.delete(handle.id),
+      () => this.activeForkedAgents.delete(handle.id),
+    );
   }
 
   abortForkedAgents(): void {
