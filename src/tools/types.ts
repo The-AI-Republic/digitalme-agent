@@ -43,13 +43,13 @@ export const DEFAULT_TOOL_METADATA: ToolMetadata = {
  * to Tool<Record<string, unknown>>. Concrete tools implement
  * Tool<SpecificInput> for internal type safety.
  */
-export interface Tool<TInput = Record<string, unknown>> {
+export interface Tool<TInput = Record<string, unknown>, TData = unknown> {
   readonly name: string;
   readonly definition: ToolDefinition;
   readonly metadata: ToolMetadata;
   readonly inputSchema: z.ZodType<TInput>;
 
-  execute(args: TInput, context: ToolContext): Promise<ToolExecutionResult>;
+  execute(args: TInput, context: ToolContext): Promise<ToolExecutionResult<TData>>;
 
   /** Input-dependent concurrency classification. Defaults to false when not defined. */
   isConcurrencySafe?(args: TInput): boolean;
@@ -58,5 +58,5 @@ export interface Tool<TInput = Record<string, unknown>> {
   validateInput?(args: TInput, context: ToolContext): string | null;
 
   /** Short summary for logging/monitoring (NOT model-facing). */
-  summarizeResult?(args: TInput, result: ToolExecutionResult): string;
+  summarizeResult?(args: TInput, result: ToolExecutionResult<TData>): string;
 }

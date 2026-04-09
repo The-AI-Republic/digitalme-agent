@@ -143,6 +143,20 @@ test('ResultBudget later batches see reduced remaining', () => {
   assert.ok(batch2[0]!.modelContent.length <= 100);
 });
 
+test('ResultBudget.normalizeBatch does not infinite loop when budget pre-exhausted', () => {
+  const budget = new ResultBudget(50);
+  // Consume the entire budget via serial path
+  budget.truncateAndConsume('x'.repeat(50), 200);
+  assert.equal(budget.remaining, 0);
+
+  // normalizeBatch with content should terminate, not loop forever
+  const records = [makeRecord('call-1', 't1', 'y'.repeat(100))];
+  budget.normalizeBatch(records);
+  // All content should be truncated to empty
+  assert.equal(records[0]!.modelContent.length, 0);
+  assert.equal(records[0]!.result.truncated, true);
+});
+
 function makeRecord(callId: string, toolName: string, modelContent: string) {
   return {
     callId,

@@ -1,6 +1,6 @@
 import type { ToolCall } from '../../models/ModelClient.js';
 import type { IToolRegistry } from '../registry.js';
-import type { Tool, ToolContext, ToolExecutionResult, DEFAULT_TOOL_METADATA } from '../types.js';
+import type { Tool, ToolContext, ToolExecutionResult } from '../types.js';
 import type { IToolPolicyChecker } from './ToolPolicyChecker.js';
 import type { ResultBudget } from './ResultBudget.js';
 import { truncateResult } from './ResultBudget.js';

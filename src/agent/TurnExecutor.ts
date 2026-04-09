@@ -11,6 +11,9 @@ import { TurnContext } from './TurnContext.js';
 import type { AgentEvent, ExecutionOptions, ToolSummaryEntry, TurnExecutionResult, TurnSubmission } from './types.js';
 import type { ActiveTurn } from './ActiveTurn.js';
 
+/** Shared signal that never fires — avoids per-call AbortController allocation. */
+const NEVER_ABORT = new AbortController().signal;
+
 interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
@@ -130,16 +133,24 @@ export class TurnExecutor {
       // Delegate all tool execution to ToolExecutor
       const toolContext = {
         conversationId: context.conversationId,
-        signal: context.signal ?? new AbortController().signal,
+        signal: context.signal ?? NEVER_ABORT,
         policyConfig: {},
       };
+
+      // Collect events in real-time order via callbacks, replay after await
+      type ToolEvent =
+        | { type: 'tool_start'; name: string; callId: string }
+        | { type: 'tool_end'; name: string; callId: string; success: boolean };
+      const eventLog: ToolEvent[] = [];
 
       const callbacks: ToolExecutorCallbacks = {
         onToolStart: (name, callId) => {
           activeTurn?.turnState.registerToolCall(callId);
+          eventLog.push({ type: 'tool_start', name, callId });
         },
-        onToolEnd: (name, callId) => {
+        onToolEnd: (name, callId, success) => {
           activeTurn?.turnState.resolveToolCall(callId);
+          eventLog.push({ type: 'tool_end', name, callId, success });
         },
       };
 
@@ -147,7 +158,12 @@ export class TurnExecutor {
         result.calls, toolContext, resultBudget, callbacks,
       );
 
-      // Yield events, collect summaries, and push results to message history
+      // Yield events in the order they actually fired during execution
+      for (const event of eventLog) {
+        yield event;
+      }
+
+      // Collect summaries and push results to message history
       for (const record of records) {
         toolCallCount += 1;
         toolSummaries.push({
@@ -157,13 +173,6 @@ export class TurnExecutor {
           durationMs: record.durationMs,
           success: record.result.success,
         });
-        yield { type: 'tool_start', name: record.toolName, callId: record.callId };
-        yield {
-          type: 'tool_end',
-          name: record.toolName,
-          callId: record.callId,
-          success: record.result.success,
-        };
         context.messages.push({
           role: 'tool',
           content: record.modelContent,

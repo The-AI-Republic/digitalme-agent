@@ -427,11 +427,6 @@ test('policy-rejected calls produce error records without execution', async () =
 // --- Aggregate budget under concurrency ---
 
 test('concurrent aggregate budget truncates largest results', async () => {
-  const tool = makeTool({
-    isConcurrencySafe: true,
-    maxResultChars: 10_000,
-  });
-  // Override execute to return different sized results
   let callIdx = 0;
   const originalTool = makeTool({
     isConcurrencySafe: true,

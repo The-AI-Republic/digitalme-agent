@@ -67,10 +67,11 @@ export class ResultBudget {
   normalizeBatch(records: ToolExecutionRecord[]): void {
     let total = records.reduce((sum, r) => sum + r.modelContent.length, 0);
 
-    while (total + this.consumed > this.maxTotalChars && records.length > 0) {
+    while (total + this.consumed > this.maxTotalChars) {
       const largest = records.reduce((max, r) =>
         r.modelContent.length > max.modelContent.length ? r : max,
       );
+      if (largest.modelContent.length === 0) break; // nothing left to truncate
       const overshoot = total + this.consumed - this.maxTotalChars;
       const allowed = Math.max(0, largest.modelContent.length - overshoot);
       const truncated = truncateResult(largest.modelContent, allowed);

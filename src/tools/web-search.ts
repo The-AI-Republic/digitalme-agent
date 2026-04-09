@@ -90,7 +90,7 @@ function zodToJsonSchema(schema: z.ZodObject<z.ZodRawShape>): Record<string, unk
   };
 }
 
-export class WebSearchTool implements Tool<WebSearchInput> {
+export class WebSearchTool implements Tool<WebSearchInput, WebSearchData> {
   readonly name = 'web_search';
 
   readonly metadata: ToolMetadata = {
@@ -185,7 +185,7 @@ export class WebSearchTool implements Tool<WebSearchInput> {
   }
 
   summarizeResult(args: WebSearchInput, result: ToolExecutionResult<WebSearchData>): string {
-    const data = result.data as WebSearchData;
+    const data = result.data;
     return result.success
       ? `web_search("${args.query}") → ${data.results.length} results`
       : `web_search("${args.query}") → failed`;

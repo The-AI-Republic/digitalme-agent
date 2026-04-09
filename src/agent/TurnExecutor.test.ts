@@ -473,6 +473,47 @@ test('No ExecutionOptions uses config defaults', async () => {
   assert.equal(client.requests[0]?.maxOutputTokens, 8192);
 });
 
+test('TurnExecutor yields tool_start before tool_end for each tool call', async () => {
+  const executor = makeExecutor([
+    {
+      type: 'tool_calls',
+      calls: [
+        {
+          id: 'call-a',
+          type: 'function',
+          function: { name: 'test_tool', arguments: '{}' },
+        },
+        {
+          id: 'call-b',
+          type: 'function',
+          function: { name: 'test_tool', arguments: '{}' },
+        },
+      ],
+    },
+    { type: 'final_text', text: 'done' },
+  ]);
+
+  const submission: TurnSubmission = {
+    requestId: 'req-timing',
+    conversationId: 'conv-timing',
+    userMessage: 'time test',
+    history: [],
+  };
+
+  const { events } = await collectEvents(executor.run(submission));
+  const toolEvents = events.filter(e => e.type === 'tool_start' || e.type === 'tool_end');
+
+  // tool_start for call-a must come before tool_end for call-a
+  const startA = toolEvents.findIndex(e => e.type === 'tool_start' && 'callId' in e && e.callId === 'call-a');
+  const endA = toolEvents.findIndex(e => e.type === 'tool_end' && 'callId' in e && e.callId === 'call-a');
+  assert.ok(startA < endA, 'tool_start should come before tool_end for call-a');
+
+  // tool_start for call-b must come before tool_end for call-b
+  const startB = toolEvents.findIndex(e => e.type === 'tool_start' && 'callId' in e && e.callId === 'call-b');
+  const endB = toolEvents.findIndex(e => e.type === 'tool_end' && 'callId' in e && e.callId === 'call-b');
+  assert.ok(startB < endB, 'tool_start should come before tool_end for call-b');
+});
+
 // --- consumeGenerator tests ---
 
 test('consumeGenerator forwards events and returns the result', async () => {
