@@ -88,6 +88,7 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool<SubagentInput> 
 
   const metadata: ToolMetadata = {
     ...DEFAULT_TOOL_METADATA,
+    timeoutMs: 300_000, // 5 minutes — subagents make many model calls
     policyCategory: 'action',
   };
 

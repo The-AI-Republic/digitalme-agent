@@ -28,8 +28,9 @@ export function truncateResult(
   const breakpoint = cut > contentBudget * 0.5 ? cut : contentBudget;
   const suffix = `\n[truncated — ${content.length - breakpoint} chars omitted]`;
 
+  const output = content.slice(0, breakpoint) + suffix;
   return {
-    content: content.slice(0, breakpoint) + suffix,
+    content: output.length <= maxChars ? output : output.slice(0, maxChars),
     truncated: true,
     originalChars: content.length,
   };

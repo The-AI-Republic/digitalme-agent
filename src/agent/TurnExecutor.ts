@@ -27,14 +27,15 @@ export class TurnExecutor {
   private readonly modelClientFactory: IModelClientFactory;
   private readonly toolRegistry: IToolRegistry;
   private readonly toolExecutor: ToolExecutor;
+  private readonly policyChecker: IToolPolicyChecker;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
     this.toolRegistry = deps.toolRegistry ?? createToolRegistry(config);
     this.systemPromptBuilder = deps.systemPromptBuilder ??
       new SystemPromptBuilder(new TemplateLoader());
     this.modelClientFactory = deps.modelClientFactory ?? new ModelClientFactory(config);
-    const policyChecker = deps.toolPolicyChecker ?? new DefaultToolPolicyChecker();
-    this.toolExecutor = deps.toolExecutor ?? new ToolExecutor(this.toolRegistry, policyChecker);
+    this.policyChecker = deps.toolPolicyChecker ?? new DefaultToolPolicyChecker();
+    this.toolExecutor = deps.toolExecutor ?? new ToolExecutor(this.toolRegistry, this.policyChecker);
   }
 
   async *run(
@@ -154,7 +155,12 @@ export class TurnExecutor {
         },
       };
 
-      const records = await this.toolExecutor.runTools(
+      // Use a scoped ToolExecutor when toolRegistry is overridden (e.g. SubagentTool)
+      // so the executor resolves tools from the same registry the model sees.
+      const activeExecutor = (toolRegistry === this.toolRegistry)
+        ? this.toolExecutor
+        : new ToolExecutor(toolRegistry, this.policyChecker);
+      const records = await activeExecutor.runTools(
         result.calls, toolContext, resultBudget, callbacks,
       );
 
