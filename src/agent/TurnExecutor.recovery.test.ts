@@ -199,6 +199,27 @@ test('recovery: retries exhaust after MAX_API_RETRIES -> throws', async () => {
   );
 });
 
+test('recovery: recovery events are emitted even when retries exhaust', async () => {
+  const { executor } = makeExecutor([
+    { error: { status: 500, message: 'fail' } },
+    { error: { status: 500, message: 'fail' } },
+    { error: { status: 500, message: 'fail' } },
+    { error: { status: 500, message: 'fail' } },
+  ]);
+
+  const events: AgentEvent[] = [];
+  const gen = executor.run(submission);
+  try {
+    await consumeGenerator(gen, (event) => events.push(event));
+  } catch {
+    // expected
+  }
+
+  // Should have emitted 3 api_retry events before the final throw
+  const retryEvents = events.filter(e => e.type === 'recovery' && (e as { reason: string }).reason === 'api_retry');
+  assert.equal(retryEvents.length, 3, 'Expected 3 retry events before exhaustion');
+});
+
 // --- Fallback Model Tests ---
 
 test('recovery: 529 x3 with fallback configured -> switches model', async () => {

@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
-import type { ToolCall, ModelStepResult } from '../models/ModelClient.js';
+import type { ToolCall, ModelStepResult, Message } from '../models/ModelClient.js';
 import { type ModelClient } from '../models/ModelClient.js';
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
 import { TemplateLoader } from '../prompts/TemplateLoader.js';
@@ -146,12 +146,23 @@ export class TurnExecutor {
       }
 
       // --- Call model (with retry/fallback, error capture) ---
-      const callResult: { result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] } =
-        await this.callModelWithRecovery(
+      let callResult: { result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] };
+      try {
+        callResult = await this.callModelWithRecovery(
           primaryClient,
           { model: modelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
           recovery,
         );
+      } catch (error) {
+        // Emit any buffered recovery events before propagating the error
+        const recoveryEvents = (error as { recoveryEvents?: AgentEvent[] }).recoveryEvents;
+        if (recoveryEvents) {
+          for (const event of recoveryEvents) {
+            yield event;
+          }
+        }
+        throw error;
+      }
 
       // Emit any recovery events from retry/fallback
       for (const event of callResult.events) {
@@ -388,11 +399,15 @@ export class TurnExecutor {
           continue;
         }
 
+        // Attach buffered events so the caller can emit them before propagating
+        (error as { recoveryEvents?: AgentEvent[] }).recoveryEvents = events;
         throw error; // Non-retryable or retries exhausted
       }
     }
 
-    throw new Error('api_retries_exhausted');
+    const exhausted = new Error('api_retries_exhausted');
+    (exhausted as { recoveryEvents?: AgentEvent[] }).recoveryEvents = events;
+    throw exhausted;
   }
 
   private async executeTool(
@@ -416,12 +431,12 @@ export class TurnExecutor {
    */
   private buildCleanPromptMessages(
     userMessage: string,
-    messages: Array<Record<string, unknown>>,
+    messages: Message[],
     initialMessagesLength: number,
     continuationIndices: Set<number>,
     finalAssistantText: string,
-  ): Array<Record<string, unknown>> {
-    const result: Array<Record<string, unknown>> = [
+  ): Message[] {
+    const result: Message[] = [
       { role: 'user', content: userMessage },
     ];
     for (let i = initialMessagesLength; i < messages.length; i++) {
