@@ -2,13 +2,21 @@
 
 All configuration is defined in `config.yaml`. Values using `${VAR}` syntax are interpolated from environment variables at startup.
 
-## persona
+## soul
 
-| Parameter | Required | Description |
-|---|---|---|
-| `name` | Yes | Display name for the agent. Typically matches the creator's name. |
-| `default_system_prompt` | Yes | The system prompt that defines the agent's personality and behavior. Supports multi-line YAML strings. |
-| `tools.allow_web_search` | No | Enable the web search tool. Default: `false`. |
+Defines the agent's personality and behavior. The prompt management system composes these fields into a system prompt automatically.
+
+| Parameter | Required | Default | Description |
+|---|---|---|---|
+| `name` | Yes | — | Display name for the agent. Typically matches the creator's name. |
+| `description` | Yes | — | One-line description of who this agent is (e.g. "A personal wellness coach specializing in mindfulness"). |
+| `tone` | No | — | How the agent speaks — warm, blunt, formal, playful, etc. |
+| `boundaries` | No | — | What the agent won't do or discuss. |
+| `knowledge` | No | — | Domain expertise or topics the agent knows about. |
+| `others` | No | — | Any additional context the creator wants baked into the agent's personality. |
+| `system_prompt_override` | No | — | Replace the auto-generated system prompt entirely with this string. |
+| `system_prompt_append` | No | — | Append additional text to the auto-generated system prompt. |
+| `tools.allow_web_search` | No | `false` | Enable the web search tool. |
 
 ## server
 
@@ -41,16 +49,18 @@ LLM provider configuration.
 
 | Parameter | Required | Default | Description |
 |---|---|---|---|
-| `provider` | Yes | — | LLM provider. One of: `openai`, `xai`, `groq`, `google-ai-studio`, `fireworks`, `together`. |
-| `name` | Yes | — | Model name (e.g. `gpt-4o`, `gemini-2.0-flash`, `llama-3-70b`). Must be valid for the chosen provider. |
+| `provider` | Yes | — | LLM provider. One of: `openai`, `anthropic`, `xai`, `groq`, `google-ai-studio`, `fireworks`, `together`. |
+| `name` | Yes | — | Model name (e.g. `gpt-4o`, `claude-sonnet-4-20250514`, `gemini-2.0-flash`). Must be valid for the chosen provider. |
 | `api_key` | Yes | — | API key for the LLM provider. Use `${MODEL_API_KEY}` to read from env. |
 | `base_url` | No | — | Override the provider's default API endpoint. Only needed for self-hosted or proxy setups (e.g. local Ollama). |
+| `max_output_tokens` | No | `8192` | Maximum number of output tokens per model response. |
 
 ### Supported providers
 
 | Provider | Value | Models (examples) |
 |---|---|---|
 | OpenAI | `openai` | `gpt-4o`, `gpt-4o-mini`, `o1` |
+| Anthropic | `anthropic` | `claude-sonnet-4-20250514`, `claude-haiku-4-5-20251001` |
 | xAI | `xai` | `grok-2`, `grok-3` |
 | Groq | `groq` | `llama-3.3-70b-versatile`, `mixtral-8x7b-32768` |
 | Google AI Studio | `google-ai-studio` | `gemini-2.0-flash`, `gemini-2.5-pro` |

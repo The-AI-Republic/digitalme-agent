@@ -20,11 +20,11 @@ The agent owns all conversation logic. The platform handles user auth, moderatio
 
 ## Features
 
-- **Multi-provider LLM support** — OpenAI, xAI (Grok), Groq, Google AI Studio, Fireworks, Together, or any OpenAI-compatible API
+- **Multi-provider LLM support** — OpenAI, Anthropic (Claude), xAI (Grok), Groq, Google AI Studio, Fireworks, Together, or any OpenAI-compatible API
 - **Streaming responses** — Server-Sent Events for real-time token delivery
 - **Tool use** — built-in web search, extensible tool framework with ReAct loop
 - **HMAC-SHA256 authentication** — every request is cryptographically signed
-- **Configurable personality** — name and system prompt via YAML
+- **Configurable personality** — name, description, tone, boundaries, and knowledge via YAML
 - **Session management** — in-memory conversation state with automatic eviction
 - **Concurrency control** — per-conversation queuing with configurable limits
 - **Docker ready** — single container deployment
@@ -50,13 +50,13 @@ The agent owns all conversation logic. The platform handles user auth, moderatio
    Edit `config.yaml` to set your agent's personality (see [CONFIG.md](CONFIG.md) for all options):
 
    ```yaml
-   persona:
+   soul:
      name: "Your Agent Name"
-     default_system_prompt: |
-       You are a helpful assistant. Be friendly and concise.
+     description: "A brief description of who this agent is."
+     tone: "Friendly and concise."
 
    model:
-     provider: openai       # or xai, groq, google-ai-studio, fireworks, together
+     provider: openai       # or anthropic, xai, groq, google-ai-studio, fireworks, together
      name: gpt-4o
    ```
 
@@ -110,6 +110,7 @@ docker run --rm -p 8088:8088 \
 | Provider | Config value | Example models |
 |---|---|---|
 | OpenAI | `openai` | `gpt-4o`, `gpt-4o-mini`, `o1` |
+| Anthropic | `anthropic` | `claude-sonnet-4-20250514`, `claude-haiku-4-5-20251001` |
 | xAI | `xai` | `grok-2`, `grok-3` |
 | Groq | `groq` | `llama-3.3-70b-versatile`, `mixtral-8x7b-32768` |
 | Google AI Studio | `google-ai-studio` | `gemini-2.0-flash`, `gemini-2.5-pro` |
