@@ -121,7 +121,6 @@ export class TurnExecutor {
     const context = new TurnContext(submission, initialMessages);
     const client = this.modelClientFactory.createClient();
 
-<<<<<<< HEAD
     // Record baseline before pushing user message
     const baselineLength = context.messages.length;
 
@@ -142,10 +141,7 @@ export class TurnExecutor {
       });
     }
 
-    while (context.turnCount < maxTurns) {
-=======
     while (executionState.getIterationIndex() < maxTurns) {
->>>>>>> 4b60d9d (feat: implement runtime state store and observers (track 06))
       this.throwIfAborted(context.signal);
       executionState.incrementIteration();
       executionState.beginModelTurn();
@@ -204,19 +200,9 @@ export class TurnExecutor {
         return {
           finalText,
           tokenUsage: result.tokenUsage,
-<<<<<<< HEAD
-          completedTurns: context.turnCount,
-          toolCallCount,
-          newMessages: context.messages.slice(baselineLength),
-=======
           completedTurns: executionState.getIterationIndex(),
           toolCallCount: executionState.snapshot().toolCallCount,
-          promptMessages: [
-            { role: 'user', content: submission.userMessage },
-            ...context.messages.slice(initialMessages.length),
-            { role: 'assistant', content: finalText },
-          ],
->>>>>>> 4b60d9d (feat: implement runtime state store and observers (track 06))
+          newMessages: context.messages.slice(baselineLength),
         };
       }
 
