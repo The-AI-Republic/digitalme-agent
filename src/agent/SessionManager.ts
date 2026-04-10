@@ -3,20 +3,21 @@ import path from 'node:path';
 import type { AgentConfig } from '../config/schema.js';
 import type { AgentEvent, TurnExecutorLike, TurnSubmission } from './types.js';
 import { EventQueue } from './EventQueue.js';
-import { RolloutRecorder, type IRolloutRecorder } from './RolloutRecorder.js';
 import { SessionRuntime, type SessionRuntimeConfig } from './SessionRuntime.js';
 import { SessionState } from './SessionState.js';
 import { TurnExecutor } from './TurnExecutor.js';
+import { TranscriptRecorder } from './transcript/TranscriptRecorder.js';
+import type { ITranscriptRecorder } from './transcript/types.js';
 
-interface SessionManagerDeps {
+export interface SessionManagerDeps {
   turnExecutor?: TurnExecutorLike;
-  rolloutRecorder?: IRolloutRecorder;
+  transcriptRecorder?: ITranscriptRecorder;
 }
 
 export class SessionManager {
   private readonly sessions = new Map<string, SessionRuntime>();
   private readonly turnExecutor: TurnExecutorLike;
-  private readonly rolloutRecorder: IRolloutRecorder;
+  private readonly transcriptRecorder: ITranscriptRecorder;
   private readonly runtimeConfig: SessionRuntimeConfig;
   private readonly storageDir: string;
   private draining = false;
@@ -26,7 +27,7 @@ export class SessionManager {
     deps: SessionManagerDeps = {},
   ) {
     this.turnExecutor = deps.turnExecutor ?? new TurnExecutor(config);
-    this.rolloutRecorder = deps.rolloutRecorder ?? new RolloutRecorder();
+    this.transcriptRecorder = deps.transcriptRecorder ?? new TranscriptRecorder();
     this.storageDir = config.context.tool_result_persistence.storage_dir;
     const sm = config.context.session_memory;
     this.runtimeConfig = {
@@ -55,7 +56,7 @@ export class SessionManager {
     }
 
     this.evictExpiredSessions();
-    const runtime = this.getOrCreateRuntime(submission);
+    const runtime = await this.getOrCreateRuntime(submission);
     await runtime.execute(submission, events);
   }
 
@@ -81,18 +82,40 @@ export class SessionManager {
     }
   }
 
-  private getOrCreateRuntime(submission: TurnSubmission) {
+  private async getOrCreateRuntime(submission: TurnSubmission) {
     const existing = this.sessions.get(submission.conversationId);
     if (existing) {
       return existing;
     }
 
     this.evictToCapacity();
+
+    // Cold-start: attempt transcript load first
+    let state: SessionState;
+    const loaded = await this.transcriptRecorder
+      .loadTranscript(submission.conversationId)
+      .catch(() => null);
+
+    if (loaded && loaded.messages.length > 0) {
+      // Transcript exists — use it as the richer source
+      state = new SessionState(submission.conversationId, []);
+      state.initializeFromTranscript(loaded.messages);
+      // Seed the recorder's parentId cursor so next recordMessage() chains correctly
+      if (loaded.leafId) {
+        this.transcriptRecorder.seedParentId(submission.conversationId, loaded.leafId);
+      }
+      // Still reconcile with platform history to detect divergence
+      state.reconcileWithPlatformHistory(submission.history);
+    } else {
+      // No transcript — initialize from platform history (existing behavior)
+      state = new SessionState(submission.conversationId, submission.history);
+    }
+
     const runtime = new SessionRuntime(
-      new SessionState(submission.conversationId, submission.history),
+      state,
       {
         turnExecutor: this.turnExecutor,
-        rolloutRecorder: this.rolloutRecorder,
+        transcriptRecorder: this.transcriptRecorder,
       },
       this.runtimeConfig,
     );

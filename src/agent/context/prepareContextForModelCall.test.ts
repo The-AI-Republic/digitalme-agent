@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { prepareContextForModelCall } from './prepareContextForModelCall.js';
 import { TokenBudget } from './TokenBudget.js';
 import { Microcompact } from './Microcompact.js';
-import type { Message } from '../../models/ModelClient.js';
+import { generateId, type Message } from '../../models/ModelClient.js';
 import type { ToolResultPersistenceConfig } from './types.js';
 
 // Minimal stub that never persists (budget never exceeded in these tests)
@@ -37,8 +37,8 @@ function makeDeps(overrides?: { microcompactGapMinutes?: number }) {
 
 test('pipeline returns messages unchanged when nothing to compact', async () => {
   const messages: Message[] = [
-    { role: 'system', content: 'You are helpful.' },
-    { role: 'user', content: 'hello' },
+    { role: 'system', content: 'You are helpful.', id: generateId() },
+    { role: 'user', content: 'hello', id: generateId() },
   ];
   const result = await prepareContextForModelCall(messages, 'test-model', undefined, 'conv-1', makeDeps());
   assert.equal(result.rewrote, false);
@@ -49,10 +49,10 @@ test('pipeline returns messages unchanged when nothing to compact', async () => 
 test('pipeline clears stale tool results and invalidates baseline', async () => {
   const oldTs = new Date(Date.now() - 120 * 60_000).toISOString();
   const messages: Message[] = [
-    { role: 'user', content: 'search' },
-    { role: 'assistant', content: null, timestamp: oldTs },
-    { role: 'tool', content: 'old result 1', toolCallId: 'c1', toolName: 'web_search' },
-    { role: 'tool', content: 'old result 2', toolCallId: 'c2', toolName: 'web_search' },
+    { role: 'user', content: 'search', id: generateId() },
+    { role: 'assistant', content: null, timestamp: oldTs, id: generateId() },
+    { role: 'tool', content: 'old result 1', toolCallId: 'c1', toolName: 'web_search', id: generateId() },
+    { role: 'tool', content: 'old result 2', toolCallId: 'c2', toolName: 'web_search', id: generateId() },
   ];
   const deps = makeDeps();
   const usage = { inputTokens: 100, outputTokens: 10, totalTokens: 110 };
@@ -69,7 +69,7 @@ test('pipeline detects overflow pressure', async () => {
   // With safety=1.0, need >8100 tokens = >32400 chars
   const bigContent = 'x'.repeat(40000);
   const messages: Message[] = [
-    { role: 'user', content: bigContent },
+    { role: 'user', content: bigContent, id: generateId() },
   ];
   const result = await prepareContextForModelCall(messages, 'test-model', undefined, 'conv-1', makeDeps());
   assert.equal(result.pressure, 'overflow');
@@ -77,7 +77,7 @@ test('pipeline detects overflow pressure', async () => {
 
 test('pipeline runs on every call (idempotent when nothing to compact)', async () => {
   const messages: Message[] = [
-    { role: 'user', content: 'hi' },
+    { role: 'user', content: 'hi', id: generateId() },
   ];
   const deps = makeDeps();
   const r1 = await prepareContextForModelCall(messages, 'test-model', undefined, 'conv-1', deps);

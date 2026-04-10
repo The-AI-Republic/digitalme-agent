@@ -28,7 +28,7 @@ export function createSessionMemoryHook(sessionMemory: SessionMemory) {
       return;
     }
 
-    const promptHistory = sessionState.getPromptHistory();
+    const promptHistory = sessionState.getMessages();
     const lastMessage = promptHistory[promptHistory.length - 1];
 
     // Get current notes (or template if first extraction)

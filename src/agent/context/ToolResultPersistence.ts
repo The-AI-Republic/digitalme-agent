@@ -3,6 +3,17 @@ import path from 'node:path';
 import type { Message } from '../../models/ModelClient.js';
 import type { ToolResultPersistenceConfig } from './types.js';
 
+export interface ArtifactRef {
+  filePath: string;
+  originalSize: number;
+  preview: string;
+}
+
+export interface PersistenceResult {
+  content: string;
+  artifactRef?: ArtifactRef;
+}
+
 export class ToolResultPersistence {
   constructor(private readonly config: ToolResultPersistenceConfig) {}
 
@@ -16,9 +27,23 @@ export class ToolResultPersistence {
     content: string,
     conversationId: string,
   ): Promise<string> {
+    const result = await this.processResultWithRef(toolName, toolCallId, content, conversationId);
+    return result.content;
+  }
+
+  /**
+   * Persist a single tool result if it exceeds the threshold.
+   * Returns content and optional artifact reference for transcript recording.
+   */
+  async processResultWithRef(
+    toolName: string,
+    toolCallId: string,
+    content: string,
+    conversationId: string,
+  ): Promise<PersistenceResult> {
     const threshold = this.getThreshold(toolName);
     if (content.length <= threshold) {
-      return content;
+      return { content };
     }
 
     try {
@@ -27,10 +52,17 @@ export class ToolResultPersistence {
       await fs.writeFile(filePath, content, 'utf-8');
 
       const preview = this.buildPreview(content, filePath);
-      return preview;
+      return {
+        content: preview,
+        artifactRef: {
+          filePath,
+          originalSize: content.length,
+          preview: content.slice(0, this.config.previewSizeBytes),
+        },
+      };
     } catch {
       // Persistence failure — return original content inline
-      return content;
+      return { content };
     }
   }
 

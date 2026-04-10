@@ -4,16 +4,16 @@ import { consumeGenerator } from './types.js';
 import type { TurnExecutorLike } from './types.js';
 import { ActiveTurn } from './ActiveTurn.js';
 import { EventQueue } from './EventQueue.js';
-import type { IRolloutRecorder } from './RolloutRecorder.js';
 import { SessionState } from './SessionState.js';
 import { ForkSemaphore } from './fork/ForkSemaphore.js';
 import { PostTurnHookRegistry } from './hooks/PostTurnHooks.js';
 import { SessionMemory, type SessionMemoryConfig } from './context/SessionMemory.js';
 import { createSessionMemoryHook } from './context/SessionMemoryHook.js';
+import type { ITranscriptRecorder } from './transcript/types.js';
 
-interface SessionRuntimeDeps {
+export interface SessionRuntimeDeps {
   turnExecutor: TurnExecutorLike;
-  rolloutRecorder: IRolloutRecorder;
+  transcriptRecorder: ITranscriptRecorder;
 }
 
 export interface SessionRuntimeConfig {
@@ -97,40 +97,38 @@ export class SessionRuntime {
     this.state.touch();
     const reconcileResult = this.state.reconcileWithPlatformHistory(submission.history);
     if (reconcileResult === 'reseeded') {
-      await this.deps.rolloutRecorder.record({
+      await this.deps.transcriptRecorder.recordLifecycleEvent({
         type: 'session_reseeded',
         conversationId: submission.conversationId,
         taskId: submission.requestId,
-        data: {
-          historyCount: submission.history.length,
-        },
-      });
+        timestamp: new Date().toISOString(),
+        historyCount: submission.history.length,
+      } as import('./transcript/types.js').SessionReseededEntry);
     }
 
     const activeTurn = new ActiveTurn(submission.requestId, this.state.getNextTurnId());
     this.activeTurn = activeTurn;
 
-    await this.deps.rolloutRecorder.record({
+    await this.deps.transcriptRecorder.recordLifecycleEvent({
       type: 'task_started',
       conversationId: submission.conversationId,
       taskId: submission.requestId,
       turnId: activeTurn.turnId,
-      data: {
-        session: this.state.snapshot(),
-        platformHistoryCount: submission.history.length,
-      },
-    });
+      timestamp: new Date().toISOString(),
+      session: this.state.snapshot(),
+      platformHistoryCount: submission.history.length,
+    } as import('./transcript/types.js').TaskStartedEntry);
 
     try {
       const result = await consumeGenerator(
         this.deps.turnExecutor.run(
-          { ...submission, promptHistory: this.state.getPromptHistory() },
+          { ...submission, promptHistory: this.state.getMessages() },
           undefined,
           activeTurn,
         ),
         (event) => events.push(event),
       );
-      this.commitResult(submission, result, activeTurn);
+      this.commitResult(result, activeTurn);
 
       // Fire-and-forget: launch post-turn hooks AFTER committing result
       if (this.hooksEnabled && this.hookRegistry.size > 0) {
@@ -146,33 +144,29 @@ export class SessionRuntime {
         });
       }
 
-      await this.deps.rolloutRecorder.record({
+      await this.deps.transcriptRecorder.recordLifecycleEvent({
         type: 'task_completed',
         conversationId: submission.conversationId,
         taskId: submission.requestId,
         turnId: activeTurn.turnId,
-        data: {
-          result: {
-            finalText: result.finalText,
-            completedTurns: result.completedTurns,
-            toolCallCount: result.toolCallCount,
-            tokenUsage: result.tokenUsage,
-          },
-          session: this.state.snapshot(),
-        },
-      });
+        timestamp: new Date().toISOString(),
+        finalText: result.finalText,
+        completedTurns: result.completedTurns,
+        toolCallCount: result.toolCallCount,
+        tokenUsage: result.tokenUsage,
+        session: this.state.snapshot(),
+      } as import('./transcript/types.js').TaskCompletedEntry);
     } catch (error) {
       activeTurn.fail(error);
-      await this.deps.rolloutRecorder.record({
+      await this.deps.transcriptRecorder.recordLifecycleEvent({
         type: 'task_failed',
         conversationId: submission.conversationId,
         taskId: submission.requestId,
         turnId: activeTurn.turnId,
-        data: {
-          error: error instanceof Error ? error.message : String(error),
-          turn: activeTurn.snapshot(),
-        },
-      });
+        timestamp: new Date().toISOString(),
+        error: error instanceof Error ? error.message : String(error),
+        turn: activeTurn.snapshot(),
+      } as import('./transcript/types.js').TaskFailedEntry);
       throw error;
     } finally {
       this.activeTurn = undefined;
@@ -188,8 +182,8 @@ export class SessionRuntime {
     };
   }
 
-  private commitResult(submission: TurnSubmission, result: TurnExecutionResult, activeTurn: ActiveTurn) {
-    this.state.commitTask(submission.userMessage, result.finalText, result.promptMessages);
+  private commitResult(result: TurnExecutionResult, activeTurn: ActiveTurn) {
+    this.state.appendMessages(result.newMessages);
     activeTurn.complete(result.tokenUsage);
   }
 }

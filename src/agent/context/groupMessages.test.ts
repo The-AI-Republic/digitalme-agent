@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { groupMessages } from './groupMessages.js';
-import type { Message } from '../../models/ModelClient.js';
+import { generateId, type Message } from '../../models/ModelClient.js';
 
 test('groups plain user and assistant messages as single-message groups', () => {
   const messages: Message[] = [
-    { role: 'user', content: 'hello' },
-    { role: 'assistant', content: 'hi' },
-    { role: 'user', content: 'bye' },
+    { role: 'user', content: 'hello', id: generateId() },
+    { role: 'assistant', content: 'hi', id: generateId() },
+    { role: 'user', content: 'bye', id: generateId() },
   ];
   const groups = groupMessages(messages);
   assert.equal(groups.length, 3);
@@ -18,18 +18,19 @@ test('groups plain user and assistant messages as single-message groups', () => 
 
 test('groups assistant with toolCalls plus matching tool results', () => {
   const messages: Message[] = [
-    { role: 'user', content: 'search for cats' },
+    { role: 'user', content: 'search for cats', id: generateId() },
     {
       role: 'assistant',
       content: null,
+      id: generateId(),
       toolCalls: [
         { id: 'call_1', type: 'function', function: { name: 'web_search', arguments: '{"q":"cats"}' } },
         { id: 'call_2', type: 'function', function: { name: 'web_search', arguments: '{"q":"dogs"}' } },
       ],
     },
-    { role: 'tool', content: 'cats result', toolCallId: 'call_1', toolName: 'web_search' },
-    { role: 'tool', content: 'dogs result', toolCallId: 'call_2', toolName: 'web_search' },
-    { role: 'assistant', content: 'Here are results...' },
+    { role: 'tool', content: 'cats result', toolCallId: 'call_1', toolName: 'web_search', id: generateId() },
+    { role: 'tool', content: 'dogs result', toolCallId: 'call_2', toolName: 'web_search', id: generateId() },
+    { role: 'assistant', content: 'Here are results...', id: generateId() },
   ];
   const groups = groupMessages(messages);
   assert.equal(groups.length, 3);
@@ -54,6 +55,7 @@ test('handles assistant with toolCalls but no following tool results', () => {
     {
       role: 'assistant',
       content: null,
+      id: generateId(),
       toolCalls: [
         { id: 'call_1', type: 'function', function: { name: 'search', arguments: '{}' } },
       ],
@@ -71,12 +73,13 @@ test('does not group tool results that belong to a different assistant message',
     {
       role: 'assistant',
       content: null,
+      id: generateId(),
       toolCalls: [
         { id: 'call_A', type: 'function', function: { name: 'search', arguments: '{}' } },
       ],
     },
-    { role: 'tool', content: 'result A', toolCallId: 'call_A', toolName: 'search' },
-    { role: 'tool', content: 'orphan', toolCallId: 'call_B', toolName: 'search' },
+    { role: 'tool', content: 'result A', toolCallId: 'call_A', toolName: 'search', id: generateId() },
+    { role: 'tool', content: 'orphan', toolCallId: 'call_B', toolName: 'search', id: generateId() },
   ];
   const groups = groupMessages(messages);
   // Group 1: assistant + call_A tool result
@@ -90,8 +93,8 @@ test('does not group tool results that belong to a different assistant message',
 
 test('system messages are their own group', () => {
   const messages: Message[] = [
-    { role: 'system', content: 'You are a helpful agent.' },
-    { role: 'user', content: 'hi' },
+    { role: 'system', content: 'You are a helpful agent.', id: generateId() },
+    { role: 'user', content: 'hi', id: generateId() },
   ];
   const groups = groupMessages(messages);
   assert.equal(groups.length, 2);

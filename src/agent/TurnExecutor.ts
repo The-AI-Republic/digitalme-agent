@@ -1,7 +1,6 @@
-import crypto from 'node:crypto';
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
-import type { ToolCall } from '../models/ModelClient.js';
+import { generateId, type Message, type ToolCall } from '../models/ModelClient.js';
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
 import { TemplateLoader } from '../prompts/TemplateLoader.js';
 import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
@@ -14,12 +13,14 @@ import { prepareContextForModelCall, type PrepareContextDeps } from './context/p
 import { TokenBudget } from './context/TokenBudget.js';
 import { ToolResultPersistence } from './context/ToolResultPersistence.js';
 import { Microcompact } from './context/Microcompact.js';
+import type { ITranscriptRecorder } from './transcript/types.js';
 
-interface TurnExecutorDeps {
+export interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
   toolRegistry?: IToolRegistry;
   contextDeps?: PrepareContextDeps;
+  transcriptRecorder?: ITranscriptRecorder;
 }
 
 export class TurnExecutor {
@@ -27,6 +28,7 @@ export class TurnExecutor {
   private readonly modelClientFactory: IModelClientFactory;
   private readonly toolRegistry: IToolRegistry;
   private readonly contextDeps: PrepareContextDeps;
+  private readonly transcriptRecorder?: ITranscriptRecorder;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
     this.toolRegistry = deps.toolRegistry ?? new ToolRegistry(config);
@@ -34,6 +36,7 @@ export class TurnExecutor {
       new SystemPromptBuilder(new TemplateLoader());
     this.modelClientFactory = deps.modelClientFactory ?? new ModelClientFactory(config);
     this.contextDeps = deps.contextDeps ?? this.buildDefaultContextDeps();
+    this.transcriptRecorder = deps.transcriptRecorder;
   }
 
   private buildDefaultContextDeps(): PrepareContextDeps {
@@ -77,10 +80,12 @@ export class TurnExecutor {
     const maxOutputTokens = options?.maxOutputTokens ?? this.config.model.max_output_tokens;
     const modelName = options?.model ?? this.config.model.name;
     const toolRegistry = options?.toolRegistry ?? this.toolRegistry;
+    const recorder = this.transcriptRecorder;
 
     const history = submission.promptHistory ?? submission.history.map((item) => ({
-      role: item.role,
+      role: item.role as Message['role'],
       content: item.content,
+      id: generateId(),
     }));
 
     const promptContext: PromptContext = {
@@ -104,15 +109,35 @@ export class TurnExecutor {
       cachePolicy: s.cachePolicy,
     }));
 
+    // Initial messages: system prompt + prior history only (no user message yet)
     const initialMessages = [
-      { role: 'system' as const, content: builtPrompt.finalSystemPrompt.join('\n\n') },
+      { role: 'system' as const, content: builtPrompt.finalSystemPrompt.join('\n\n'), id: generateId() },
       ...history,
-      { role: 'user' as const, content: submission.userMessage, id: crypto.randomUUID(), timestamp: new Date().toISOString() },
     ];
 
     const context = new TurnContext(submission, initialMessages);
     const client = this.modelClientFactory.createClient();
     let toolCallCount = 0;
+
+    // Record baseline before pushing user message
+    const baselineLength = context.messages.length;
+
+    // Push user message after baseline
+    const userMsg: Message = {
+      role: 'user',
+      content: submission.userMessage,
+      id: generateId(),
+      timestamp: new Date().toISOString(),
+    };
+    context.messages.push(userMsg);
+
+    // Dual write: record user message to transcript
+    if (recorder) {
+      await recorder.recordMessage(submission.conversationId, userMsg, {
+        taskId: submission.requestId,
+        turnId: activeTurn?.turnId,
+      });
+    }
 
     while (context.turnCount < maxTurns) {
       this.throwIfAborted(context.signal);
@@ -149,6 +174,24 @@ export class TurnExecutor {
 
       if (result.type === 'final_text') {
         const finalText = result.text ?? '';
+
+        // Push final assistant message to context
+        const finalMsg: Message = {
+          role: 'assistant',
+          content: finalText,
+          id: generateId(),
+          timestamp: new Date().toISOString(),
+        };
+        context.messages.push(finalMsg);
+
+        // Dual write: record final assistant message
+        if (recorder) {
+          await recorder.recordMessage(submission.conversationId, finalMsg, {
+            taskId: submission.requestId,
+            turnId: activeTurn?.turnId,
+          });
+        }
+
         if (result.text) {
           yield { type: 'text_delta', content: result.text };
         }
@@ -158,21 +201,26 @@ export class TurnExecutor {
           tokenUsage: result.tokenUsage,
           completedTurns: context.turnCount,
           toolCallCount,
-          promptMessages: [
-            { role: 'user', content: submission.userMessage },
-            ...context.messages.slice(initialMessages.length),
-            { role: 'assistant', content: finalText },
-          ],
+          newMessages: context.messages.slice(baselineLength),
         };
       }
 
-      context.messages.push({
+      const assistantMsg: Message = {
         role: 'assistant',
         content: null,
         toolCalls: result.calls,
-        id: crypto.randomUUID(),
+        id: generateId(),
         timestamp: new Date().toISOString(),
-      });
+      };
+      context.messages.push(assistantMsg);
+
+      // Dual write: record assistant tool-call message
+      if (recorder) {
+        await recorder.recordMessage(submission.conversationId, assistantMsg, {
+          taskId: submission.requestId,
+          turnId: activeTurn?.turnId,
+        });
+      }
 
       for (const call of result.calls) {
         this.throwIfAborted(context.signal);
@@ -193,14 +241,40 @@ export class TurnExecutor {
         };
         activeTurn?.turnState.resolveToolCall(call.id);
 
-        context.messages.push({
+        // Process through ToolResultPersistence for artifact externalization
+        let resultContent = toolResult.content;
+        let artifactRef: { filePath: string; originalSize: number; preview: string } | undefined;
+        const persistence = this.contextDeps.toolResultPersistence;
+        if (persistence) {
+          const persisted = await persistence.processResultWithRef(
+            call.function.name,
+            call.id,
+            toolResult.content,
+            context.conversationId,
+          );
+          resultContent = persisted.content;
+          artifactRef = persisted.artifactRef;
+        }
+
+        const toolMsg: Message = {
           role: 'tool',
-          content: toolResult.content,
+          content: resultContent,
           toolCallId: call.id,
           toolName: call.function.name,
-          id: crypto.randomUUID(),
+          id: generateId(),
           timestamp: new Date().toISOString(),
-        });
+        };
+        context.messages.push(toolMsg);
+
+        // Dual write: record tool result with parentOverride pointing to spawning assistant
+        if (recorder) {
+          await recorder.recordMessage(submission.conversationId, toolMsg, {
+            taskId: submission.requestId,
+            turnId: activeTurn?.turnId,
+            parentOverride: assistantMsg.id,
+            artifactRef,
+          });
+        }
       }
     }
 
