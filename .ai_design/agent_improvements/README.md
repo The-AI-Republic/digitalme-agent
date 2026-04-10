@@ -8,14 +8,25 @@ This memo documents which architectural ideas from `claudy` are worth borrowing 
 
 Detailed implementation-track docs live in:
 
-- `01_prompt_management/IMPLEMENTATION_PLAN.md`
+### Runtime Hardening (original tracks)
+
+- `01_prompt_management/IMPLEMENTATION_PLAN.md` **(DONE)**
 - `02_context_management/IMPLEMENTATION_PLAN.md`
 - `03_tool_runtime/IMPLEMENTATION_PLAN.md`
 - `04_recovery_and_continuation/IMPLEMENTATION_PLAN.md`
 - `05_transcript_and_artifact_storage/IMPLEMENTATION_PLAN.md`
 - `06_runtime_state_and_observers/IMPLEMENTATION_PLAN.md`
 - `07_internal_events_and_observability/IMPLEMENTATION_PLAN.md`
-- `08_forked_and_subagents/IMPLEMENTATION_PLAN.md`
+- `08_forked_and_subagents/IMPLEMENTATION_PLAN.md` **(DONE)**
+
+### Operational Maturity (new tracks from second Claudy deep-dive)
+
+- `09_model_routing_and_intelligence/IMPLEMENTATION_PLAN.md` — multi-model selection, fallback chains, cost-aware routing, effort levels
+- `10_creator_guardrails_and_safety/IMPLEMENTATION_PLAN.md` — content safety, creator-defined boundaries, jailbreak detection, input/output screening
+- `11_usage_tracking_and_quotas/IMPLEMENTATION_PLAN.md` — per-creator cost tracking, quota enforcement, usage analytics, billing data
+- `12_configuration_lifecycle/IMPLEMENTATION_PLAN.md` — config hot-reload, versioning, platform overrides, feature gates
+- `13_structured_analytics/IMPLEMENTATION_PLAN.md` — metrics pipeline, performance profiling, error buffer, operational dashboards
+- `14_creator_skills/IMPLEMENTATION_PLAN.md` — creator-defined capabilities the model invokes automatically during fan conversation
 
 The two systems serve different purposes:
 
@@ -727,6 +738,8 @@ Do not borrow:
 - background task swarms
 - interactive permission prompts
 - very broad app-wide mutable product state
+- file history and delta tracking (agent doesn't edit files)
+- session resume UI (cold-start from platform is sufficient)
 
 These solve “agent operating environment” problems, not “creator-hosted public conversation runtime” problems.
 
@@ -753,11 +766,24 @@ These solve “agent operating environment” problems, not “creator-hosted pu
 4. Add explicit terminal reasons and retry records
 5. Add error recovery and continuation paths
 
-## Phase 3: Operational Maturity
+## Phase 3: Operational Maturity (new tracks 09-13)
 
-1. Expand the policy engine for more granular moderation and creator-level restrictions
-2. Add smarter continuity restoration after reseed/restart
-3. Add state observers for health, metrics, and cleanup
+1. **Model routing and intelligence** (track 09) — cost-aware routing, fallback chains, effort levels
+2. **Creator guardrails and safety** (track 10) — input screening, output validation, jailbreak detection
+3. **Usage tracking and quotas** (track 11) — cost accounting, quota enforcement, billing data
+4. **Configuration lifecycle** (track 12) — hot-reload, versioning, platform overrides, feature gates
+5. **Structured analytics** (track 13) — metrics pipeline, profiling, error buffer, dashboards
+
+### Phase 3 Priority Within New Tracks
+
+If resources are limited, prioritize in this order:
+
+1. **Track 10 (Guardrails)** — safety is non-negotiable for a public-facing agent
+2. **Track 09 (Model Routing)** — direct cost savings from background model routing
+3. **Track 11 (Usage Tracking)** — required for sustainable operations and billing
+4. **Track 13 (Analytics)** — needed for debugging and operational awareness
+5. **Track 14 (Creator Skills)** — highest product impact, turns chatbots into capable agents
+6. **Track 12 (Config Lifecycle)** — quality-of-life, can be deferred longest
 
 ## Best Three Ideas To Borrow First
 
@@ -766,6 +792,15 @@ If only three `claudy` ideas are adopted, the best ones are:
 1. graduated compaction starting with microcompact
 2. richer tool runtime with policy hooks and tool-use summaries
 3. durable internal transcripts and artifacts
+
+### Next Three Ideas (from the second deep-dive)
+
+After the original three, the next most valuable are:
+
+4. creator guardrails with input screening and output validation (track 10)
+5. cost-aware model routing with background model assignment (track 09)
+6. structured analytics replacing console.log (track 13)
+7. creator skills turning chatbots into capable agents (track 14)
 
 These provide the most benefit to DigitalMe Agent without importing `claudy`'s product complexity.
 
@@ -779,8 +814,14 @@ DigitalMe Agent should evolve toward this shape:
 - make prompt state a derived artifact, not just an append-only history
 - treat tool execution as a first-class runtime subsystem
 - preserve a richer internal transcript than the platform-visible chat history
+- enforce creator-defined safety boundaries at runtime, not just in prompts
+- route different execution contexts to cost-appropriate models
+- track and enforce usage quotas for sustainable operations
+- provide production-grade observability through structured metrics
 
 In short:
 
 - keep `digitalme-agent` as a focused public-agent runtime
 - borrow `claudy`'s runtime discipline, not `claudy`'s whole product surface
+- add the operational maturity layer that a public-facing service demands
+- enable creators to define skills that turn personality chatbots into capable agents
