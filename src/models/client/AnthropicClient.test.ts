@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { AnthropicClient } from './AnthropicClient.js';
+import { generateId, type Message } from '../ModelClient.js';
 
 function makeClient() {
   return new AnthropicClient({
@@ -14,7 +15,7 @@ test('AnthropicClient sets cache_control on stable blocks', () => {
   const client = makeClient();
   const blocks = client.buildSystemBlocks({
     model: 'claude-sonnet-4-20250514',
-    messages: [],
+    messages: [] as Message[],
     systemPromptBlocks: [
       { text: 'stable content', cachePolicy: 'stable' },
       { text: 'volatile content', cachePolicy: 'volatile' },
@@ -38,8 +39,8 @@ test('AnthropicClient falls back to system messages when no blocks provided', ()
   const blocks = client.buildSystemBlocks({
     model: 'claude-sonnet-4-20250514',
     messages: [
-      { role: 'system', content: 'system prompt here' },
-      { role: 'user', content: 'hi' },
+      { role: 'system', content: 'system prompt here', id: generateId() },
+      { role: 'user', content: 'hi', id: generateId() },
     ],
   });
 
@@ -52,7 +53,7 @@ test('AnthropicClient returns empty array when no system content', () => {
   const client = makeClient();
   const blocks = client.buildSystemBlocks({
     model: 'claude-sonnet-4-20250514',
-    messages: [{ role: 'user', content: 'hi' }],
+    messages: [{ role: 'user', content: 'hi', id: generateId() }],
   });
 
   assert.equal(blocks.length, 0);
@@ -61,9 +62,9 @@ test('AnthropicClient returns empty array when no system content', () => {
 test('AnthropicClient filters system messages from conversation messages', () => {
   const client = makeClient();
   const messages = client.buildMessages([
-    { role: 'system', content: 'should be filtered' },
-    { role: 'user', content: 'hello' },
-    { role: 'assistant', content: 'hi' },
+    { role: 'system', content: 'should be filtered', id: generateId() },
+    { role: 'user', content: 'hello', id: generateId() },
+    { role: 'assistant', content: 'hi', id: generateId() },
   ]);
 
   assert.equal(messages.length, 2);
@@ -74,13 +75,13 @@ test('AnthropicClient filters system messages from conversation messages', () =>
 test('AnthropicClient converts tool results to user messages with tool_result blocks', () => {
   const client = makeClient();
   const messages = client.buildMessages([
-    { role: 'user', content: 'search for cats' },
-    { role: 'assistant', content: null, toolCalls: [{
+    { role: 'user', content: 'search for cats', id: generateId() },
+    { role: 'assistant', content: null, id: generateId(), toolCalls: [{
       id: 'call_1',
       type: 'function',
       function: { name: 'web_search', arguments: '{"q":"cats"}' },
     }] },
-    { role: 'tool', content: 'cats are great', toolCallId: 'call_1', toolName: 'web_search' },
+    { role: 'tool', content: 'cats are great', toolCallId: 'call_1', toolName: 'web_search', id: generateId() },
   ]);
 
   assert.equal(messages.length, 3);
@@ -94,13 +95,13 @@ test('AnthropicClient converts tool results to user messages with tool_result bl
 test('AnthropicClient merges consecutive tool results into one user message', () => {
   const client = makeClient();
   const messages = client.buildMessages([
-    { role: 'user', content: 'search two things' },
-    { role: 'assistant', content: null, toolCalls: [
+    { role: 'user', content: 'search two things', id: generateId() },
+    { role: 'assistant', content: null, id: generateId(), toolCalls: [
       { id: 'call_1', type: 'function', function: { name: 'web_search', arguments: '{"q":"cats"}' } },
       { id: 'call_2', type: 'function', function: { name: 'web_search', arguments: '{"q":"dogs"}' } },
     ] },
-    { role: 'tool', content: 'cats result', toolCallId: 'call_1', toolName: 'web_search' },
-    { role: 'tool', content: 'dogs result', toolCallId: 'call_2', toolName: 'web_search' },
+    { role: 'tool', content: 'cats result', toolCallId: 'call_1', toolName: 'web_search', id: generateId() },
+    { role: 'tool', content: 'dogs result', toolCallId: 'call_2', toolName: 'web_search', id: generateId() },
   ]);
 
   // Should be: user, assistant, user (with TWO tool_result blocks)
@@ -117,15 +118,15 @@ test('AnthropicClient merges consecutive tool results into one user message', ()
 test('AnthropicClient does not merge tool results separated by other messages', () => {
   const client = makeClient();
   const messages = client.buildMessages([
-    { role: 'user', content: 'step 1' },
-    { role: 'assistant', content: null, toolCalls: [
+    { role: 'user', content: 'step 1', id: generateId() },
+    { role: 'assistant', content: null, id: generateId(), toolCalls: [
       { id: 'call_1', type: 'function', function: { name: 'web_search', arguments: '{"q":"a"}' } },
     ] },
-    { role: 'tool', content: 'result a', toolCallId: 'call_1', toolName: 'web_search' },
-    { role: 'assistant', content: null, toolCalls: [
+    { role: 'tool', content: 'result a', toolCallId: 'call_1', toolName: 'web_search', id: generateId() },
+    { role: 'assistant', content: null, id: generateId(), toolCalls: [
       { id: 'call_2', type: 'function', function: { name: 'web_search', arguments: '{"q":"b"}' } },
     ] },
-    { role: 'tool', content: 'result b', toolCallId: 'call_2', toolName: 'web_search' },
+    { role: 'tool', content: 'result b', toolCallId: 'call_2', toolName: 'web_search', id: generateId() },
   ]);
 
   // Two separate user messages with one tool_result each
@@ -139,8 +140,8 @@ test('AnthropicClient does not merge tool results separated by other messages', 
 test('AnthropicClient converts assistant tool_use messages correctly', () => {
   const client = makeClient();
   const messages = client.buildMessages([
-    { role: 'user', content: 'do something' },
-    { role: 'assistant', content: 'I will search', toolCalls: [{
+    { role: 'user', content: 'do something', id: generateId() },
+    { role: 'assistant', content: 'I will search', id: generateId(), toolCalls: [{
       id: 'call_2',
       type: 'function',
       function: { name: 'web_search', arguments: '{"q":"test"}' },

@@ -30,7 +30,7 @@ export interface ToolSummaryEntry {
 export interface TurnExecutionResult {
   finalText: string;
   tokenUsage?: TokenUsage;
-  promptMessages: Message[];
+  newMessages: Message[];
   completedTurns: number;
   toolCallCount: number;
   /** Tool-use summaries for logging/monitoring and future prompt projection. NOT model-facing. */

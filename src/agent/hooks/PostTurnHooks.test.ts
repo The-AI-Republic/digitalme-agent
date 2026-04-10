@@ -15,7 +15,7 @@ function makeFakeContext(): PostTurnHookContext {
       finalText: 'done',
       completedTurns: 1,
       toolCallCount: 0,
-      promptMessages: [],
+      newMessages: [],
     },
   };
 }

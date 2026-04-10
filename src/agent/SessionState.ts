@@ -1,13 +1,13 @@
-import crypto from 'node:crypto';
-import type { Message } from '../models/ModelClient.js';
+import { generateId, type Message } from '../models/ModelClient.js';
 import type { HistoryMessage } from '../protocol/types.js';
 import type { ToolSummaryEntry } from './types.js';
 import type { ConversationSummary } from './context/types.js';
 
-function clonePromptMessage(message: Message): Message {
+function cloneMessage(message: Message): Message {
   const cloned: Message = {
     role: message.role,
     content: message.content,
+    id: message.id,
   };
 
   if (message.toolCallId) {
@@ -26,11 +26,11 @@ function clonePromptMessage(message: Message): Message {
       },
     }));
   }
-  if (message.id) {
-    cloned.id = message.id;
-  }
   if (message.timestamp) {
     cloned.timestamp = message.timestamp;
+  }
+  if (message.synthetic) {
+    cloned.synthetic = message.synthetic;
   }
 
   return cloned;
@@ -43,19 +43,18 @@ function historiesMatch(left: HistoryMessage[], right: HistoryMessage[]) {
   });
 }
 
-function canonicalToPromptHistory(history: HistoryMessage[]): Message[] {
+function historyToMessages(history: HistoryMessage[]): Message[] {
   const now = new Date().toISOString();
   return history.map((item) => ({
     role: item.role,
     content: item.content,
-    id: crypto.randomUUID(),
+    id: generateId(),
     timestamp: now,
   }));
 }
 
 export class SessionState {
-  private canonicalHistory: HistoryMessage[];
-  private promptHistory: Message[];
+  private messages: Message[] = [];
   /**
    * Tool-use summaries stored separately from model-facing prompt content.
    * Available for future prompt projection / compaction, not immediate model consumption.
@@ -71,8 +70,7 @@ export class SessionState {
     readonly conversationId: string,
     history: HistoryMessage[],
   ) {
-    this.canonicalHistory = history.map((item) => ({ ...item }));
-    this.promptHistory = canonicalToPromptHistory(history);
+    this.messages = historyToMessages(history);
   }
 
   touch() {
@@ -93,24 +91,35 @@ export class SessionState {
     return this.revision;
   }
 
-  getPromptHistory(): Message[] {
-    return this.promptHistory.map(clonePromptMessage);
+  /** Full message history for LLM context. */
+  getMessages(): Message[] {
+    return this.messages.map(cloneMessage);
   }
 
+  /**
+   * Canonical view for platform reconciliation — computed, not stored.
+   * Excludes tool-call assistant messages, tool results, and synthetic messages.
+   */
   getCanonicalHistory(): HistoryMessage[] {
-    return this.canonicalHistory.map((item) => ({ ...item }));
+    return this.messages
+      .filter(m =>
+        (m.role === 'user' || m.role === 'assistant')
+        && !m.toolCalls
+        && !m.synthetic
+      )
+      .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content ?? '' }));
   }
 
   reconcileWithPlatformHistory(history: HistoryMessage[]) {
     this.touch();
-    if (history.length === 0 && this.canonicalHistory.length > 0) {
+    const canonical = this.getCanonicalHistory();
+    if (history.length === 0 && canonical.length > 0) {
       return 'warm' as const;
     }
-    if (historiesMatch(this.canonicalHistory, history)) {
+    if (historiesMatch(canonical, history)) {
       return 'unchanged' as const;
     }
-    this.canonicalHistory = history.map((item) => ({ ...item }));
-    this.promptHistory = canonicalToPromptHistory(history);
+    this.messages = historyToMessages(history);
     this.summary = undefined;
     this.revision++;
     return 'reseeded' as const;
@@ -124,24 +133,22 @@ export class SessionState {
     this.summary = summary;
   }
 
-  commitTask(
-    userMessage: string,
-    finalText: string,
-    promptMessages: Message[],
-    toolSummaries?: ToolSummaryEntry[],
-  ) {
-    this.touch();
-    this.revision++;
-    this.canonicalHistory.push(
-      { role: 'user', content: userMessage },
-      { role: 'assistant', content: finalText },
-    );
-    for (const message of promptMessages) {
-      this.promptHistory.push(clonePromptMessage(message));
+  /** After a turn completes, append new messages. */
+  appendMessages(newMessages: Message[], toolSummaries?: ToolSummaryEntry[]) {
+    for (const msg of newMessages) {
+      this.messages.push(cloneMessage(msg));
     }
     if (toolSummaries && toolSummaries.length > 0) {
       this.toolUseSummaries.push(...toolSummaries);
     }
+    this.touch();
+    this.revision++;
+  }
+
+  /** On resume, initialize from transcript. */
+  initializeFromTranscript(messages: Message[]) {
+    this.messages = messages.map(cloneMessage);
+    this.revision++;
   }
 
   /** Tool-use summaries for future prompt projection. NOT model-facing. */
@@ -158,17 +165,23 @@ export class SessionState {
       return false;
     }
     this.revision++;
-    this.promptHistory = [{ role: 'assistant', content: summary }];
+    this.messages = [{
+      role: 'assistant',
+      content: summary,
+      id: generateId(),
+      synthetic: true,
+    }];
     return true;
   }
 
   snapshot() {
+    const canonical = this.getCanonicalHistory();
     return {
       conversationId: this.conversationId,
       createdAt: new Date(this.createdAt).toISOString(),
       lastAccessedAt: new Date(this.lastAccessedAt).toISOString(),
-      canonicalHistoryCount: this.canonicalHistory.length,
-      promptHistoryCount: this.promptHistory.length,
+      canonicalHistoryCount: canonical.length,
+      messageCount: this.messages.length,
       toolUseSummaryCount: this.toolUseSummaries.length,
       nextTurnId: this.nextTurnId,
       revision: this.revision,

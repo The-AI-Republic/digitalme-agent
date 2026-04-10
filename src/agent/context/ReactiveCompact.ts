@@ -1,4 +1,4 @@
-import type { Message } from '../../models/ModelClient.js';
+import { generateId, type Message } from '../../models/ModelClient.js';
 import type { ConversationSummary } from './types.js';
 import type { ConversationSummaryBuilder } from './ConversationSummaryBuilder.js';
 import type { PostCompactRecovery, RecoveryContext } from './PostCompactRecovery.js';
@@ -50,6 +50,8 @@ export class ReactiveCompact {
       {
         role: 'assistant',
         content: `[Emergency compaction]\n\n${summary.text}`,
+        id: generateId(),
+        synthetic: true,
       },
       ...recoveryMessages,
       ...preserved,

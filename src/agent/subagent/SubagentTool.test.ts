@@ -52,7 +52,7 @@ function makeFakeExecutor(finalText = 'subagent result') {
         finalText,
         completedTurns: 1,
         toolCallCount: 0,
-        promptMessages: [],
+        newMessages: [],
       };
     },
   };

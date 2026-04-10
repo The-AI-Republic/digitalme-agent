@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { generateId } from '../../models/ModelClient.js';
 import type { IToolRegistry } from '../../tools/registry.js';
 import type { Tool, ToolContext, ToolDefinition, ToolExecutionResult, ToolMetadata } from '../../tools/types.js';
 import { DEFAULT_TOOL_METADATA } from '../../tools/types.js';
@@ -127,8 +128,8 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool<SubagentInput> 
         history: [],
         signal: context.signal,
         promptHistory: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: args.prompt },
+          { role: 'system', content: systemPrompt, id: generateId() },
+          { role: 'user', content: args.prompt, id: generateId() },
         ],
       };
 

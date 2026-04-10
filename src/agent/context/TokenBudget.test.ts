@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { TokenBudget } from './TokenBudget.js';
+import { generateId } from '../../models/ModelClient.js';
 import type { TokenBudgetConfig } from './types.js';
 
 function makeConfig(overrides?: Partial<TokenBudgetConfig>): TokenBudgetConfig {
@@ -44,7 +45,7 @@ test('estimateTokens uses lastKnownUsage when available', () => {
 test('estimateTokens estimates from content when no usage', () => {
   const budget = new TokenBudget(makeConfig());
   const messages = [
-    { role: 'user' as const, content: 'a'.repeat(400) },
+    { role: 'user' as const, content: 'a'.repeat(400), id: generateId() },
   ];
   const estimate = budget.estimateTokens(messages);
   // 400 chars / 4 bytes per token = 100 tokens * 1.33 safety = 133
@@ -57,6 +58,7 @@ test('estimateTokens includes tool call arguments', () => {
     {
       role: 'assistant' as const,
       content: null,
+      id: generateId(),
       toolCalls: [{
         id: 'call_1',
         type: 'function' as const,
@@ -72,7 +74,7 @@ test('estimateTokens includes tool call arguments', () => {
 test('assessPressure returns nominal for small context', () => {
   const budget = new TokenBudget(makeConfig());
   const messages = [
-    { role: 'user' as const, content: 'hello' },
+    { role: 'user' as const, content: 'hello', id: generateId() },
   ];
   assert.equal(budget.assessPressure('gpt-4o', messages), 'nominal');
 });
@@ -82,7 +84,7 @@ test('assessPressure returns overflow for huge context', () => {
   // gpt-4o effective window = 111616. overflow at 0.9 = 100454
   // Need > 100454 tokens. With 1.33 safety, need content of ~100454 / 1.33 * 4 = ~302K chars
   const messages = [
-    { role: 'user' as const, content: 'a'.repeat(400000) },
+    { role: 'user' as const, content: 'a'.repeat(400000), id: generateId() },
   ];
   assert.equal(budget.assessPressure('gpt-4o', messages), 'overflow');
 });

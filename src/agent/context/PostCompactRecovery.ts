@@ -1,4 +1,4 @@
-import type { Message } from '../../models/ModelClient.js';
+import { generateId, type Message } from '../../models/ModelClient.js';
 
 export interface PostCompactRecoveryConfig {
   maxRecoveryTokens: number;
@@ -25,12 +25,14 @@ export class PostCompactRecovery {
       return [{
         role: 'user',
         content: `Additional context:\n${context.characterContext.slice(0, maxChars)}`,
+        id: generateId(),
       }];
     }
 
     return [{
       role: 'user',
       content: `Additional context:\n${context.characterContext}`,
+      id: generateId(),
     }];
   }
 }
