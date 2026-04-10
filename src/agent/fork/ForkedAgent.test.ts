@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import { ForkSemaphore } from './ForkSemaphore.js';
 import { launchForkedAgent } from './ForkedAgent.js';
+import { SessionRuntime } from '../SessionRuntime.js';
+import { SessionState } from '../SessionState.js';
 import type {
   AgentEvent,
   TurnExecutionResult,
@@ -67,10 +69,11 @@ function makeSubmission(overrides: Partial<TurnSubmission> = {}): TurnSubmission
   };
 }
 
-function makeRuntime() {
+function makeRuntime(opts: { canFork?: boolean } = {}) {
   const handles: ForkedAgentHandle[] = [];
   return {
     handles,
+    canFork() { return opts.canFork ?? true; },
     registerForkedAgent(handle: ForkedAgentHandle) {
       handles.push(handle);
     },
@@ -113,6 +116,18 @@ test('launchForkedAgent returns ForkedAgentResult with finalText and totalUsage'
   const result = await handle.promise;
   assert.equal(result.finalText, 'hello from fork');
   assert.equal(result.totalUsage.totalTokens, 15);
+});
+
+test('launchForkedAgent returns null when canFork is false', () => {
+  const handle = launchForkedAgent({
+    submission: makeSubmission(),
+    turnExecutor: makeFakeExecutor('ignored'),
+    forkSemaphore: new ForkSemaphore(2),
+    sessionRuntime: makeRuntime({ canFork: false }),
+    config: { forkLabel: 'test' },
+  });
+
+  assert.equal(handle, null);
 });
 
 test('launchForkedAgent returns null when semaphore is full', () => {
@@ -274,4 +289,62 @@ test('launchForkedAgent passes ExecutionOptions through to run()', async () => {
   assert.ok(handle);
   await handle.promise;
   assert.equal(receivedModel, 'gpt-4o-mini');
+});
+
+// --- SessionRuntime.registerForkedAgent tests ---
+
+function makeDummyDeps() {
+  return {
+    turnExecutor: makeFakeExecutor('ok'),
+    transcriptRecorder: {
+      async recordMessage() {},
+      async recordLifecycleEvent() {},
+      async insertMessageChain() {},
+      async loadTranscript() { return { messages: [], leafId: null }; },
+      seedParentId() {},
+    },
+  };
+}
+
+test('SessionRuntime.canFork returns false when forkedAgentsEnabled is false', () => {
+  const runtime = new SessionRuntime(new SessionState('conv-test', []), makeDummyDeps(), {
+    forkedAgentsEnabled: false,
+  });
+  assert.equal(runtime.canFork(), false);
+});
+
+test('SessionRuntime.canFork returns true when forkedAgentsEnabled is true', () => {
+  const runtime = new SessionRuntime(new SessionState('conv-test', []), makeDummyDeps(), {
+    forkedAgentsEnabled: true,
+  });
+  assert.equal(runtime.canFork(), true);
+});
+
+test('SessionRuntime.registerForkedAgent cleans up without unhandled rejection on failure', async () => {
+  const runtime = new SessionRuntime(new SessionState('conv-test', []), makeDummyDeps(), {
+    forkedAgentsEnabled: true,
+  });
+
+  let rejectFn: (err: Error) => void;
+  const failingPromise = new Promise<ForkedAgentResult>((_, reject) => {
+    rejectFn = reject;
+  });
+  // Suppress rejection on the original promise (as ForkedAgent.ts does)
+  failingPromise.catch(() => {});
+
+  const handle: ForkedAgentHandle = {
+    id: 'fork-test-2',
+    forkLabel: 'test',
+    abort: () => {},
+    promise: failingPromise,
+  };
+
+  runtime.registerForkedAgent(handle);
+  assert.equal(runtime.getActiveForkedAgentCount(), 1);
+
+  // Reject — should clean up without unhandled rejection
+  rejectFn!(new Error('fork failed'));
+  // Let microtask queue flush
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(runtime.getActiveForkedAgentCount(), 0);
 });

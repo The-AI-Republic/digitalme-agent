@@ -12,6 +12,7 @@ import { consumeGenerator } from '../types.js';
 import type { ForkSemaphore } from './ForkSemaphore.js';
 
 interface ForkedAgentLifecycle {
+  canFork(): boolean;
   registerForkedAgent(handle: ForkedAgentHandle): void;
 }
 
@@ -36,13 +37,21 @@ export interface LaunchForkedAgentParams {
 export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentHandle | null {
   const { forkSemaphore, sessionRuntime, turnExecutor, config, submission, options, onResult } = params;
 
+  if (!sessionRuntime.canFork()) {
+    return null;
+  }
+
   if (!forkSemaphore.tryAcquire()) {
     return null;
   }
 
   const childAbort = new AbortController();
   if (submission.signal) {
-    submission.signal.addEventListener('abort', () => childAbort.abort(), { once: true });
+    if (submission.signal.aborted) {
+      childAbort.abort();
+    } else {
+      submission.signal.addEventListener('abort', () => childAbort.abort(), { once: true });
+    }
   }
 
   const promise = (async (): Promise<ForkedAgentResult> => {

@@ -26,6 +26,7 @@ export interface SessionSnapshot {
   lastAccessedAt: string;
   canonicalHistoryCount: number;
   messageCount: number;
+  toolUseSummaryCount: number;
   nextTurnId: number;
   revision: number;
 }

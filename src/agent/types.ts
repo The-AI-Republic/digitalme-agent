@@ -21,12 +21,22 @@ export type AgentEvent =
   | { type: 'error'; message: string }
   | { type: 'recovery'; reason: string; detail?: Record<string, unknown> };
 
+export interface ToolSummaryEntry {
+  callId: string;
+  toolName: string;
+  summary: string;
+  durationMs: number;
+  success: boolean;
+}
+
 export interface TurnExecutionResult {
   finalText: string;
   tokenUsage?: TokenUsage;
   newMessages: Message[];
   completedTurns: number;
   toolCallCount: number;
+  /** Tool-use summaries for logging/monitoring and future prompt projection. NOT model-facing. */
+  toolSummaries?: ToolSummaryEntry[];
 }
 
 export interface ExecutionOptions {

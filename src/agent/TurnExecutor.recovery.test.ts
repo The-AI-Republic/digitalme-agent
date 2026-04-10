@@ -5,8 +5,9 @@ import { TurnExecutor } from './TurnExecutor.js';
 import type { CompletionRequest, ModelStepResult, ModelClient } from '../models/ModelClient.js';
 import type { AgentEvent, TurnSubmission, TurnExecutionResult } from './types.js';
 import { consumeGenerator } from './types.js';
-import type { ToolExecutionResult, Tool, ToolDefinition } from '../tools/types.js';
+import type { ToolExecutionResult, Tool, ToolDefinition, ToolMetadata } from '../tools/types.js';
 import type { ISystemPromptBuilder, BuiltPrompt, PromptContext } from '../prompts/types.js';
+import { z } from 'zod';
 import type { IModelClientFactory } from '../models/ModelClientFactory.js';
 import type { ModelConfig } from '../config/schema.js';
 import { testConfig } from '../test/fixtures.js';
@@ -54,8 +55,14 @@ function makeFakeTool(): Tool {
       type: 'function',
       function: { name: 'test_tool', description: 'fake', parameters: { type: 'object', properties: {} } },
     },
+    metadata: {
+      timeoutMs: 10_000,
+      maxResultChars: 20_000,
+      policyCategory: 'search',
+    } satisfies ToolMetadata,
+    inputSchema: z.object({}),
     async execute(): Promise<ToolExecutionResult> {
-      return { success: true, content: 'tool-result' };
+      return { success: true, data: {}, renderForModel: () => 'tool-result' };
     },
   };
 }

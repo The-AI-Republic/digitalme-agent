@@ -81,11 +81,17 @@ export class SessionRuntime {
     return this.hasActiveTurn() || this.activeForkedAgents.size > 0;
   }
 
+  /** Whether fork launches are permitted by config. Check before calling launchForkedAgent. */
+  canFork(): boolean {
+    return this.forkedAgentsEnabled;
+  }
+
   registerForkedAgent(handle: ForkedAgentHandle): void {
     this.activeForkedAgents.set(handle.id, handle);
-    handle.promise.finally(() => {
-      this.activeForkedAgents.delete(handle.id);
-    });
+    handle.promise.then(
+      () => this.activeForkedAgents.delete(handle.id),
+      () => this.activeForkedAgents.delete(handle.id),
+    );
   }
 
   abortForkedAgents(): void {
@@ -193,7 +199,7 @@ export class SessionRuntime {
   }
 
   private commitResult(result: TurnExecutionResult, activeTurn: ActiveTurn) {
-    this.state.appendMessages(result.newMessages);
+    this.state.appendMessages(result.newMessages, result.toolSummaries);
     activeTurn.complete(result.tokenUsage);
   }
 }

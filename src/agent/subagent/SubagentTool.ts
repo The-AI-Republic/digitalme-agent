@@ -1,6 +1,8 @@
+import { z } from 'zod';
 import { generateId } from '../../models/ModelClient.js';
 import type { IToolRegistry } from '../../tools/registry.js';
-import type { Tool, ToolContext, ToolDefinition, ToolExecutionResult } from '../../tools/types.js';
+import type { Tool, ToolContext, ToolDefinition, ToolExecutionResult, ToolMetadata } from '../../tools/types.js';
+import { DEFAULT_TOOL_METADATA } from '../../tools/types.js';
 import type { AgentEvent, ExecutionOptions, TurnExecutionResult, TurnExecutorLike, TurnSubmission } from '../types.js';
 import { consumeGenerator } from '../types.js';
 import type { AgentDefinition } from './AgentDefinition.js';
@@ -12,12 +14,14 @@ export interface SubagentToolDeps {
   modelName: string;
 }
 
-interface SubagentInput {
-  description: string;
-  prompt: string;
-  subagent_type: string;
-  model?: string;
-}
+const subagentInputSchema = z.object({
+  description: z.string(),
+  prompt: z.string(),
+  subagent_type: z.string(),
+  model: z.string().optional(),
+});
+
+type SubagentInput = z.infer<typeof subagentInputSchema>;
 
 export function resolveSubagentTools(
   definition: AgentDefinition,
@@ -52,7 +56,7 @@ export function resolveSubagentTools(
   };
 }
 
-export function createSubagentTool(deps: SubagentToolDeps): Tool {
+export function createSubagentTool(deps: SubagentToolDeps): Tool<SubagentInput> {
   const definition: ToolDefinition = {
     type: 'function',
     function: {
@@ -83,24 +87,32 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool {
     },
   };
 
+  const metadata: ToolMetadata = {
+    ...DEFAULT_TOOL_METADATA,
+    timeoutMs: 300_000, // 5 minutes — subagents make many model calls
+    policyCategory: 'action',
+  };
+
   return {
     name: 'Task',
     definition,
-    async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolExecutionResult> {
-      const input = args as unknown as SubagentInput;
-
-      const agentDef = getBuiltInAgent(input.subagent_type);
+    metadata,
+    inputSchema: subagentInputSchema,
+    async execute(args: SubagentInput, context: ToolContext): Promise<ToolExecutionResult> {
+      const agentDef = getBuiltInAgent(args.subagent_type);
       if (!agentDef) {
+        const errorMsg = `Unknown agent type: ${args.subagent_type}`;
         return {
           success: false,
-          content: `Unknown agent type: ${input.subagent_type}`,
+          data: { error: errorMsg },
+          renderForModel: () => errorMsg,
         };
       }
 
       const systemPrompt = await agentDef.getSystemPrompt();
       const toolRegistry = resolveSubagentTools(agentDef, deps.parentToolRegistry);
 
-      const modelName = input.model
+      const modelName = args.model
         ?? (agentDef.model === 'inherit' ? deps.modelName : agentDef.model);
 
       const options: ExecutionOptions = {
@@ -110,13 +122,14 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool {
       };
 
       const submission: TurnSubmission = {
-        requestId: `subagent-${input.subagent_type}-${Date.now()}`,
+        requestId: `subagent-${args.subagent_type}-${Date.now()}`,
         conversationId: context.conversationId,
-        userMessage: input.prompt,
+        userMessage: args.prompt,
         history: [],
+        signal: context.signal,
         promptHistory: [
           { role: 'system', content: systemPrompt, id: generateId() },
-          { role: 'user', content: input.prompt, id: generateId() },
+          { role: 'user', content: args.prompt, id: generateId() },
         ],
       };
 
@@ -127,12 +140,15 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool {
         );
         return {
           success: true,
-          content: result.finalText,
+          data: { finalText: result.finalText },
+          renderForModel: () => result.finalText,
         };
       } catch (err) {
+        const errorMsg = `Subagent failed: ${err instanceof Error ? err.message : String(err)}`;
         return {
           success: false,
-          content: `Subagent failed: ${err instanceof Error ? err.message : String(err)}`,
+          data: { error: errorMsg },
+          renderForModel: () => errorMsg,
         };
       }
     },

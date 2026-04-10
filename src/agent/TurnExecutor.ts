@@ -4,12 +4,15 @@ import { generateId, type Message, type ToolCall, type ModelStepResult, type Mod
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
 import { TemplateLoader } from '../prompts/TemplateLoader.js';
 import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
-import { ToolRegistry, type IToolRegistry } from '../tools/registry.js';
-import type { Tool, ToolExecutionResult } from '../tools/types.js';
+import { createToolRegistry, type IToolRegistry } from '../tools/registry.js';
+import { ToolExecutor, type ToolExecutorCallbacks } from '../tools/execution/ToolExecutor.js';
+import { DefaultToolPolicyChecker, type IToolPolicyChecker } from '../tools/execution/ToolPolicyChecker.js';
+import { ResultBudget } from '../tools/execution/ResultBudget.js';
 import { TurnContext } from './TurnContext.js';
 import { TurnExecutionState } from './TurnExecutionState.js';
-import type { AgentEvent, ExecutionOptions, TurnExecutionResult, TurnSubmission } from './types.js';
+import type { AgentEvent, ExecutionOptions, ToolSummaryEntry, TurnExecutionResult, TurnSubmission } from './types.js';
 import type { ActiveTurn } from './ActiveTurn.js';
+import { EventQueue } from './EventQueue.js';
 import { prepareContextForModelCall, type PrepareContextDeps } from './context/prepareContextForModelCall.js';
 import { TokenBudget } from './context/TokenBudget.js';
 import { ToolResultPersistence } from './context/ToolResultPersistence.js';
@@ -22,6 +25,9 @@ import {
 import { categorizeApiError, exponentialBackoff } from './apiRetry.js';
 import { tryReactiveCompact } from './reactiveCompact.js';
 import type { ITranscriptRecorder } from './transcript/types.js';
+
+/** Shared signal that never fires — avoids per-call AbortController allocation. */
+const NEVER_ABORT = new AbortController().signal;
 
 /** Wraps a provider error with buffered recovery events for safe propagation. */
 class RecoveryError extends Error {
@@ -38,6 +44,8 @@ export interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
   toolRegistry?: IToolRegistry;
+  toolPolicyChecker?: IToolPolicyChecker;
+  toolExecutor?: ToolExecutor;
   contextDeps?: PrepareContextDeps;
   transcriptRecorder?: ITranscriptRecorder;
 }
@@ -46,14 +54,18 @@ export class TurnExecutor {
   private readonly systemPromptBuilder: ISystemPromptBuilder;
   private readonly modelClientFactory: IModelClientFactory;
   private readonly toolRegistry: IToolRegistry;
+  private readonly toolExecutor: ToolExecutor;
+  private readonly policyChecker: IToolPolicyChecker;
   private readonly contextDeps: PrepareContextDeps;
   private readonly transcriptRecorder?: ITranscriptRecorder;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
-    this.toolRegistry = deps.toolRegistry ?? new ToolRegistry(config);
+    this.toolRegistry = deps.toolRegistry ?? createToolRegistry(config);
     this.systemPromptBuilder = deps.systemPromptBuilder ??
       new SystemPromptBuilder(new TemplateLoader());
     this.modelClientFactory = deps.modelClientFactory ?? new ModelClientFactory(config);
+    this.policyChecker = deps.toolPolicyChecker ?? new DefaultToolPolicyChecker();
+    this.toolExecutor = deps.toolExecutor ?? new ToolExecutor(this.toolRegistry, this.policyChecker);
     this.contextDeps = deps.contextDeps ?? this.buildDefaultContextDeps();
     this.transcriptRecorder = deps.transcriptRecorder;
   }
@@ -139,6 +151,8 @@ export class TurnExecutor {
     const context = new TurnContext(submission, initialMessages);
     const primaryClient = this.modelClientFactory.createClient();
     const recovery = initialRecoveryState();
+    const toolSummaries: ToolSummaryEntry[] = [];
+    const resultBudget = new ResultBudget(); // fresh per request
 
     // Record baseline before pushing user message
     const baselineLength = context.messages.length;
@@ -303,6 +317,7 @@ export class TurnExecutor {
           tokenUsage: result.tokenUsage,
           completedTurns: executionState.getIterationIndex(),
           toolCallCount: executionState.snapshot().toolCallCount,
+          toolSummaries,
           newMessages: context.messages.slice(baselineLength),
         };
       }
@@ -325,33 +340,75 @@ export class TurnExecutor {
         });
       }
 
-      for (const call of result.calls) {
-        this.throwIfAborted(context.signal);
-        executionState.registerToolCall(call.id);
-        const tool = toolRegistry.get(call.function.name);
-        if (!tool) {
-          throw new Error(`Unknown tool: ${call.function.name}`);
+      // Delegate all tool execution to ToolExecutor
+      const toolContext = {
+        conversationId: context.conversationId,
+        signal: context.signal ?? NEVER_ABORT,
+        policyConfig: {},
+      };
+
+      const toolEvents = new EventQueue<AgentEvent>();
+      const emittedToolStart = new Set<string>();
+      const emittedToolEnd = new Set<string>();
+
+      const callbacks: ToolExecutorCallbacks = {
+        onToolStart: (name, callId) => {
+          executionState.registerToolCall(callId);
+          emittedToolStart.add(callId);
+          toolEvents.push({ type: 'tool_start', name, callId });
+        },
+        onToolEnd: (name, callId, success) => {
+          executionState.resolveToolCall(callId);
+          emittedToolEnd.add(callId);
+          toolEvents.push({ type: 'tool_end', name, callId, success });
+        },
+      };
+
+      // Use a scoped ToolExecutor when toolRegistry is overridden (e.g. SubagentTool)
+      // so the executor resolves tools from the same registry the model sees.
+      const activeExecutor = (toolRegistry === this.toolRegistry)
+        ? this.toolExecutor
+        : new ToolExecutor(toolRegistry, this.policyChecker);
+      const recordsPromise = activeExecutor.runTools(
+        result.calls, toolContext, resultBudget, callbacks,
+      ).finally(() => toolEvents.close());
+
+      for await (const event of toolEvents) {
+        yield event;
+      }
+
+      const records = await recordsPromise;
+
+      // Collect summaries and push results to message history.
+      // Pre-execution failures do not emit callbacks, so emit their terminal events here.
+      for (const record of records) {
+        toolSummaries.push({
+          callId: record.callId,
+          toolName: record.toolName,
+          summary: record.summary,
+          durationMs: record.durationMs,
+          success: record.result.success,
+        });
+        if (!emittedToolStart.has(record.callId)) {
+          yield { type: 'tool_start', name: record.toolName, callId: record.callId };
         }
-
-        yield { type: 'tool_start', name: call.function.name, callId: call.id };
-        const toolResult = await this.executeTool(call, context.conversationId, context.signal, tool);
-        yield {
-          type: 'tool_end',
-          name: call.function.name,
-          callId: call.id,
-          success: toolResult.success,
-        };
-        executionState.resolveToolCall(call.id);
-
+        if (!emittedToolEnd.has(record.callId)) {
+          yield {
+            type: 'tool_end',
+            name: record.toolName,
+            callId: record.callId,
+            success: record.result.success,
+          };
+        }
         // Process through ToolResultPersistence for artifact externalization
-        let resultContent = toolResult.content;
+        let resultContent = record.modelContent;
         let artifactRef: { filePath: string; originalSize: number; preview: string } | undefined;
         const persistence = this.contextDeps.toolResultPersistence;
         if (persistence) {
           const persisted = await persistence.processResultWithRef(
-            call.function.name,
-            call.id,
-            toolResult.content,
+            record.toolName,
+            record.callId,
+            record.modelContent,
             context.conversationId,
           );
           resultContent = persisted.content;
@@ -361,8 +418,8 @@ export class TurnExecutor {
         const toolMsg: Message = {
           role: 'tool',
           content: resultContent,
-          toolCallId: call.id,
-          toolName: call.function.name,
+          toolCallId: record.callId,
+          toolName: record.toolName,
           id: generateId(),
           timestamp: new Date().toISOString(),
         };
@@ -475,21 +532,6 @@ export class TurnExecutor {
     }
 
     throw new RecoveryError(new Error('api_retries_exhausted'), events);
-  }
-
-  private async executeTool(
-    call: ToolCall,
-    conversationId: string,
-    signal: AbortSignal | undefined,
-    tool: Tool,
-  ): Promise<ToolExecutionResult> {
-    let args: Record<string, unknown>;
-    try {
-      args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>;
-    } catch {
-      return { success: false, content: `Invalid arguments for tool ${call.function.name}.` };
-    }
-    return tool.execute(args, { conversationId, signal });
   }
 
   private throwIfAborted(signal?: AbortSignal) {

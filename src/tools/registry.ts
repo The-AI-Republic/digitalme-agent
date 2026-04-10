@@ -2,28 +2,25 @@ import type { AgentConfig } from '../config/schema.js';
 import type { Tool, ToolDefinition } from './types.js';
 import { WebSearchTool } from './web-search.js';
 
-export class ToolRegistry {
+export class ToolRegistry implements IToolRegistry {
   private readonly tools = new Map<string, Tool>();
 
-  constructor(config: AgentConfig) {
-    if (config.soul.tools.allow_web_search) {
-      this.register(new WebSearchTool());
+  register(tool: Tool): void {
+    if (this.tools.has(tool.name)) {
+      throw new Error(`Duplicate tool registration: ${tool.name}`);
     }
-  }
-
-  private register(tool: Tool) {
     this.tools.set(tool.name, tool);
   }
 
-  listDefinitions() {
+  listDefinitions(): ToolDefinition[] {
     return Array.from(this.tools.values()).map((tool) => tool.definition);
   }
 
-  listNames() {
+  listNames(): string[] {
     return Array.from(this.tools.keys());
   }
 
-  get(name: string) {
+  get(name: string): Tool | undefined {
     return this.tools.get(name);
   }
 }
@@ -32,4 +29,12 @@ export interface IToolRegistry {
   listDefinitions(): ToolDefinition[];
   listNames(): string[];
   get(name: string): Tool | undefined;
+}
+
+export function createToolRegistry(config: AgentConfig): ToolRegistry {
+  const registry = new ToolRegistry();
+  if (config.soul.tools.allow_web_search) {
+    registry.register(new WebSearchTool());
+  }
+  return registry;
 }

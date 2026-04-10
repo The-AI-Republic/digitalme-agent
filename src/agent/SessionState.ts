@@ -1,5 +1,6 @@
 import { generateId, type Message } from '../models/ModelClient.js';
 import type { HistoryMessage } from '../protocol/types.js';
+import type { ToolSummaryEntry } from './types.js';
 import type { ConversationSummary } from './context/types.js';
 
 function cloneMessage(message: Message): Message {
@@ -54,6 +55,11 @@ function historyToMessages(history: HistoryMessage[]): Message[] {
 
 export class SessionState {
   private messages: Message[] = [];
+  /**
+   * Tool-use summaries stored separately from model-facing prompt content.
+   * Available for future prompt projection / compaction, not immediate model consumption.
+   */
+  private readonly toolUseSummaries: ToolSummaryEntry[] = [];
   private summary?: ConversationSummary;
   private nextTurnId = 1;
   private lastAccessedAt = Date.now();
@@ -128,9 +134,12 @@ export class SessionState {
   }
 
   /** After a turn completes, append new messages. */
-  appendMessages(newMessages: Message[]) {
+  appendMessages(newMessages: Message[], toolSummaries?: ToolSummaryEntry[]) {
     for (const msg of newMessages) {
       this.messages.push(cloneMessage(msg));
+    }
+    if (toolSummaries && toolSummaries.length > 0) {
+      this.toolUseSummaries.push(...toolSummaries);
     }
     this.touch();
     this.revision++;
@@ -140,6 +149,11 @@ export class SessionState {
   initializeFromTranscript(messages: Message[]) {
     this.messages = messages.map(cloneMessage);
     this.revision++;
+  }
+
+  /** Tool-use summaries for future prompt projection. NOT model-facing. */
+  getToolUseSummaries(): readonly ToolSummaryEntry[] {
+    return this.toolUseSummaries;
   }
 
   /**
@@ -168,6 +182,7 @@ export class SessionState {
       lastAccessedAt: new Date(this.lastAccessedAt).toISOString(),
       canonicalHistoryCount: canonical.length,
       messageCount: this.messages.length,
+      toolUseSummaryCount: this.toolUseSummaries.length,
       nextTurnId: this.nextTurnId,
       revision: this.revision,
     };

@@ -7,7 +7,7 @@ import type { PostTurnHookContext } from './PostTurnHooks.js';
 function makeFakeContext(): PostTurnHookContext {
   return {
     sessionState: {} as PostTurnHookContext['sessionState'],
-    sessionRuntime: { registerForkedAgent() {} },
+    sessionRuntime: { canFork() { return true; }, registerForkedAgent() {} },
     forkSemaphore: {} as PostTurnHookContext['forkSemaphore'],
     turnExecutor: {} as PostTurnHookContext['turnExecutor'],
     conversationId: 'conv-test',

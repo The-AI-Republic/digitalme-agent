@@ -28,7 +28,9 @@ function makeParentRegistry(names: string[]): IToolRegistry {
         return {
           name,
           definition: makeToolDef(name),
-          async execute() { return { success: true, content: 'ok' }; },
+          metadata: { timeoutMs: 10_000, maxResultChars: 20_000, policyCategory: 'search' as const },
+          inputSchema: { safeParse: (v: unknown) => ({ success: true, data: v }), parse: (v: unknown) => v } as any,
+          async execute() { return { success: true, data: {}, renderForModel: () => 'ok' }; },
         };
       }
       return undefined;
@@ -121,11 +123,11 @@ test('SubagentTool spawns with specified agent type and returns result', async (
       prompt: 'do something',
       subagent_type: 'general-purpose',
     },
-    { conversationId: 'conv-1' },
+    { conversationId: 'conv-1', signal: AbortSignal.abort(), policyConfig: {} },
   );
 
   assert.equal(result.success, true);
-  assert.equal(result.content, 'hello from subagent');
+  assert.equal(result.renderForModel(), 'hello from subagent');
 });
 
 test('SubagentTool returns error for unknown agent type', async () => {
@@ -142,11 +144,11 @@ test('SubagentTool returns error for unknown agent type', async () => {
       prompt: 'do something',
       subagent_type: 'nonexistent',
     },
-    { conversationId: 'conv-1' },
+    { conversationId: 'conv-1', signal: AbortSignal.abort(), policyConfig: {} },
   );
 
   assert.equal(result.success, false);
-  assert.ok(result.content.includes('Unknown agent type'));
+  assert.ok(result.renderForModel().includes('Unknown agent type'));
 });
 
 test('SubagentTool passes model override via ExecutionOptions', async () => {
@@ -164,7 +166,7 @@ test('SubagentTool passes model override via ExecutionOptions', async () => {
       subagent_type: 'general-purpose',
       model: 'gpt-4o-mini',
     },
-    { conversationId: 'conv-1' },
+    { conversationId: 'conv-1', signal: AbortSignal.abort(), policyConfig: {} },
   );
 
   assert.equal(executor.calls[0]?.options?.model, 'gpt-4o-mini');
@@ -184,7 +186,7 @@ test('SubagentTool inherits parent model when agent def says inherit', async () 
       prompt: 'do something',
       subagent_type: 'general-purpose',
     },
-    { conversationId: 'conv-1' },
+    { conversationId: 'conv-1', signal: AbortSignal.abort(), policyConfig: {} },
   );
 
   assert.equal(executor.calls[0]?.options?.model, 'gpt-4o');
@@ -204,7 +206,7 @@ test('SubagentTool uses own system prompt in promptHistory', async () => {
       prompt: 'my task',
       subagent_type: 'general-purpose',
     },
-    { conversationId: 'conv-1' },
+    { conversationId: 'conv-1', signal: AbortSignal.abort(), policyConfig: {} },
   );
 
   const submission = executor.calls[0]?.submission;
@@ -236,9 +238,9 @@ test('SubagentTool catches executor errors and returns failure', async () => {
       prompt: 'do something',
       subagent_type: 'general-purpose',
     },
-    { conversationId: 'conv-1' },
+    { conversationId: 'conv-1', signal: AbortSignal.abort(), policyConfig: {} },
   );
 
   assert.equal(result.success, false);
-  assert.ok(result.content.includes('model_failed'));
+  assert.ok(result.renderForModel().includes('model_failed'));
 });

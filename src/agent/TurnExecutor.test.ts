@@ -5,9 +5,10 @@ import { TurnExecutor } from './TurnExecutor.js';
 import type { CompletionRequest, ModelStepResult, ModelClient } from '../models/ModelClient.js';
 import type { AgentEvent, TurnSubmission, TurnExecutionResult, ExecutionOptions } from './types.js';
 import { consumeGenerator } from './types.js';
-import type { ToolExecutionResult, Tool, ToolDefinition } from '../tools/types.js';
+import type { ToolExecutionResult, Tool, ToolDefinition, ToolMetadata } from '../tools/types.js';
 import type { ISystemPromptBuilder, BuiltPrompt, PromptContext } from '../prompts/types.js';
 import { testConfig as config } from '../test/fixtures.js';
+import { z } from 'zod';
 
 class FakeModelClient implements ModelClient {
   public readonly requests: CompletionRequest[] = [];
@@ -39,11 +40,21 @@ class FakeTool implements Tool {
       },
     },
   };
+  readonly metadata: ToolMetadata = {
+    timeoutMs: 10_000,
+    maxResultChars: 20_000,
+    policyCategory: 'search',
+  };
+  readonly inputSchema = z.object({
+    query: z.string().optional(),
+  });
 
   async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    const content = `tool-result:${String(args.query ?? '')}`;
     return {
       success: true,
-      content: `tool-result:${String(args.query ?? '')}`,
+      data: { query: args.query },
+      renderForModel: () => content,
     };
   }
 }
@@ -120,6 +131,78 @@ function makeExecutorWithClient(steps: ModelStepResult[]) {
   });
   return { executor, client };
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+test('TurnExecutor yields tool_start before the tool finishes', async () => {
+  const toolResult = deferred<ToolExecutionResult>();
+  const slowTool = new class extends FakeTool {
+    override async execute(): Promise<ToolExecutionResult> {
+      return toolResult.promise;
+    }
+  }();
+  const client = new FakeModelClient([
+    {
+      type: 'tool_calls',
+      calls: [
+        {
+          id: 'call-1',
+          type: 'function',
+          function: {
+            name: 'test_tool',
+            arguments: '{}',
+          },
+        },
+      ],
+    },
+    {
+      type: 'final_text',
+      text: 'done',
+    },
+  ]);
+  const executor = new TurnExecutor(config, {
+    systemPromptBuilder: makeFakeBuilder(),
+    modelClientFactory: { createClient: () => client },
+    toolRegistry: makeToolRegistry(slowTool),
+  });
+
+  const gen = executor.run({
+    requestId: 'req-stream-tool',
+    conversationId: 'conv-stream-tool',
+    userMessage: 'use a slow tool',
+    history: [],
+  });
+
+  assert.deepEqual(await gen.next(), {
+    done: false,
+    value: { type: 'tool_start', name: 'test_tool', callId: 'call-1' },
+  });
+
+  toolResult.resolve({
+    success: true,
+    data: {},
+    renderForModel: () => 'slow-result',
+  });
+
+  assert.deepEqual(await gen.next(), {
+    done: false,
+    value: { type: 'tool_end', name: 'test_tool', callId: 'call-1', success: true },
+  });
+  assert.deepEqual(await gen.next(), {
+    done: false,
+    value: { type: 'text_delta', content: 'done' },
+  });
+  const doneStep = await gen.next();
+  assert.equal(doneStep.done, false);
+  assert.equal((doneStep.value as AgentEvent).type, 'done');
+  assert.equal((await gen.next()).done, true);
+});
 
 test('TurnExecutor ends the loop when the model returns final assistant text', async () => {
   const executor = makeExecutor([
@@ -469,6 +552,47 @@ test('No ExecutionOptions uses config defaults', async () => {
 
   assert.equal(client.requests[0]?.model, 'gpt-4o');
   assert.equal(client.requests[0]?.maxOutputTokens, 8192);
+});
+
+test('TurnExecutor yields tool_start before tool_end for each tool call', async () => {
+  const executor = makeExecutor([
+    {
+      type: 'tool_calls',
+      calls: [
+        {
+          id: 'call-a',
+          type: 'function',
+          function: { name: 'test_tool', arguments: '{}' },
+        },
+        {
+          id: 'call-b',
+          type: 'function',
+          function: { name: 'test_tool', arguments: '{}' },
+        },
+      ],
+    },
+    { type: 'final_text', text: 'done' },
+  ]);
+
+  const submission: TurnSubmission = {
+    requestId: 'req-timing',
+    conversationId: 'conv-timing',
+    userMessage: 'time test',
+    history: [],
+  };
+
+  const { events } = await collectEvents(executor.run(submission));
+  const toolEvents = events.filter(e => e.type === 'tool_start' || e.type === 'tool_end');
+
+  // tool_start for call-a must come before tool_end for call-a
+  const startA = toolEvents.findIndex(e => e.type === 'tool_start' && 'callId' in e && e.callId === 'call-a');
+  const endA = toolEvents.findIndex(e => e.type === 'tool_end' && 'callId' in e && e.callId === 'call-a');
+  assert.ok(startA < endA, 'tool_start should come before tool_end for call-a');
+
+  // tool_start for call-b must come before tool_end for call-b
+  const startB = toolEvents.findIndex(e => e.type === 'tool_start' && 'callId' in e && e.callId === 'call-b');
+  const endB = toolEvents.findIndex(e => e.type === 'tool_end' && 'callId' in e && e.callId === 'call-b');
+  assert.ok(startB < endB, 'tool_start should come before tool_end for call-b');
 });
 
 // --- consumeGenerator tests ---

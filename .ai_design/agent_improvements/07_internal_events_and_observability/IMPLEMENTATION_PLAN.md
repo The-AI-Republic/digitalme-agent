@@ -148,4 +148,3 @@ Add tests for:
 - internal runtime visibility is much richer than the external SSE stream
 - future hooks or diagnostics can attach cleanly
 - the public platform contract stays unchanged
-
