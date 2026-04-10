@@ -26,8 +26,10 @@ export class SessionManager {
     private readonly config: AgentConfig,
     deps: SessionManagerDeps = {},
   ) {
-    this.turnExecutor = deps.turnExecutor ?? new TurnExecutor(config);
     this.transcriptRecorder = deps.transcriptRecorder ?? new TranscriptRecorder();
+    this.turnExecutor = deps.turnExecutor ?? new TurnExecutor(config, {
+      transcriptRecorder: this.transcriptRecorder,
+    });
     this.storageDir = config.context.tool_result_persistence.storage_dir;
     const sm = config.context.session_memory;
     this.runtimeConfig = {

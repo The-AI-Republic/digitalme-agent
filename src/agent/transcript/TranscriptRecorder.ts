@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { mkdir, appendFile, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { Message } from '../../models/ModelClient.js';
+import { generateId, type Message } from '../../models/ModelClient.js';
 import type {
   ITranscriptRecorder,
   TranscriptEntry,
@@ -17,10 +17,6 @@ function conversationHash(conversationId: string): string {
   return crypto.createHash('sha256').update(conversationId).digest('hex').slice(0, 16);
 }
 
-interface WriteQueueEntry {
-  line: string;
-}
-
 /**
  * Per-file write queue that batches I/O.
  */
@@ -29,10 +25,7 @@ class FileWriteQueue {
   private writing: Promise<void> = Promise.resolve();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(
-    private readonly filePath: string,
-    private readonly baseDir: string,
-  ) {}
+  constructor(private readonly filePath: string) {}
 
   enqueue(line: string): Promise<void> {
     this.buffer.push(line);
@@ -330,10 +323,9 @@ export class TranscriptRecorder implements ITranscriptRecorder {
 
     // Interrupted turn detection: if last message is user, append synthetic continuation
     if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
-      const { generateId } = await import('../../models/ModelClient.js');
       messages.push({
-        role: 'user',
-        content: 'Continue from where you left off.',
+        role: 'assistant',
+        content: '[Session resumed — previous response was interrupted.]',
         id: generateId(),
         timestamp: new Date().toISOString(),
         synthetic: true,
@@ -409,7 +401,7 @@ export class TranscriptRecorder implements ITranscriptRecorder {
   private getOrCreateQueue(filePath: string): FileWriteQueue {
     let queue = this.writeQueues.get(filePath);
     if (!queue) {
-      queue = new FileWriteQueue(filePath, this.baseDir);
+      queue = new FileWriteQueue(filePath);
       this.writeQueues.set(filePath, queue);
     }
     return queue;

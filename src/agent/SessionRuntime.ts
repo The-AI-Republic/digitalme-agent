@@ -9,7 +9,13 @@ import { ForkSemaphore } from './fork/ForkSemaphore.js';
 import { PostTurnHookRegistry } from './hooks/PostTurnHooks.js';
 import { SessionMemory, type SessionMemoryConfig } from './context/SessionMemory.js';
 import { createSessionMemoryHook } from './context/SessionMemoryHook.js';
-import type { ITranscriptRecorder } from './transcript/types.js';
+import type {
+  ITranscriptRecorder,
+  SessionReseededEntry,
+  TaskStartedEntry,
+  TaskCompletedEntry,
+  TaskFailedEntry,
+} from './transcript/types.js';
 
 export interface SessionRuntimeDeps {
   turnExecutor: TurnExecutorLike;
@@ -97,19 +103,20 @@ export class SessionRuntime {
     this.state.touch();
     const reconcileResult = this.state.reconcileWithPlatformHistory(submission.history);
     if (reconcileResult === 'reseeded') {
-      await this.deps.transcriptRecorder.recordLifecycleEvent({
+      const reseededEntry: SessionReseededEntry = {
         type: 'session_reseeded',
         conversationId: submission.conversationId,
         taskId: submission.requestId,
         timestamp: new Date().toISOString(),
         historyCount: submission.history.length,
-      } as import('./transcript/types.js').SessionReseededEntry);
+      };
+      await this.deps.transcriptRecorder.recordLifecycleEvent(reseededEntry);
     }
 
     const activeTurn = new ActiveTurn(submission.requestId, this.state.getNextTurnId());
     this.activeTurn = activeTurn;
 
-    await this.deps.transcriptRecorder.recordLifecycleEvent({
+    const startedEntry: TaskStartedEntry = {
       type: 'task_started',
       conversationId: submission.conversationId,
       taskId: submission.requestId,
@@ -117,7 +124,8 @@ export class SessionRuntime {
       timestamp: new Date().toISOString(),
       session: this.state.snapshot(),
       platformHistoryCount: submission.history.length,
-    } as import('./transcript/types.js').TaskStartedEntry);
+    };
+    await this.deps.transcriptRecorder.recordLifecycleEvent(startedEntry);
 
     try {
       const result = await consumeGenerator(
@@ -144,7 +152,7 @@ export class SessionRuntime {
         });
       }
 
-      await this.deps.transcriptRecorder.recordLifecycleEvent({
+      const completedEntry: TaskCompletedEntry = {
         type: 'task_completed',
         conversationId: submission.conversationId,
         taskId: submission.requestId,
@@ -155,10 +163,11 @@ export class SessionRuntime {
         toolCallCount: result.toolCallCount,
         tokenUsage: result.tokenUsage,
         session: this.state.snapshot(),
-      } as import('./transcript/types.js').TaskCompletedEntry);
+      };
+      await this.deps.transcriptRecorder.recordLifecycleEvent(completedEntry);
     } catch (error) {
       activeTurn.fail(error);
-      await this.deps.transcriptRecorder.recordLifecycleEvent({
+      const failedEntry: TaskFailedEntry = {
         type: 'task_failed',
         conversationId: submission.conversationId,
         taskId: submission.requestId,
@@ -166,7 +175,8 @@ export class SessionRuntime {
         timestamp: new Date().toISOString(),
         error: error instanceof Error ? error.message : String(error),
         turn: activeTurn.snapshot(),
-      } as import('./transcript/types.js').TaskFailedEntry);
+      };
+      await this.deps.transcriptRecorder.recordLifecycleEvent(failedEntry);
       throw error;
     } finally {
       this.activeTurn = undefined;

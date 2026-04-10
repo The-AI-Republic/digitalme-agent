@@ -364,12 +364,12 @@ test('loadTranscript creates synthetic continuation for interrupted user turn', 
 
   const { messages } = await recorder.loadTranscript('conv-1');
 
-  // Should append a synthetic continuation
+  // Should append a synthetic continuation as assistant (avoids consecutive user messages)
   assert.equal(messages.length, 2);
   assert.equal(messages[0].id, userMsg.id);
-  assert.equal(messages[1].role, 'user');
+  assert.equal(messages[1].role, 'assistant');
   assert.equal(messages[1].synthetic, true);
-  assert.equal(messages[1].content, 'Continue from where you left off.');
+  assert.equal(messages[1].content, '[Session resumed — previous response was interrupted.]');
 
   await fs.rm(dir, { recursive: true });
 });
