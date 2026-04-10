@@ -1,6 +1,6 @@
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
-import { generateId, type Message, type ToolCall } from '../models/ModelClient.js';
+import { generateId, type Message, type ToolCall, type ModelStepResult, type ModelClient } from '../models/ModelClient.js';
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
 import { TemplateLoader } from '../prompts/TemplateLoader.js';
 import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
@@ -14,7 +14,25 @@ import { prepareContextForModelCall, type PrepareContextDeps } from './context/p
 import { TokenBudget } from './context/TokenBudget.js';
 import { ToolResultPersistence } from './context/ToolResultPersistence.js';
 import { Microcompact } from './context/Microcompact.js';
+import {
+  initialRecoveryState,
+  RECOVERY_LIMITS,
+  type RecoveryState,
+} from './types/recovery.js';
+import { categorizeApiError, exponentialBackoff } from './apiRetry.js';
+import { tryReactiveCompact } from './reactiveCompact.js';
 import type { ITranscriptRecorder } from './transcript/types.js';
+
+/** Wraps a provider error with buffered recovery events for safe propagation. */
+class RecoveryError extends Error {
+  override readonly name = 'RecoveryError';
+  constructor(
+    public readonly cause: unknown,
+    public readonly recoveryEvents: AgentEvent[],
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+  }
+}
 
 export interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
@@ -119,7 +137,8 @@ export class TurnExecutor {
     ];
 
     const context = new TurnContext(submission, initialMessages);
-    const client = this.modelClientFactory.createClient();
+    const primaryClient = this.modelClientFactory.createClient();
+    const recovery = initialRecoveryState();
 
     // Record baseline before pushing user message
     const baselineLength = context.messages.length;
@@ -160,26 +179,108 @@ export class TurnExecutor {
         context.messages.push(...prepared.messages);
       }
 
-      const result = await client.generate({
-        model: modelName,
-        messages: context.messages,
-        tools: toolRegistry.listDefinitions(),
-        signal: context.signal,
-        systemPromptBlocks,
-        maxOutputTokens,
-      });
+      // --- Call model (with retry/fallback, error capture) ---
+      let callResult: { result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] };
+      try {
+        callResult = await this.callModelWithRecovery(
+          primaryClient,
+          { model: modelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
+          recovery,
+        );
+      } catch (error) {
+        // Emit any buffered recovery events before propagating the original error
+        if (error instanceof RecoveryError) {
+          for (const event of error.recoveryEvents) {
+            yield event;
+          }
+          throw error.cause;
+        }
+        throw error;
+      }
+
+      // Emit any recovery events from retry/fallback
+      for (const event of callResult.events) {
+        yield event;
+      }
+
+      const result = callResult.result;
+
+      // --- Handle context overflow (413) ---
+      if (result.type === 'context_overflow') {
+        if (!recovery.hasAttemptedReactiveCompact) {
+          const compacted = tryReactiveCompact(context.messages);
+          if (compacted) {
+            recovery.hasAttemptedReactiveCompact = true;
+            recovery.lastTransition = { reason: 'reactive_compact_retry' };
+            yield { type: 'recovery', reason: 'reactive_compact_retry' };
+            continue;
+          }
+        }
+        // Recovery exhausted
+        const lastText = recovery.accumulatedText || '';
+        yield { type: 'done', terminalReason: { reason: 'prompt_too_long' } };
+        return {
+          finalText: lastText,
+          tokenUsage: executionState.getTokenUsage(),
+          completedTurns: executionState.getIterationIndex(),
+          toolCallCount: executionState.snapshot().toolCallCount,
+          newMessages: context.messages.slice(baselineLength),
+        };
+      }
 
       if (result.tokenUsage) {
         executionState.setTokenUsage(result.tokenUsage);
       }
 
+      // --- Handle max output truncation ---
+      // Known trade-off: blind concatenation. Models sometimes repeat a few
+      // tokens at seams. Accepted for v1, same as claudy.
+      if (result.type === 'final_text' && result.truncated) {
+        if (recovery.maxOutputRecoveryCount < RECOVERY_LIMITS.MAX_OUTPUT_RECOVERY_ATTEMPTS) {
+          recovery.maxOutputRecoveryCount += 1;
+          // Emit partial text immediately so callers see progress
+          if (result.text) {
+            yield { type: 'text_delta', content: result.text };
+          }
+          // Preserve the partial assistant text in the conversation for the model
+          context.messages.push({ role: 'assistant', content: result.text, id: generateId(), timestamp: new Date().toISOString() });
+          recovery.accumulatedText += result.text;
+          context.messages.push({
+            role: 'user',
+            content: 'Output limit reached. Resume exactly where you stopped.',
+            id: generateId(),
+            timestamp: new Date().toISOString(),
+          });
+          recovery.lastTransition = {
+            reason: 'max_output_recovery',
+            attempt: recovery.maxOutputRecoveryCount,
+          };
+          yield { type: 'recovery', reason: 'max_output_recovery', detail: { attempt: recovery.maxOutputRecoveryCount } };
+          continue;
+        }
+        // Exhausted — return what we have (accumulated + final partial)
+        recovery.accumulatedText += result.text;
+        if (result.text) {
+          yield { type: 'text_delta', content: result.text };
+        }
+        yield { type: 'done', terminalReason: { reason: 'max_output_exhausted' }, tokenUsage: result.tokenUsage };
+        return {
+          finalText: recovery.accumulatedText,
+          tokenUsage: result.tokenUsage,
+          completedTurns: executionState.getIterationIndex(),
+          toolCallCount: executionState.snapshot().toolCallCount,
+          newMessages: context.messages.slice(baselineLength),
+        };
+      }
+
+      // --- Normal final text ---
       if (result.type === 'final_text') {
-        const finalText = result.text ?? '';
+        const fullText = recovery.accumulatedText + result.text;
 
         // Push final assistant message to context
         const finalMsg: Message = {
           role: 'assistant',
-          content: finalText,
+          content: fullText,
           id: generateId(),
           timestamp: new Date().toISOString(),
         };
@@ -196,9 +297,9 @@ export class TurnExecutor {
         if (result.text) {
           yield { type: 'text_delta', content: result.text };
         }
-        yield { type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage };
+        yield { type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage, terminalReason: { reason: 'completed' } };
         return {
-          finalText,
+          finalText: fullText,
           tokenUsage: result.tokenUsage,
           completedTurns: executionState.getIterationIndex(),
           toolCallCount: executionState.snapshot().toolCallCount,
@@ -206,6 +307,7 @@ export class TurnExecutor {
         };
       }
 
+      // --- Tool calls (normal continuation) ---
       const assistantMsg: Message = {
         role: 'assistant',
         content: null,
@@ -276,9 +378,103 @@ export class TurnExecutor {
           });
         }
       }
+
+      recovery.lastTransition = {
+        reason: 'tool_use',
+        toolNames: result.calls.map(c => c.function.name),
+      };
     }
 
-    throw new Error('max_turns_exceeded');
+    // Max turns reached — return gracefully, do not throw.
+    const lastText = recovery.accumulatedText || '';
+    yield { type: 'done', terminalReason: { reason: 'max_turns' } };
+    return {
+      finalText: lastText,
+      tokenUsage: executionState.getTokenUsage(),
+      completedTurns: executionState.getIterationIndex(),
+      toolCallCount: executionState.snapshot().toolCallCount,
+      newMessages: context.messages.slice(baselineLength),
+    };
+  }
+
+  /**
+   * Call the model with bounded retry and optional fallback.
+   *
+   * Returns the model result or { type: 'context_overflow' } for 413 errors.
+   * Collects recovery events in a buffer (since this is not a generator).
+   */
+  private async callModelWithRecovery(
+    primaryClient: ModelClient,
+    initialRequest: Parameters<ModelClient['generate']>[0],
+    recovery: RecoveryState,
+  ): Promise<{ result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] }> {
+    let consecutive529 = 0;
+    let client = primaryClient;
+    let request = initialRequest;
+    const events: AgentEvent[] = [];
+
+    for (let attempt = 0; attempt <= RECOVERY_LIMITS.MAX_API_RETRIES; attempt++) {
+      try {
+        const result = await client.generate(request);
+        return { result, events };
+      } catch (error) {
+        const category = categorizeApiError(error);
+
+        if (category === 'context_overflow') {
+          return { result: { type: 'context_overflow' as const }, events };
+        }
+
+        if (category === 'overloaded') {
+          consecutive529++;
+          if (consecutive529 >= RECOVERY_LIMITS.FALLBACK_AFTER_CONSECUTIVE_529
+              && this.config.fallback_model
+              && !recovery.fallbackAttempted
+              && this.modelClientFactory.createFromConfig) {
+            recovery.fallbackAttempted = true;
+            // Create a new client via factory — don't mutate the primary client
+            client = this.modelClientFactory.createFromConfig(this.config.fallback_model);
+            // Switch to the fallback model name so the client uses it
+            request = { ...request, model: this.config.fallback_model.name };
+            // Reset retry budget so fallback gets a full chance
+            // -1 because the for-loop increment runs before the next iteration
+            attempt = -1;
+            consecutive529 = 0;
+            recovery.lastTransition = {
+              reason: 'fallback_model',
+              fromModel: this.config.model.name,
+              toModel: this.config.fallback_model.name,
+            };
+            events.push({
+              type: 'recovery',
+              reason: 'fallback_model',
+              detail: { from: this.config.model.name, to: this.config.fallback_model.name },
+            });
+            continue;
+          }
+        }
+
+        if ((category === 'rate_limit' || category === 'overloaded' || category === 'server_error')
+            && attempt < RECOVERY_LIMITS.MAX_API_RETRIES) {
+          await exponentialBackoff(attempt);
+          recovery.lastTransition = {
+            reason: 'api_retry',
+            attempt: attempt + 1,
+            errorType: category,
+          };
+          events.push({
+            type: 'recovery',
+            reason: 'api_retry',
+            detail: { attempt: attempt + 1, errorType: category },
+          });
+          continue;
+        }
+
+        // Wrap in a RecoveryError so buffered events reach the caller
+        throw new RecoveryError(error, events);
+      }
+    }
+
+    throw new RecoveryError(new Error('api_retries_exhausted'), events);
   }
 
   private async executeTool(
