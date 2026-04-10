@@ -17,6 +17,11 @@ function conversationHash(conversationId: string): string {
   return crypto.createHash('sha256').update(conversationId).digest('hex').slice(0, 16);
 }
 
+interface QueueWaiter {
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
 /**
  * Per-file write queue that batches I/O.
  */
@@ -24,23 +29,20 @@ class FileWriteQueue {
   private buffer: string[] = [];
   private writing: Promise<void> = Promise.resolve();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private waiters: QueueWaiter[] = [];
 
   constructor(private readonly filePath: string) {}
 
   enqueue(line: string): Promise<void> {
     this.buffer.push(line);
-    if (!this.flushTimer) {
-      this.flushTimer = setTimeout(() => this.flush(), FLUSH_INTERVAL_MS);
-    }
-    // Return a promise that resolves after the next flush
-    return this.scheduleFlush();
-  }
-
-  private async scheduleFlush(): Promise<void> {
-    // Chain onto the current write
-    const prev = this.writing;
-    this.writing = prev.then(() => this.doFlush());
-    return this.writing;
+    return new Promise<void>((resolve, reject) => {
+      this.waiters.push({ resolve, reject });
+      if (!this.flushTimer) {
+        this.flushTimer = setTimeout(() => {
+          void this.flush();
+        }, FLUSH_INTERVAL_MS);
+      }
+    });
   }
 
   private async doFlush(): Promise<void> {
@@ -73,7 +75,18 @@ class FileWriteQueue {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
-    await this.doFlush();
+    const waiters = this.waiters;
+    this.waiters = [];
+    this.writing = this.writing.then(async () => {
+      try {
+        await this.doFlush();
+        waiters.forEach((waiter) => waiter.resolve());
+      } catch (error) {
+        waiters.forEach((waiter) => waiter.reject(error));
+        throw error;
+      }
+    });
+    return this.writing;
   }
 }
 

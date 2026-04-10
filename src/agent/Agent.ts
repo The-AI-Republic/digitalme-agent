@@ -2,35 +2,44 @@ import type { AgentConfig } from '../config/schema.js';
 import { AgentRequestError } from './errors.js';
 import { SessionManager } from './SessionManager.js';
 import { SubmissionQueue } from './SubmissionQueue.js';
-import { ShutdownController } from './shutdown.js';
+import { createStore, type Store } from './RuntimeStore.js';
+import { initialProcessRuntimeState, type ProcessRuntimeState } from './ProcessRuntimeState.js';
+import { createRuntimeObservers, type RuntimeListeners } from './RuntimeObservers.js';
 import type { AgentEvent } from './types.js';
 import type { TurnSubmission } from './types.js';
 import type { EventQueue } from './EventQueue.js';
 
 interface AgentDeps {
-  queue?: SubmissionQueue;
+  queueFactory?: (getState: () => ProcessRuntimeState) => SubmissionQueue;
   sessionManager?: Pick<SessionManager, 'execute' | 'getStats' | 'beginDrain'>;
+  runtimeListeners?: RuntimeListeners;
 }
 
 export class Agent {
+  private readonly store: Store<ProcessRuntimeState>;
   private readonly queue: SubmissionQueue;
   private readonly executor: {
     execute(submission: TurnSubmission, events: EventQueue<AgentEvent>): Promise<void>;
     getStats?: () => Record<string, unknown>;
     beginDrain?: () => void;
   };
-  private readonly shutdown = new ShutdownController();
   private readonly activeRequests = new Set<string>();
   private completedRequests = 0;
   private failedRequests = 0;
 
   constructor(private readonly config: AgentConfig, deps: AgentDeps = {}) {
-    this.queue = deps.queue ?? new SubmissionQueue(config);
-    this.executor = deps.sessionManager ?? new SessionManager(config);
+    this.store = createStore(
+      initialProcessRuntimeState(),
+      createRuntimeObservers(deps.runtimeListeners),
+    );
+    this.queue = deps.queueFactory
+      ? deps.queueFactory(this.store.getState)
+      : new SubmissionQueue(config, this.store.getState);
+    this.executor = deps.sessionManager ?? new SessionManager(config, { getState: this.store.getState });
   }
 
   submit(submission: TurnSubmission) {
-    if (this.shutdown.isDraining()) {
+    if (this.store.getState().draining) {
       throw new AgentRequestError('shutting_down', 503);
     }
 
@@ -39,38 +48,47 @@ export class Agent {
     }
 
     this.activeRequests.add(submission.requestId);
-    return this.queue.submit(
-      submission,
-      async (events) => {
-        await this.executor.execute(submission, events);
-      },
-      (failed) => {
-        this.activeRequests.delete(submission.requestId);
-        if (failed) {
-          this.failedRequests += 1;
-        } else {
-          this.completedRequests += 1;
-        }
-      },
-    );
+    let events: EventQueue<AgentEvent>;
+    try {
+      events = this.queue.submit(
+        submission,
+        async (eventQueue) => {
+          await this.executor.execute(submission, eventQueue);
+        },
+        (failed) => {
+          this.activeRequests.delete(submission.requestId);
+          this.store.setState(prev => ({ ...prev, activeRequestCount: prev.activeRequestCount - 1 }));
+          if (failed) {
+            this.failedRequests += 1;
+          } else {
+            this.completedRequests += 1;
+          }
+        },
+      );
+    } catch (e) {
+      this.activeRequests.delete(submission.requestId);
+      throw e;
+    }
+    this.store.setState(prev => ({ ...prev, activeRequestCount: prev.activeRequestCount + 1 }));
+    return events;
   }
 
   getHealth() {
     const queueStats = this.queue.getStats();
+    const { draining, activeRequestCount } = this.store.getState();
     return {
       model_provider: this.config.model.provider,
-      active_requests: this.activeRequests.size,
+      active_requests: activeRequestCount,
       completed_requests: this.completedRequests,
       failed_requests: this.failedRequests,
       queue: queueStats,
       sessions: this.executor.getStats?.(),
-      draining: this.shutdown.isDraining(),
+      draining,
     };
   }
 
   beginDrain() {
-    this.shutdown.beginDrain();
-    this.queue.beginDrain();
+    this.store.setState(prev => ({ ...prev, draining: true }));
     this.executor.beginDrain?.();
   }
 }
