@@ -53,7 +53,7 @@ export interface ActiveTurnSnapshot {
   completedAt?: string;
   status: string;
   errorMessage?: string;
-  turnState: unknown;
+  executionState: unknown;
 }
 
 export interface TaskFailedEntry extends TranscriptEntry {

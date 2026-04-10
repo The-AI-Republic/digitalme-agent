@@ -123,3 +123,14 @@ test('SessionManager reseeds warm session prompt history when platform canonical
     true,
   );
 });
+
+test('SessionManager wires the transcript recorder into the default TurnExecutor', () => {
+  const transcriptRecorder = new MemoryTranscriptRecorder();
+  const manager = new SessionManager(config, { transcriptRecorder });
+
+  const turnExecutor = (manager as unknown as {
+    turnExecutor: { transcriptRecorder?: ITranscriptRecorder };
+  }).turnExecutor;
+
+  assert.equal(turnExecutor.transcriptRecorder, transcriptRecorder);
+});

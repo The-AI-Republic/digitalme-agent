@@ -1,5 +1,6 @@
 import type { AgentConfig } from '../config/schema.js';
 import { AgentRequestError } from './errors.js';
+import type { ProcessRuntimeState } from './ProcessRuntimeState.js';
 import type { AgentEvent, TurnSubmission } from './types.js';
 import { EventQueue } from './EventQueue.js';
 
@@ -7,16 +8,21 @@ export class SubmissionQueue {
   private readonly activeConversations = new Set<string>();
   private readonly pendingByConversation = new Map<string, Array<() => Promise<void>>>();
   private activeCount = 0;
-  private draining = false;
+  private readonly getProcessState: () => ProcessRuntimeState;
 
-  constructor(private readonly config: AgentConfig) {}
+  constructor(
+    private readonly config: AgentConfig,
+    getState: () => ProcessRuntimeState,
+  ) {
+    this.getProcessState = getState;
+  }
 
   submit(
     submission: TurnSubmission,
     run: (events: EventQueue<AgentEvent>) => Promise<void>,
     onComplete?: (failed: boolean) => void,
   ): EventQueue<AgentEvent> {
-    if (this.draining) {
+    if (this.getProcessState().draining) {
       throw new AgentRequestError('shutting_down', 503);
     }
 
@@ -83,15 +89,6 @@ export class SubmissionQueue {
       activeCount: this.activeCount,
       activeConversations: this.activeConversations.size,
       pendingCount,
-      draining: this.draining,
     };
-  }
-
-  beginDrain() {
-    this.draining = true;
-  }
-
-  isDraining() {
-    return this.draining;
   }
 }

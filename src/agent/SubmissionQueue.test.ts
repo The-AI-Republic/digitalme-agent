@@ -5,6 +5,9 @@ import { SubmissionQueue } from './SubmissionQueue.js';
 import type { AgentEvent, TurnSubmission } from './types.js';
 import { EventQueue } from './EventQueue.js';
 import { testConfig as config } from '../test/fixtures.js';
+import { initialProcessRuntimeState } from './ProcessRuntimeState.js';
+
+const getState = () => initialProcessRuntimeState();
 
 async function collectEvents(queue: EventQueue<AgentEvent>) {
   const events: AgentEvent[] = [];
@@ -15,7 +18,7 @@ async function collectEvents(queue: EventQueue<AgentEvent>) {
 }
 
 test('SubmissionQueue serializes submissions within one conversation', async () => {
-  const queue = new SubmissionQueue(config);
+  const queue = new SubmissionQueue(config, getState);
   const executionOrder: string[] = [];
   let releaseFirst: (() => void) | undefined;
   let firstStarted: (() => void) | undefined;
@@ -59,7 +62,7 @@ test('SubmissionQueue serializes submissions within one conversation', async () 
 });
 
 test('SubmissionQueue allows different conversations to run concurrently', async () => {
-  const queue = new SubmissionQueue(config);
+  const queue = new SubmissionQueue(config, getState);
   const started: string[] = [];
 
   const run = (submission: TurnSubmission) => async (events: EventQueue<AgentEvent>) => {

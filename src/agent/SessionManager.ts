@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AgentConfig } from '../config/schema.js';
+import { initialProcessRuntimeState, type ProcessRuntimeState } from './ProcessRuntimeState.js';
 import type { AgentEvent, TurnExecutorLike, TurnSubmission } from './types.js';
 import { EventQueue } from './EventQueue.js';
 import { SessionRuntime, type SessionRuntimeConfig } from './SessionRuntime.js';
@@ -10,6 +11,7 @@ import { TranscriptRecorder } from './transcript/TranscriptRecorder.js';
 import type { ITranscriptRecorder } from './transcript/types.js';
 
 export interface SessionManagerDeps {
+  getState?: () => ProcessRuntimeState;
   turnExecutor?: TurnExecutorLike;
   transcriptRecorder?: ITranscriptRecorder;
 }
@@ -20,12 +22,13 @@ export class SessionManager {
   private readonly transcriptRecorder: ITranscriptRecorder;
   private readonly runtimeConfig: SessionRuntimeConfig;
   private readonly storageDir: string;
-  private draining = false;
+  private readonly getProcessState: () => ProcessRuntimeState;
 
   constructor(
     private readonly config: AgentConfig,
     deps: SessionManagerDeps = {},
   ) {
+    this.getProcessState = deps.getState ?? (() => initialProcessRuntimeState());
     this.transcriptRecorder = deps.transcriptRecorder ?? new TranscriptRecorder();
     this.turnExecutor = deps.turnExecutor ?? new TurnExecutor(config, {
       transcriptRecorder: this.transcriptRecorder,
@@ -53,7 +56,7 @@ export class SessionManager {
   }
 
   async execute(submission: TurnSubmission, events: EventQueue<AgentEvent>) {
-    if (this.draining) {
+    if (this.getProcessState().draining) {
       throw new Error('shutting_down');
     }
 
@@ -78,7 +81,6 @@ export class SessionManager {
   }
 
   beginDrain() {
-    this.draining = true;
     for (const runtime of this.sessions.values()) {
       runtime.abortForkedAgents();
     }

@@ -2,6 +2,7 @@ import type { HistoryMessage } from '../protocol/types.js';
 import type { Message, TokenUsage } from '../models/ModelClient.js';
 import type { IToolRegistry } from '../tools/registry.js';
 import type { TurnExecutor } from './TurnExecutor.js';
+import type { TerminalReason } from './types/recovery.js';
 
 export interface TurnSubmission {
   requestId: string;
@@ -16,8 +17,9 @@ export type AgentEvent =
   | { type: 'text_delta'; content: string }
   | { type: 'tool_start'; name: string; callId: string }
   | { type: 'tool_end'; name: string; callId: string; success: boolean }
-  | { type: 'done'; truncated?: boolean; tokenUsage?: TokenUsage }
-  | { type: 'error'; message: string };
+  | { type: 'done'; truncated?: boolean; tokenUsage?: TokenUsage; terminalReason?: TerminalReason }
+  | { type: 'error'; message: string }
+  | { type: 'recovery'; reason: string; detail?: Record<string, unknown> };
 
 export interface ToolSummaryEntry {
   callId: string;
