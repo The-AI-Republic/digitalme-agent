@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { generateId } from '../../models/ModelClient.js';
 import type { IToolRegistry } from '../../tools/registry.js';
 import type { Tool, ToolContext, ToolDefinition, ToolExecutionResult, ToolMetadata } from '../../tools/types.js';
@@ -7,11 +8,13 @@ import type { AgentEvent, ExecutionOptions, TurnExecutionResult, TurnExecutorLik
 import { consumeGenerator } from '../types.js';
 import type { AgentDefinition } from './AgentDefinition.js';
 import { getBuiltInAgent } from './BuiltInAgents.js';
+import type { ITranscriptRecorder } from '../transcript/types.js';
 
 export interface SubagentToolDeps {
   turnExecutor: TurnExecutorLike;
   parentToolRegistry: IToolRegistry;
   modelName: string;
+  transcriptRecorder?: ITranscriptRecorder;
 }
 
 const subagentInputSchema = z.object({
@@ -138,6 +141,24 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool<SubagentInput> 
           deps.turnExecutor.run(submission, options),
           (_event: AgentEvent) => { /* discard */ },
         );
+
+        // Record sidechain transcript for the subagent's internal history
+        if (deps.transcriptRecorder && result.newMessages.length > 0) {
+          const agentId = `subagent-${args.subagent_type}-${randomUUID()}`;
+          await deps.transcriptRecorder.insertMessageChain(
+            context.conversationId,
+            result.newMessages,
+            true,  // isSidechain
+            agentId,
+          );
+          await deps.transcriptRecorder.writeAgentMetadata(context.conversationId, {
+            agentId,
+            agentType: args.subagent_type,
+            description: args.description,
+            createdAt: new Date().toISOString(),
+          });
+        }
+
         return {
           success: true,
           data: { finalText: result.finalText },

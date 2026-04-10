@@ -1,12 +1,14 @@
 import type { ForkSemaphore } from '../fork/ForkSemaphore.js';
 import type { SessionState } from '../SessionState.js';
 import type { TurnExecutionResult, ForkedAgentHandle, TurnExecutorLike } from '../types.js';
+import type { ITranscriptRecorder } from '../transcript/types.js';
 
 export interface PostTurnHookContext {
   sessionState: SessionState;
   sessionRuntime: { canFork(): boolean; registerForkedAgent(handle: ForkedAgentHandle): void };
   forkSemaphore: ForkSemaphore;
   turnExecutor: TurnExecutorLike;
+  transcriptRecorder?: ITranscriptRecorder;
   conversationId: string;
   lastResult: TurnExecutionResult;
 }

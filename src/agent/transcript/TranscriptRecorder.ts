@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { mkdir, appendFile, readFile, stat } from 'node:fs/promises';
+import { mkdir, appendFile, readFile, writeFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { generateId, type Message } from '../../models/ModelClient.js';
 import type {
@@ -7,6 +7,7 @@ import type {
   TranscriptEntry,
   MessageEntry,
   RecordMessageOpts,
+  AgentMetadata,
 } from './types.js';
 
 const MAX_TRANSCRIPT_READ_SIZE = 50 * 1024 * 1024; // 50 MB
@@ -361,6 +362,20 @@ export class TranscriptRecorder implements ITranscriptRecorder {
 
   seedParentId(conversationId: string, leafId: string): void {
     this.lastParentId.set(conversationId, leafId);
+  }
+
+  async writeAgentMetadata(
+    conversationId: string,
+    metadata: AgentMetadata,
+  ): Promise<void> {
+    const hash = conversationHash(conversationId);
+    const metaPath = path.join(this.baseDir, hash, 'subagents', `agent-${metadata.agentId}.meta.json`);
+    try {
+      await mkdir(path.dirname(metaPath), { recursive: true });
+      await writeFile(metaPath, JSON.stringify(metadata, null, 2) + '\n', 'utf8');
+    } catch {
+      // Best effort — metadata write failure should not crash the agent
+    }
   }
 
   // ----- Private helpers -----

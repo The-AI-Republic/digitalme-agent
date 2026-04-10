@@ -5,6 +5,8 @@ import { ForkSemaphore } from './ForkSemaphore.js';
 import { launchForkedAgent } from './ForkedAgent.js';
 import { SessionRuntime } from '../SessionRuntime.js';
 import { SessionState } from '../SessionState.js';
+import type { Message } from '../../models/ModelClient.js';
+import { generateId } from '../../models/ModelClient.js';
 import type {
   AgentEvent,
   TurnExecutionResult,
@@ -12,6 +14,7 @@ import type {
   ForkedAgentHandle,
   ForkedAgentResult,
 } from '../types.js';
+import type { ITranscriptRecorder, AgentMetadata } from '../transcript/types.js';
 
 function makeFakeExecutor(finalText: string, tokenUsage = { inputTokens: 10, outputTokens: 5, totalTokens: 15 }) {
   return {
@@ -300,6 +303,7 @@ function makeDummyDeps() {
       async recordMessage() {},
       async recordLifecycleEvent() {},
       async insertMessageChain() {},
+      async writeAgentMetadata() {},
       async loadTranscript() { return { messages: [], leafId: null }; },
       seedParentId() {},
     },
@@ -347,4 +351,108 @@ test('SessionRuntime.registerForkedAgent cleans up without unhandled rejection o
   // Let microtask queue flush
   await new Promise(r => setTimeout(r, 10));
   assert.equal(runtime.getActiveForkedAgentCount(), 0);
+});
+
+// --- Sidechain recording tests ---
+
+function makeFakeRecorder() {
+  const chains: { conversationId: string; messages: Message[]; isSidechain?: boolean; agentId?: string }[] = [];
+  const metadata: AgentMetadata[] = [];
+  const recorder: ITranscriptRecorder = {
+    async recordMessage() {},
+    async recordLifecycleEvent() {},
+    async insertMessageChain(conversationId, messages, isSidechain, agentId) {
+      chains.push({ conversationId, messages, isSidechain, agentId });
+    },
+    async writeAgentMetadata(_convId, meta) {
+      metadata.push(meta);
+    },
+    async loadTranscript() { return { messages: [], leafId: null }; },
+    seedParentId() {},
+  };
+  return { recorder, chains, metadata };
+}
+
+function makeExecutorWithMessages(finalText: string, newMessages: Message[]) {
+  return {
+    async *run(): AsyncGenerator<AgentEvent, TurnExecutionResult> {
+      yield { type: 'done' as const };
+      return {
+        finalText,
+        tokenUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        completedTurns: 1,
+        toolCallCount: 0,
+        newMessages,
+      };
+    },
+  };
+}
+
+test('launchForkedAgent records sidechain transcript', async () => {
+  const messages: Message[] = [
+    { role: 'user', content: 'extract', id: generateId() },
+    { role: 'assistant', content: 'done', id: generateId() },
+  ];
+  const { recorder, chains, metadata } = makeFakeRecorder();
+
+  const handle = launchForkedAgent({
+    submission: makeSubmission(),
+    turnExecutor: makeExecutorWithMessages('done', messages),
+    forkSemaphore: new ForkSemaphore(2),
+    sessionRuntime: makeRuntime(),
+    config: { forkLabel: 'test-fork' },
+    transcriptRecorder: recorder,
+  });
+
+  assert.ok(handle);
+  await handle.promise;
+
+  assert.equal(chains.length, 1);
+  assert.equal(chains[0].isSidechain, true);
+  assert.ok(chains[0].agentId?.startsWith('fork-test-fork-'));
+  assert.equal(chains[0].messages.length, 2);
+
+  assert.equal(metadata.length, 1);
+  assert.equal(metadata[0].agentType, 'fork');
+  assert.equal(metadata[0].description, 'test-fork');
+});
+
+test('launchForkedAgent skips recording when skipTranscript is true', async () => {
+  const messages: Message[] = [
+    { role: 'assistant', content: 'ephemeral', id: generateId() },
+  ];
+  const { recorder, chains } = makeFakeRecorder();
+
+  const handle = launchForkedAgent({
+    submission: makeSubmission(),
+    turnExecutor: makeExecutorWithMessages('ephemeral', messages),
+    forkSemaphore: new ForkSemaphore(2),
+    sessionRuntime: makeRuntime(),
+    config: { forkLabel: 'ephemeral', skipTranscript: true },
+    transcriptRecorder: recorder,
+  });
+
+  assert.ok(handle);
+  await handle.promise;
+
+  assert.equal(chains.length, 0);
+});
+
+test('launchForkedAgent skips recording when no recorder provided', async () => {
+  const messages: Message[] = [
+    { role: 'assistant', content: 'no recorder', id: generateId() },
+  ];
+
+  const handle = launchForkedAgent({
+    submission: makeSubmission(),
+    turnExecutor: makeExecutorWithMessages('no recorder', messages),
+    forkSemaphore: new ForkSemaphore(2),
+    sessionRuntime: makeRuntime(),
+    config: { forkLabel: 'no-recorder' },
+    // no transcriptRecorder
+  });
+
+  assert.ok(handle);
+  // Should not throw
+  await handle.promise;
 });

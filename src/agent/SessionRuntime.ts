@@ -151,6 +151,7 @@ export class SessionRuntime {
           sessionRuntime: this,
           forkSemaphore: this.forkSemaphore,
           turnExecutor: this.deps.turnExecutor,
+          transcriptRecorder: this.deps.transcriptRecorder,
           conversationId: submission.conversationId,
           lastResult: result,
         }).catch(() => {

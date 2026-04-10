@@ -10,6 +10,7 @@ import type {
 } from '../types.js';
 import { consumeGenerator } from '../types.js';
 import type { ForkSemaphore } from './ForkSemaphore.js';
+import type { ITranscriptRecorder } from '../transcript/types.js';
 
 interface ForkedAgentLifecycle {
   canFork(): boolean;
@@ -24,6 +25,7 @@ export interface LaunchForkedAgentParams {
   forkSemaphore: ForkSemaphore;
   onResult?: (result: ForkedAgentResult) => void | Promise<void>;
   config: ForkedAgentConfig;
+  transcriptRecorder?: ITranscriptRecorder;
 }
 
 /**
@@ -35,7 +37,7 @@ export interface LaunchForkedAgentParams {
  * Returns `null` if the semaphore is full (caller should skip).
  */
 export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentHandle | null {
-  const { forkSemaphore, sessionRuntime, turnExecutor, config, submission, options, onResult } = params;
+  const { forkSemaphore, sessionRuntime, turnExecutor, config, submission, options, onResult, transcriptRecorder } = params;
 
   if (!sessionRuntime.canFork()) {
     return null;
@@ -54,6 +56,8 @@ export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentH
     }
   }
 
+  const agentId = `fork-${config.forkLabel}-${randomUUID()}`;
+
   const promise = (async (): Promise<ForkedAgentResult> => {
     try {
       const result = await consumeGenerator(
@@ -63,6 +67,23 @@ export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentH
         ),
         (_event: AgentEvent) => { /* discard — forked agents are silent */ },
       );
+
+      // Record sidechain transcript unless skipTranscript is set
+      if (transcriptRecorder && !config.skipTranscript && result.newMessages.length > 0) {
+        await transcriptRecorder.insertMessageChain(
+          submission.conversationId,
+          result.newMessages,
+          true,  // isSidechain
+          agentId,
+        );
+        await transcriptRecorder.writeAgentMetadata(submission.conversationId, {
+          agentId,
+          agentType: 'fork',
+          description: config.forkLabel,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
       const forkedResult: ForkedAgentResult = {
         totalUsage: result.tokenUsage ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
         finalText: result.finalText,
@@ -79,7 +100,7 @@ export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentH
   promise.catch(() => {});
 
   const handle: ForkedAgentHandle = {
-    id: `fork-${config.forkLabel}-${randomUUID()}`,
+    id: agentId,
     forkLabel: config.forkLabel,
     abort: () => childAbort.abort(),
     promise,
