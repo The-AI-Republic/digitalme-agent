@@ -400,9 +400,24 @@ export class TurnExecutor {
             success: record.result.success,
           };
         }
+        // Process through ToolResultPersistence for artifact externalization
+        let resultContent = record.modelContent;
+        let artifactRef: { filePath: string; originalSize: number; preview: string } | undefined;
+        const persistence = this.contextDeps.toolResultPersistence;
+        if (persistence) {
+          const persisted = await persistence.processResultWithRef(
+            record.toolName,
+            record.callId,
+            record.modelContent,
+            context.conversationId,
+          );
+          resultContent = persisted.content;
+          artifactRef = persisted.artifactRef;
+        }
+
         const toolMsg: Message = {
           role: 'tool',
-          content: record.modelContent,
+          content: resultContent,
           toolCallId: record.callId,
           toolName: record.toolName,
           id: generateId(),
@@ -416,6 +431,7 @@ export class TurnExecutor {
             taskId: submission.requestId,
             turnId: activeTurn?.turnId,
             parentOverride: assistantMsg.id,
+            artifactRef,
           });
         }
       }
