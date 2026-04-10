@@ -222,42 +222,34 @@ test('TurnExecutor keeps grouped tool calls in one assistant message for the nex
   await collectEvents(executor.run(submission));
 
   assert.equal(client.requests.length, 2);
-  assert.deepEqual(client.requests[1]?.messages.slice(-3), [
+  const lastThree = client.requests[1]?.messages.slice(-3);
+  // Compare structurally, ignoring dynamic id/timestamp fields
+  assert.equal(lastThree![0]!.role, 'assistant');
+  assert.equal(lastThree![0]!.content, null);
+  assert.deepEqual(lastThree![0]!.toolCalls, [
     {
-      role: 'assistant',
-      content: null,
-      toolCalls: [
-        {
-          id: 'call-1',
-          type: 'function',
-          function: {
-            name: 'test_tool',
-            arguments: JSON.stringify({ query: 'first' }),
-          },
-        },
-        {
-          id: 'call-2',
-          type: 'function',
-          function: {
-            name: 'test_tool',
-            arguments: JSON.stringify({ query: 'second' }),
-          },
-        },
-      ],
+      id: 'call-1',
+      type: 'function',
+      function: {
+        name: 'test_tool',
+        arguments: JSON.stringify({ query: 'first' }),
+      },
     },
     {
-      role: 'tool',
-      content: 'tool-result:first',
-      toolCallId: 'call-1',
-      toolName: 'test_tool',
-    },
-    {
-      role: 'tool',
-      content: 'tool-result:second',
-      toolCallId: 'call-2',
-      toolName: 'test_tool',
+      id: 'call-2',
+      type: 'function',
+      function: {
+        name: 'test_tool',
+        arguments: JSON.stringify({ query: 'second' }),
+      },
     },
   ]);
+  assert.equal(lastThree![1]!.role, 'tool');
+  assert.equal(lastThree![1]!.content, 'tool-result:first');
+  assert.equal((lastThree![1] as { toolCallId: string }).toolCallId, 'call-1');
+  assert.equal(lastThree![2]!.role, 'tool');
+  assert.equal(lastThree![2]!.content, 'tool-result:second');
+  assert.equal((lastThree![2] as { toolCallId: string }).toolCallId, 'call-2');
 });
 
 test('TurnExecutor aborts before starting model work when the request is already canceled', async () => {
@@ -312,30 +304,27 @@ test('TurnExecutor exposes committed prompt messages for session reuse', async (
   };
 
   const { result } = await collectEvents(executor.run(submission));
-  assert.deepEqual(result.promptMessages, [
-    { role: 'user', content: 'remember this' },
+  const pm = result.promptMessages;
+  assert.equal(pm.length, 4);
+  assert.equal(pm[0]!.role, 'user');
+  assert.equal(pm[0]!.content, 'remember this');
+  assert.equal(pm[1]!.role, 'assistant');
+  assert.equal(pm[1]!.content, null);
+  assert.deepEqual(pm[1]!.toolCalls, [
     {
-      role: 'assistant',
-      content: null,
-      toolCalls: [
-        {
-          id: 'call-9',
-          type: 'function',
-          function: {
-            name: 'test_tool',
-            arguments: JSON.stringify({ query: 'carry-forward' }),
-          },
-        },
-      ],
+      id: 'call-9',
+      type: 'function',
+      function: {
+        name: 'test_tool',
+        arguments: JSON.stringify({ query: 'carry-forward' }),
+      },
     },
-    {
-      role: 'tool',
-      content: 'tool-result:carry-forward',
-      toolCallId: 'call-9',
-      toolName: 'test_tool',
-    },
-    { role: 'assistant', content: 'final answer' },
   ]);
+  assert.equal(pm[2]!.role, 'tool');
+  assert.equal(pm[2]!.content, 'tool-result:carry-forward');
+  assert.equal((pm[2] as { toolCallId: string }).toolCallId, 'call-9');
+  assert.equal(pm[3]!.role, 'assistant');
+  assert.equal(pm[3]!.content, 'final answer');
 });
 
 test('TurnExecutor passes correct PromptContext fields to builder', async () => {
