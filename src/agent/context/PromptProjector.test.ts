@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { PromptProjector } from './PromptProjector.js';
 import { TokenBudget } from './TokenBudget.js';
-import type { Message } from '../../models/ModelClient.js';
+import { generateId, type Message } from '../../models/ModelClient.js';
 
 const tokenBudget = new TokenBudget({
   modelMetadata: { 'test-model': { contextWindowSize: 10000, maxOutputTokens: 1000 } },
@@ -22,10 +22,10 @@ const projector = new PromptProjector(
 
 test('nominal pressure passes history through unchanged', () => {
   const history: Message[] = [
-    { role: 'user', content: 'hello' },
-    { role: 'assistant', content: 'hi' },
+    { role: 'user', content: 'hello', id: generateId() },
+    { role: 'assistant', content: 'hi', id: generateId() },
   ];
-  const latest: Message = { role: 'user', content: 'bye' };
+  const latest: Message = { role: 'user', content: 'bye', id: generateId() };
   const result = projector.project({
     fullHistory: history,
     latestUserMessage: latest,
@@ -40,10 +40,10 @@ test('nominal pressure passes history through unchanged', () => {
 
 test('projection pressure inserts context block from session memory', () => {
   const history: Message[] = [
-    { role: 'user', content: 'recent question' },
-    { role: 'assistant', content: 'recent answer' },
+    { role: 'user', content: 'recent question', id: generateId() },
+    { role: 'assistant', content: 'recent answer', id: generateId() },
   ];
-  const latest: Message = { role: 'user', content: 'follow up' };
+  const latest: Message = { role: 'user', content: 'follow up', id: generateId() };
   const result = projector.project({
     fullHistory: history,
     latestUserMessage: latest,
@@ -65,9 +65,9 @@ test('projection pressure inserts context block from session memory', () => {
 
 test('projection prefers session memory over summary', () => {
   const history: Message[] = [
-    { role: 'user', content: 'hi' },
+    { role: 'user', content: 'hi', id: generateId() },
   ];
-  const latest: Message = { role: 'user', content: 'question' };
+  const latest: Message = { role: 'user', content: 'question', id: generateId() };
   const result = projector.project({
     fullHistory: history,
     latestUserMessage: latest,
@@ -94,9 +94,9 @@ test('projection prefers session memory over summary', () => {
 
 test('microcompact pressure passes history through without context block', () => {
   const history: Message[] = [
-    { role: 'user', content: 'hello' },
+    { role: 'user', content: 'hello', id: generateId() },
   ];
-  const latest: Message = { role: 'user', content: 'bye' };
+  const latest: Message = { role: 'user', content: 'bye', id: generateId() };
   const result = projector.project({
     fullHistory: history,
     latestUserMessage: latest,

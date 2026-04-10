@@ -1,8 +1,6 @@
-import crypto from 'node:crypto';
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
-import type { ToolCall, ModelStepResult, Message } from '../models/ModelClient.js';
-import { type ModelClient } from '../models/ModelClient.js';
+import { generateId, type Message, type ToolCall, type ModelStepResult, type ModelClient } from '../models/ModelClient.js';
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
 import { TemplateLoader } from '../prompts/TemplateLoader.js';
 import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
@@ -22,6 +20,7 @@ import {
 } from './types/recovery.js';
 import { categorizeApiError, exponentialBackoff } from './apiRetry.js';
 import { tryReactiveCompact } from './reactiveCompact.js';
+import type { ITranscriptRecorder } from './transcript/types.js';
 
 /** Wraps a provider error with buffered recovery events for safe propagation. */
 class RecoveryError extends Error {
@@ -34,11 +33,12 @@ class RecoveryError extends Error {
   }
 }
 
-interface TurnExecutorDeps {
+export interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
   toolRegistry?: IToolRegistry;
   contextDeps?: PrepareContextDeps;
+  transcriptRecorder?: ITranscriptRecorder;
 }
 
 export class TurnExecutor {
@@ -46,6 +46,7 @@ export class TurnExecutor {
   private readonly modelClientFactory: IModelClientFactory;
   private readonly toolRegistry: IToolRegistry;
   private readonly contextDeps: PrepareContextDeps;
+  private readonly transcriptRecorder?: ITranscriptRecorder;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
     this.toolRegistry = deps.toolRegistry ?? new ToolRegistry(config);
@@ -53,6 +54,7 @@ export class TurnExecutor {
       new SystemPromptBuilder(new TemplateLoader());
     this.modelClientFactory = deps.modelClientFactory ?? new ModelClientFactory(config);
     this.contextDeps = deps.contextDeps ?? this.buildDefaultContextDeps();
+    this.transcriptRecorder = deps.transcriptRecorder;
   }
 
   private buildDefaultContextDeps(): PrepareContextDeps {
@@ -96,10 +98,12 @@ export class TurnExecutor {
     const maxOutputTokens = options?.maxOutputTokens ?? this.config.model.max_output_tokens;
     const modelName = options?.model ?? this.config.model.name;
     const toolRegistry = options?.toolRegistry ?? this.toolRegistry;
+    const recorder = this.transcriptRecorder;
 
     const history = submission.promptHistory ?? submission.history.map((item) => ({
-      role: item.role,
+      role: item.role as Message['role'],
       content: item.content,
+      id: generateId(),
     }));
 
     const promptContext: PromptContext = {
@@ -123,19 +127,36 @@ export class TurnExecutor {
       cachePolicy: s.cachePolicy,
     }));
 
+    // Initial messages: system prompt + prior history only (no user message yet)
     const initialMessages = [
-      { role: 'system' as const, content: builtPrompt.finalSystemPrompt.join('\n\n') },
+      { role: 'system' as const, content: builtPrompt.finalSystemPrompt.join('\n\n'), id: generateId() },
       ...history,
-      { role: 'user' as const, content: submission.userMessage, id: crypto.randomUUID(), timestamp: new Date().toISOString() },
     ];
 
     const context = new TurnContext(submission, initialMessages);
     const primaryClient = this.modelClientFactory.createClient();
     let toolCallCount = 0;
     const recovery = initialRecoveryState();
-    // Track indices of internal continuation messages (partial assistant + "Resume..."
-    // prompts) so they can be stripped from promptMessages before persisting.
-    const continuationIndices = new Set<number>();
+
+    // Record baseline before pushing user message
+    const baselineLength = context.messages.length;
+
+    // Push user message after baseline
+    const userMsg: Message = {
+      role: 'user',
+      content: submission.userMessage,
+      id: generateId(),
+      timestamp: new Date().toISOString(),
+    };
+    context.messages.push(userMsg);
+
+    // Dual write: record user message to transcript
+    if (recorder) {
+      await recorder.recordMessage(submission.conversationId, userMsg, {
+        taskId: submission.requestId,
+        turnId: activeTurn?.turnId,
+      });
+    }
 
     while (context.turnCount < maxTurns) {
       this.throwIfAborted(context.signal);
@@ -201,10 +222,7 @@ export class TurnExecutor {
           tokenUsage: context.tokenUsage,
           completedTurns: context.turnCount,
           toolCallCount,
-          promptMessages: this.buildCleanPromptMessages(
-            submission.userMessage, context.messages, initialMessages.length,
-            continuationIndices, lastText,
-          ),
+          newMessages: context.messages.slice(baselineLength),
         };
       }
 
@@ -223,15 +241,14 @@ export class TurnExecutor {
           if (result.text) {
             yield { type: 'text_delta', content: result.text };
           }
-          // Preserve the partial assistant text in the conversation for the model,
-          // but mark these indices so they're excluded from persisted promptMessages.
-          continuationIndices.add(context.messages.length);
-          context.messages.push({ role: 'assistant', content: result.text });
+          // Preserve the partial assistant text in the conversation for the model
+          context.messages.push({ role: 'assistant', content: result.text, id: generateId(), timestamp: new Date().toISOString() });
           recovery.accumulatedText += result.text;
-          continuationIndices.add(context.messages.length);
           context.messages.push({
             role: 'user',
             content: 'Output limit reached. Resume exactly where you stopped.',
+            id: generateId(),
+            timestamp: new Date().toISOString(),
           });
           recovery.lastTransition = {
             reason: 'max_output_recovery',
@@ -251,16 +268,31 @@ export class TurnExecutor {
           tokenUsage: result.tokenUsage,
           completedTurns: context.turnCount,
           toolCallCount,
-          promptMessages: this.buildCleanPromptMessages(
-            submission.userMessage, context.messages, initialMessages.length,
-            continuationIndices, recovery.accumulatedText,
-          ),
+          newMessages: context.messages.slice(baselineLength),
         };
       }
 
       // --- Normal final text ---
       if (result.type === 'final_text') {
         const fullText = recovery.accumulatedText + result.text;
+
+        // Push final assistant message to context
+        const finalMsg: Message = {
+          role: 'assistant',
+          content: fullText,
+          id: generateId(),
+          timestamp: new Date().toISOString(),
+        };
+        context.messages.push(finalMsg);
+
+        // Dual write: record final assistant message
+        if (recorder) {
+          await recorder.recordMessage(submission.conversationId, finalMsg, {
+            taskId: submission.requestId,
+            turnId: activeTurn?.turnId,
+          });
+        }
+
         if (result.text) {
           yield { type: 'text_delta', content: result.text };
         }
@@ -270,21 +302,27 @@ export class TurnExecutor {
           tokenUsage: result.tokenUsage,
           completedTurns: context.turnCount,
           toolCallCount,
-          promptMessages: this.buildCleanPromptMessages(
-            submission.userMessage, context.messages, initialMessages.length,
-            continuationIndices, fullText,
-          ),
+          newMessages: context.messages.slice(baselineLength),
         };
       }
 
       // --- Tool calls (normal continuation) ---
-      context.messages.push({
+      const assistantMsg: Message = {
         role: 'assistant',
         content: null,
         toolCalls: result.calls,
-        id: crypto.randomUUID(),
+        id: generateId(),
         timestamp: new Date().toISOString(),
-      });
+      };
+      context.messages.push(assistantMsg);
+
+      // Dual write: record assistant tool-call message
+      if (recorder) {
+        await recorder.recordMessage(submission.conversationId, assistantMsg, {
+          taskId: submission.requestId,
+          turnId: activeTurn?.turnId,
+        });
+      }
 
       for (const call of result.calls) {
         this.throwIfAborted(context.signal);
@@ -305,14 +343,40 @@ export class TurnExecutor {
         };
         activeTurn?.turnState.resolveToolCall(call.id);
 
-        context.messages.push({
+        // Process through ToolResultPersistence for artifact externalization
+        let resultContent = toolResult.content;
+        let artifactRef: { filePath: string; originalSize: number; preview: string } | undefined;
+        const persistence = this.contextDeps.toolResultPersistence;
+        if (persistence) {
+          const persisted = await persistence.processResultWithRef(
+            call.function.name,
+            call.id,
+            toolResult.content,
+            context.conversationId,
+          );
+          resultContent = persisted.content;
+          artifactRef = persisted.artifactRef;
+        }
+
+        const toolMsg: Message = {
           role: 'tool',
-          content: toolResult.content,
+          content: resultContent,
           toolCallId: call.id,
           toolName: call.function.name,
-          id: crypto.randomUUID(),
+          id: generateId(),
           timestamp: new Date().toISOString(),
-        });
+        };
+        context.messages.push(toolMsg);
+
+        // Dual write: record tool result with parentOverride pointing to spawning assistant
+        if (recorder) {
+          await recorder.recordMessage(submission.conversationId, toolMsg, {
+            taskId: submission.requestId,
+            turnId: activeTurn?.turnId,
+            parentOverride: assistantMsg.id,
+            artifactRef,
+          });
+        }
       }
 
       recovery.lastTransition = {
@@ -329,10 +393,7 @@ export class TurnExecutor {
       tokenUsage: context.tokenUsage,
       completedTurns: context.turnCount,
       toolCallCount,
-      promptMessages: this.buildCleanPromptMessages(
-        submission.userMessage, context.messages, initialMessages.length,
-        continuationIndices, lastText,
-      ),
+      newMessages: context.messages.slice(baselineLength),
     };
   }
 
@@ -429,29 +490,6 @@ export class TurnExecutor {
       return { success: false, content: `Invalid arguments for tool ${call.function.name}.` };
     }
     return tool.execute(args, { conversationId, signal });
-  }
-
-  /**
-   * Build promptMessages for persisting, excluding internal continuation
-   * artifacts (partial assistant texts and "Resume..." prompts).
-   */
-  private buildCleanPromptMessages(
-    userMessage: string,
-    messages: Message[],
-    initialMessagesLength: number,
-    continuationIndices: Set<number>,
-    finalAssistantText: string,
-  ): Message[] {
-    const result: Message[] = [
-      { role: 'user', content: userMessage },
-    ];
-    for (let i = initialMessagesLength; i < messages.length; i++) {
-      if (!continuationIndices.has(i)) {
-        result.push(messages[i]!);
-      }
-    }
-    result.push({ role: 'assistant', content: finalAssistantText });
-    return result;
   }
 
   private throwIfAborted(signal?: AbortSignal) {

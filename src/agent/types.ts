@@ -24,7 +24,7 @@ export type AgentEvent =
 export interface TurnExecutionResult {
   finalText: string;
   tokenUsage?: TokenUsage;
-  promptMessages: Message[];
+  newMessages: Message[];
   completedTurns: number;
   toolCallCount: number;
 }

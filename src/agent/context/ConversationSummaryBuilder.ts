@@ -1,4 +1,4 @@
-import type { Message, ModelClient } from '../../models/ModelClient.js';
+import { generateId, type Message, type ModelClient } from '../../models/ModelClient.js';
 import type { ConversationSummary } from './types.js';
 
 const BYTES_PER_TOKEN = 4;
@@ -36,7 +36,7 @@ export class ConversationSummaryBuilder {
 
     const summaryMessages: Message[] = [
       ...toSummarize,
-      { role: 'user', content: SUMMARY_PROMPT },
+      { role: 'user', content: SUMMARY_PROMPT, id: generateId() },
     ];
 
     const result = await this.modelClient.generate({

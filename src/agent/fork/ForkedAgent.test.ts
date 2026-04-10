@@ -21,7 +21,7 @@ function makeFakeExecutor(finalText: string, tokenUsage = { inputTokens: 10, out
         tokenUsage,
         completedTurns: 1,
         toolCallCount: 0,
-        promptMessages: [],
+        newMessages: [],
       };
     },
   };
@@ -43,7 +43,7 @@ function makeAbortingExecutor() {
         finalText: '',
         completedTurns: 1,
         toolCallCount: 0,
-        promptMessages: [],
+        newMessages: [],
       };
     },
   };
@@ -258,7 +258,7 @@ test('launchForkedAgent passes ExecutionOptions through to run()', async () => {
     ): AsyncGenerator<AgentEvent, TurnExecutionResult> {
       receivedModel = options?.model;
       yield { type: 'done' as const };
-      return { finalText: '', completedTurns: 1, toolCallCount: 0, promptMessages: [] };
+      return { finalText: '', completedTurns: 1, toolCallCount: 0, newMessages: [] };
     },
   };
 

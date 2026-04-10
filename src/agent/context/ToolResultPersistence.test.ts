@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { ToolResultPersistence } from './ToolResultPersistence.js';
+import { generateId } from '../../models/ModelClient.js';
 import type { ToolResultPersistenceConfig } from './types.js';
 
 async function withTempDir(fn: (dir: string) => Promise<void>) {
@@ -75,7 +76,7 @@ test('enforceMessageBudget does nothing when under budget', async () => {
   await withTempDir(async (dir) => {
     const trp = new ToolResultPersistence(makeConfig(dir));
     const messages = [
-      { role: 'tool' as const, content: 'small', toolCallId: 'c1', toolName: 'search' },
+      { role: 'tool' as const, content: 'small', toolCallId: 'c1', toolName: 'search', id: generateId() },
     ];
     const result = await trp.enforceMessageBudget(messages, 'conv-1');
     assert.equal(result[0].content, 'small');
@@ -89,9 +90,9 @@ test('enforceMessageBudget persists largest tool results first', async () => {
       perMessageBudgetChars: 200,
     }));
     const messages = [
-      { role: 'user' as const, content: 'hi' },
-      { role: 'tool' as const, content: 'a'.repeat(80), toolCallId: 'c1', toolName: 'search' },
-      { role: 'tool' as const, content: 'b'.repeat(150), toolCallId: 'c2', toolName: 'search' },
+      { role: 'user' as const, content: 'hi', id: generateId() },
+      { role: 'tool' as const, content: 'a'.repeat(80), toolCallId: 'c1', toolName: 'search', id: generateId() },
+      { role: 'tool' as const, content: 'b'.repeat(150), toolCallId: 'c2', toolName: 'search', id: generateId() },
     ];
     // Total tool content = 230, budget = 200. Largest (150) gets persisted first.
     const result = await trp.enforceMessageBudget(messages, 'conv-1');

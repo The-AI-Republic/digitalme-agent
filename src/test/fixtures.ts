@@ -1,4 +1,16 @@
 import type { AgentConfig } from '../config/schema.js';
+import { generateId, type Message } from '../models/ModelClient.js';
+
+/**
+ * Create a Message with auto-generated id. Override any field.
+ */
+export function testMessage(overrides: Partial<Message> & Pick<Message, 'role'>): Message {
+  return {
+    content: overrides.content ?? null,
+    id: overrides.id ?? generateId(),
+    ...overrides,
+  };
+}
 
 export const testConfig: AgentConfig = {
   soul: {

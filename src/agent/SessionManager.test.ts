@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { Message } from '../models/ModelClient.js';
+import { generateId, type Message } from '../models/ModelClient.js';
 import { testConfig as config } from '../test/fixtures.js';
 import { EventQueue } from './EventQueue.js';
-import type { IRolloutRecorder, RolloutEntry } from './RolloutRecorder.js';
+import type { ITranscriptRecorder } from './transcript/types.js';
 import { SessionManager } from './SessionManager.js';
 import type { AgentEvent, TurnSubmission, TurnExecutionResult } from './types.js';
 
@@ -21,28 +21,38 @@ class FakeTurnExecutor {
       finalText,
       completedTurns: 1,
       toolCallCount: 0,
-      promptMessages: [
-        { role: 'user', content: submission.userMessage },
-        { role: 'assistant', content: finalText },
+      newMessages: [
+        { role: 'user', content: submission.userMessage, id: generateId() },
+        { role: 'assistant', content: finalText, id: generateId() },
       ],
     };
   }
 }
 
-class MemoryRolloutRecorder implements IRolloutRecorder {
-  readonly entries: RolloutEntry[] = [];
+class MemoryTranscriptRecorder implements ITranscriptRecorder {
+  readonly entries: import('./transcript/types.js').TranscriptEntry[] = [];
 
-  async record(entry: RolloutEntry) {
+  async recordMessage() {}
+
+  async recordLifecycleEvent(entry: import('./transcript/types.js').TranscriptEntry) {
     this.entries.push(entry);
   }
+
+  async insertMessageChain() {}
+
+  async loadTranscript() {
+    return { messages: [] as Message[], leafId: null };
+  }
+
+  seedParentId() {}
 }
 
 test('SessionManager reuses prompt history from the live session when platform history is empty', async () => {
   const turnExecutor = new FakeTurnExecutor();
-  const rolloutRecorder = new MemoryRolloutRecorder();
+  const transcriptRecorder = new MemoryTranscriptRecorder();
   const manager = new SessionManager(config, {
     turnExecutor,
-    rolloutRecorder,
+    transcriptRecorder,
   });
   const events = new EventQueue<AgentEvent>();
 
@@ -68,15 +78,15 @@ test('SessionManager reuses prompt history from the live session when platform h
   assert.equal(history?.[0]?.content, 'hello');
   assert.equal(history?.[1]?.role, 'assistant');
   assert.equal(history?.[1]?.content, 'answer:hello');
-  assert.equal(rolloutRecorder.entries.length >= 2, true);
+  assert.equal(transcriptRecorder.entries.length >= 2, true);
 });
 
 test('SessionManager reseeds warm session prompt history when platform canonical history changes', async () => {
   const turnExecutor = new FakeTurnExecutor();
-  const rolloutRecorder = new MemoryRolloutRecorder();
+  const transcriptRecorder = new MemoryTranscriptRecorder();
   const manager = new SessionManager(config, {
     turnExecutor,
-    rolloutRecorder,
+    transcriptRecorder,
   });
   const events = new EventQueue<AgentEvent>();
 
@@ -109,7 +119,7 @@ test('SessionManager reseeds warm session prompt history when platform canonical
   assert.ok(reseeded?.[0]?.id, 'reseeded message should have an id');
   assert.ok(reseeded?.[0]?.timestamp, 'reseeded message should have a timestamp');
   assert.equal(
-    rolloutRecorder.entries.some((entry) => entry.type === 'session_reseeded'),
+    transcriptRecorder.entries.some((entry) => entry.type === 'session_reseeded'),
     true,
   );
 });

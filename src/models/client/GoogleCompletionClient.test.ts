@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { CompletionRequest, Message } from '../ModelClient.js';
+import { generateId, type CompletionRequest, type Message } from '../ModelClient.js';
 import { GoogleCompletionClient } from './GoogleCompletionClient.js';
 
 test('GoogleCompletionClient uses the tool name when serializing function responses', () => {
@@ -14,6 +14,7 @@ test('GoogleCompletionClient uses the tool name when serializing function respon
     {
       role: 'assistant',
       content: null,
+      id: generateId(),
       toolCalls: [{
         id: 'call_1',
         type: 'function',
@@ -28,6 +29,7 @@ test('GoogleCompletionClient uses the tool name when serializing function respon
       content: '{"results":[]}',
       toolCallId: 'call_1',
       toolName: 'web_search',
+      id: generateId(),
     },
   ];
 
@@ -43,7 +45,7 @@ test('GoogleCompletionClient passes tool parameters to Google function declarati
 
   const request: CompletionRequest = {
     model: 'gemini-2.5-flash',
-    messages: [{ role: 'user', content: 'hi' }],
+    messages: [{ role: 'user', content: 'hi', id: generateId() }],
     tools: [{
       type: 'function',
       function: {

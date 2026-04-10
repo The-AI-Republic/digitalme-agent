@@ -7,7 +7,7 @@ import type { AgentEvent, TurnSubmission, TurnExecutionResult, ExecutionOptions 
 import { consumeGenerator } from './types.js';
 import type { ToolExecutionResult, Tool, ToolDefinition } from '../tools/types.js';
 import type { ISystemPromptBuilder, BuiltPrompt, PromptContext } from '../prompts/types.js';
-import { testConfig as config } from '../test/fixtures.js';
+import { testConfig as config, testMessage } from '../test/fixtures.js';
 
 class FakeModelClient implements ModelClient {
   public readonly requests: CompletionRequest[] = [];
@@ -222,11 +222,18 @@ test('TurnExecutor keeps grouped tool calls in one assistant message for the nex
   await collectEvents(executor.run(submission));
 
   assert.equal(client.requests.length, 2);
-  const lastThree = client.requests[1]?.messages.slice(-3);
-  // Compare structurally, ignoring dynamic id/timestamp fields
-  assert.equal(lastThree![0]!.role, 'assistant');
-  assert.equal(lastThree![0]!.content, null);
-  assert.deepEqual(lastThree![0]!.toolCalls, [
+  // Note: client.requests[1].messages is a live reference to context.messages,
+  // which now includes the final assistant msg pushed after the second generate() call.
+  // The second request saw: [system, user, assistant(toolCalls), tool1, tool2]
+  // After final_text, the final assistant message was also pushed, so the array is now 6 items.
+  const msgs = client.requests[1]?.messages;
+  assert.ok(msgs);
+  // Find the assistant message with toolCalls (index 2: system=0, user=1, assistant=2)
+  const assistantIdx = msgs.findIndex((m: { role: string; toolCalls?: unknown[] }) => m.role === 'assistant' && m.toolCalls);
+  assert.ok(assistantIdx >= 0, 'should find assistant with toolCalls');
+  const assistantMsg = msgs[assistantIdx];
+  assert.equal(assistantMsg.content, null);
+  assert.deepEqual(assistantMsg.toolCalls, [
     {
       id: 'call-1',
       type: 'function',
@@ -244,12 +251,17 @@ test('TurnExecutor keeps grouped tool calls in one assistant message for the nex
       },
     },
   ]);
-  assert.equal(lastThree![1]!.role, 'tool');
-  assert.equal(lastThree![1]!.content, 'tool-result:first');
-  assert.equal((lastThree![1] as { toolCallId: string }).toolCallId, 'call-1');
-  assert.equal(lastThree![2]!.role, 'tool');
-  assert.equal(lastThree![2]!.content, 'tool-result:second');
-  assert.equal((lastThree![2] as { toolCallId: string }).toolCallId, 'call-2');
+  // Tool result messages follow the assistant
+  const tool1 = msgs[assistantIdx + 1];
+  const tool2 = msgs[assistantIdx + 2];
+  assert.equal(tool1.role, 'tool');
+  assert.equal(tool1.content, 'tool-result:first');
+  assert.equal(tool1.toolCallId, 'call-1');
+  assert.equal(tool1.toolName, 'test_tool');
+  assert.equal(tool2.role, 'tool');
+  assert.equal(tool2.content, 'tool-result:second');
+  assert.equal(tool2.toolCallId, 'call-2');
+  assert.equal(tool2.toolName, 'test_tool');
 });
 
 test('TurnExecutor aborts before starting model work when the request is already canceled', async () => {
@@ -304,13 +316,15 @@ test('TurnExecutor exposes committed prompt messages for session reuse', async (
   };
 
   const { result } = await collectEvents(executor.run(submission));
-  const pm = result.promptMessages;
-  assert.equal(pm.length, 4);
-  assert.equal(pm[0]!.role, 'user');
-  assert.equal(pm[0]!.content, 'remember this');
-  assert.equal(pm[1]!.role, 'assistant');
-  assert.equal(pm[1]!.content, null);
-  assert.deepEqual(pm[1]!.toolCalls, [
+  const msgs = result.newMessages;
+  assert.equal(msgs.length, 4);
+  // user message
+  assert.equal(msgs[0].role, 'user');
+  assert.equal(msgs[0].content, 'remember this');
+  // assistant tool call
+  assert.equal(msgs[1].role, 'assistant');
+  assert.equal(msgs[1].content, null);
+  assert.deepEqual(msgs[1].toolCalls, [
     {
       id: 'call-9',
       type: 'function',
@@ -320,11 +334,14 @@ test('TurnExecutor exposes committed prompt messages for session reuse', async (
       },
     },
   ]);
-  assert.equal(pm[2]!.role, 'tool');
-  assert.equal(pm[2]!.content, 'tool-result:carry-forward');
-  assert.equal((pm[2] as { toolCallId: string }).toolCallId, 'call-9');
-  assert.equal(pm[3]!.role, 'assistant');
-  assert.equal(pm[3]!.content, 'final answer');
+  // tool result
+  assert.equal(msgs[2].role, 'tool');
+  assert.equal(msgs[2].content, 'tool-result:carry-forward');
+  assert.equal(msgs[2].toolCallId, 'call-9');
+  assert.equal(msgs[2].toolName, 'test_tool');
+  // final assistant text
+  assert.equal(msgs[3].role, 'assistant');
+  assert.equal(msgs[3].content, 'final answer');
 });
 
 test('TurnExecutor passes correct PromptContext fields to builder', async () => {
