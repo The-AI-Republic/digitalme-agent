@@ -1,4 +1,9 @@
+import crypto from 'node:crypto';
 import type { ToolDefinition } from '../tools/types.js';
+
+export function generateId(): string {
+  return crypto.randomUUID();
+}
 
 export interface Message {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -6,10 +11,13 @@ export interface Message {
   toolCalls?: ToolCall[];
   toolCallId?: string;
   toolName?: string;
-  /** Stable UUID, set at message creation time. Internal bookkeeping only — not sent to providers. */
-  id?: string;
-  /** ISO 8601 timestamp, set at message creation time. Used by microcompact for gap detection. */
+  /** Stable UUID for transcript dedup, parentId chaining, and artifact references. Required. */
+  id: string;
+  /** ISO 8601 timestamp, set at creation time. Used by microcompact and transcript ordering. Optional. */
   timestamp?: string;
+  /** True for internally-generated messages (compaction summaries, synthetic continuations).
+   *  Excluded from getCanonicalHistory() to prevent leaking into platform reconciliation. */
+  synthetic?: boolean;
 }
 
 export interface ToolCall {

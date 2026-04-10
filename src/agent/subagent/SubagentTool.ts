@@ -1,3 +1,4 @@
+import { generateId } from '../../models/ModelClient.js';
 import type { IToolRegistry } from '../../tools/registry.js';
 import type { Tool, ToolContext, ToolDefinition, ToolExecutionResult } from '../../tools/types.js';
 import type { AgentEvent, ExecutionOptions, TurnExecutionResult, TurnExecutorLike, TurnSubmission } from '../types.js';
@@ -114,8 +115,8 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool {
         userMessage: input.prompt,
         history: [],
         promptHistory: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: input.prompt },
+          { role: 'system', content: systemPrompt, id: generateId() },
+          { role: 'user', content: input.prompt, id: generateId() },
         ],
       };
 

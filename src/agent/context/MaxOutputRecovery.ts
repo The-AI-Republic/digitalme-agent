@@ -1,4 +1,4 @@
-import type { Message } from '../../models/ModelClient.js';
+import { generateId, type Message } from '../../models/ModelClient.js';
 import type { ModelStepResult } from '../../models/ModelClient.js';
 
 export interface MaxOutputRecoveryConfig {
@@ -27,6 +27,7 @@ export class MaxOutputRecovery {
     return {
       role: 'user',
       content: DEFAULT_CONTINUATION_PROMPT,
+      id: generateId(),
     };
   }
 

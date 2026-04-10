@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { ReactiveCompact } from './ReactiveCompact.js';
 import { PostCompactRecovery } from './PostCompactRecovery.js';
-import type { Message } from '../../models/ModelClient.js';
+import { generateId, type Message } from '../../models/ModelClient.js';
 import type { ConversationSummary } from './types.js';
 
 const fakeBuilder = {
@@ -27,10 +27,10 @@ test('canAttempt is true initially', () => {
 test('canAttempt is false after one attempt', async () => {
   const rc = new ReactiveCompact({ maxRetries: 1, aggressivePreserveMessages: 2 }, fakeBuilder, recovery);
   const messages: Message[] = [
-    { role: 'user', content: 'a' },
-    { role: 'assistant', content: 'b' },
-    { role: 'user', content: 'c' },
-    { role: 'assistant', content: 'd' },
+    { role: 'user', content: 'a', id: generateId() },
+    { role: 'assistant', content: 'b', id: generateId() },
+    { role: 'user', content: 'c', id: generateId() },
+    { role: 'assistant', content: 'd', id: generateId() },
   ];
   await rc.recover(messages, {});
   assert.equal(rc.canAttempt(), false);
@@ -38,7 +38,7 @@ test('canAttempt is false after one attempt', async () => {
 
 test('resetForNewTurn re-enables attempt', async () => {
   const rc = new ReactiveCompact({ maxRetries: 1, aggressivePreserveMessages: 2 }, fakeBuilder, recovery);
-  await rc.recover([{ role: 'user', content: 'x' }], {});
+  await rc.recover([{ role: 'user', content: 'x', id: generateId() }], {});
   assert.equal(rc.canAttempt(), false);
   rc.resetForNewTurn();
   assert.equal(rc.canAttempt(), true);
@@ -47,10 +47,10 @@ test('resetForNewTurn re-enables attempt', async () => {
 test('recover preserves last N messages and prepends summary', async () => {
   const rc = new ReactiveCompact({ maxRetries: 1, aggressivePreserveMessages: 2 }, fakeBuilder, recovery);
   const messages: Message[] = [
-    { role: 'user', content: 'old' },
-    { role: 'assistant', content: 'old reply' },
-    { role: 'user', content: 'recent' },
-    { role: 'assistant', content: 'recent reply' },
+    { role: 'user', content: 'old', id: generateId() },
+    { role: 'assistant', content: 'old reply', id: generateId() },
+    { role: 'user', content: 'recent', id: generateId() },
+    { role: 'assistant', content: 'recent reply', id: generateId() },
   ];
   const result = await rc.recover(messages, {});
   assert.ok(result.succeeded);

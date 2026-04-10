@@ -1,4 +1,4 @@
-import type { Message } from '../../models/ModelClient.js';
+import { generateId, type Message } from '../../models/ModelClient.js';
 import type { ConversationSummary, SessionMemoryContent, PressureBand } from './types.js';
 import type { TokenBudget } from './TokenBudget.js';
 
@@ -44,6 +44,7 @@ export class PromptProjector {
       const contextMessage: Message = {
         role: 'user',
         content: `Context from earlier conversation:\n${contextText}`,
+        id: generateId(),
       };
       result.push(contextMessage);
     }

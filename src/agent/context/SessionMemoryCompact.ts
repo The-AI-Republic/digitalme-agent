@@ -1,4 +1,4 @@
-import type { Message } from '../../models/ModelClient.js';
+import { generateId, type Message } from '../../models/ModelClient.js';
 import type { CompactionResult } from './types.js';
 import type { SessionMemory } from './SessionMemory.js';
 import type { TokenBudget } from './TokenBudget.js';
@@ -83,6 +83,8 @@ export class SessionMemoryCompact {
       {
         role: 'assistant',
         content: `[Context compacted. Pre-compact tokens: ~${preCompactTokens}]\n\n${memory.text}`,
+        id: generateId(),
+        synthetic: true,
       },
       ...preserved,
     ];
