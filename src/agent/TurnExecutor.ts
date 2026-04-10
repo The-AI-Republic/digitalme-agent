@@ -25,6 +25,7 @@ import { tryReactiveCompact } from './reactiveCompact.js';
 
 /** Wraps a provider error with buffered recovery events for safe propagation. */
 class RecoveryError extends Error {
+  override readonly name = 'RecoveryError';
   constructor(
     public readonly cause: unknown,
     public readonly recoveryEvents: AgentEvent[],
@@ -318,7 +319,6 @@ export class TurnExecutor {
         reason: 'tool_use',
         toolNames: result.calls.map(c => c.function.name),
       };
-      recovery.apiRetryCount = 0;
     }
 
     // Max turns reached — return gracefully, do not throw.
@@ -395,7 +395,6 @@ export class TurnExecutor {
         if ((category === 'rate_limit' || category === 'overloaded' || category === 'server_error')
             && attempt < RECOVERY_LIMITS.MAX_API_RETRIES) {
           await exponentialBackoff(attempt);
-          recovery.apiRetryCount++;
           recovery.lastTransition = {
             reason: 'api_retry',
             attempt: attempt + 1,

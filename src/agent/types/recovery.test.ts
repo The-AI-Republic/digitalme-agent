@@ -8,7 +8,6 @@ test('initialRecoveryState returns zeroed state', () => {
   assert.equal(state.hasAttemptedReactiveCompact, false);
   assert.equal(state.maxOutputRecoveryCount, 0);
   assert.equal(state.accumulatedText, '');
-  assert.equal(state.apiRetryCount, 0);
   assert.equal(state.fallbackAttempted, false);
   assert.equal(state.lastTransition, undefined);
 });

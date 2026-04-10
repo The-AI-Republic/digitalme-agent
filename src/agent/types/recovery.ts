@@ -33,7 +33,6 @@ export interface RecoveryState {
   hasAttemptedReactiveCompact: boolean;
   maxOutputRecoveryCount: number;
   accumulatedText: string;
-  apiRetryCount: number;
   fallbackAttempted: boolean;
   lastTransition: ContinuationReason | undefined;
 }
@@ -49,7 +48,6 @@ export function initialRecoveryState(): RecoveryState {
     hasAttemptedReactiveCompact: false,
     maxOutputRecoveryCount: 0,
     accumulatedText: '',
-    apiRetryCount: 0,
     fallbackAttempted: false,
     lastTransition: undefined,
   };
