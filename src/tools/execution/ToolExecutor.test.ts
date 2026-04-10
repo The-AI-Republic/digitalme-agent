@@ -227,6 +227,34 @@ test('ToolExecutor returns aborted when request signal fires', async () => {
   assert.equal(records[0]!.result.errorCategory, 'aborted');
 });
 
+test('ToolExecutor returns aborted when request signal is already aborted', async () => {
+  let executeCalled = false;
+  const tool = makeTool({
+    execute: async (_args, ctx) => {
+      executeCalled = true;
+      await new Promise((resolve, reject) => {
+        if (ctx.signal.aborted) {
+          reject(new DOMException('aborted', 'AbortError'));
+          return;
+        }
+        ctx.signal.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'));
+        }, { once: true });
+      });
+      return { success: true, data: {}, renderForModel: () => 'ok' };
+    },
+  });
+  const executor = new ToolExecutor(makeRegistry([tool]), new DefaultToolPolicyChecker());
+
+  // Signal is already aborted before runTools
+  const records = await executor.runTools(
+    [makeCall('test_tool', {}, 'c1')],
+    { conversationId: 'conv-1', signal: AbortSignal.abort(), policyConfig: {} },
+    new ResultBudget(), noopCallbacks(),
+  );
+  assert.equal(records[0]!.result.errorCategory, 'aborted');
+});
+
 // --- Generic exception ---
 
 test('ToolExecutor returns execution_error for generic exceptions', async () => {

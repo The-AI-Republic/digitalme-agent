@@ -36,7 +36,11 @@ function createToolAbortSignal(
   const timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
 
   const onRequestAbort = () => controller.abort('request_aborted');
-  requestSignal?.addEventListener('abort', onRequestAbort, { once: true });
+  if (requestSignal?.aborted) {
+    controller.abort('request_aborted');
+  } else {
+    requestSignal?.addEventListener('abort', onRequestAbort, { once: true });
+  }
 
   return {
     signal: controller.signal,
