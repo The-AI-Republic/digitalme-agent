@@ -1,11 +1,11 @@
 import type { TokenUsage } from '../models/ModelClient.js';
-import { TurnState } from './TurnState.js';
+import { TurnExecutionState } from './TurnExecutionState.js';
 
 type ActiveTurnStatus = 'running' | 'completed' | 'failed';
 
 export class ActiveTurn {
   readonly startedAt = new Date().toISOString();
-  readonly turnState = new TurnState();
+  readonly executionState = new TurnExecutionState();
   private status: ActiveTurnStatus = 'running';
   private errorMessage?: string;
   private completedAt?: string;
@@ -16,7 +16,7 @@ export class ActiveTurn {
   ) {}
 
   complete(tokenUsage?: TokenUsage) {
-    this.turnState.setTokenUsage(tokenUsage);
+    this.executionState.setTokenUsage(tokenUsage);
     this.status = 'completed';
     this.completedAt = new Date().toISOString();
   }
@@ -35,7 +35,7 @@ export class ActiveTurn {
       completedAt: this.completedAt,
       status: this.status,
       errorMessage: this.errorMessage,
-      turnState: this.turnState.snapshot(),
+      executionState: this.executionState.snapshot(),
     };
   }
 }

@@ -1,10 +1,19 @@
 import type { TokenUsage } from '../models/ModelClient.js';
 
-export class TurnState {
+export class TurnExecutionState {
+  private iterationIndex = 0;
   private modelTurnCount = 0;
   private toolCallCount = 0;
   private readonly pendingToolCallIds = new Set<string>();
   private tokenUsage?: TokenUsage;
+
+  incrementIteration() {
+    this.iterationIndex += 1;
+  }
+
+  getIterationIndex() {
+    return this.iterationIndex;
+  }
 
   beginModelTurn() {
     this.modelTurnCount += 1;
@@ -19,12 +28,17 @@ export class TurnState {
     this.pendingToolCallIds.delete(callId);
   }
 
-  setTokenUsage(tokenUsage: TokenUsage | undefined) {
-    this.tokenUsage = tokenUsage;
+  setTokenUsage(usage: TokenUsage | undefined) {
+    this.tokenUsage = usage;
+  }
+
+  getTokenUsage() {
+    return this.tokenUsage;
   }
 
   snapshot() {
     return {
+      iterationIndex: this.iterationIndex,
       modelTurnCount: this.modelTurnCount,
       toolCallCount: this.toolCallCount,
       pendingToolCalls: this.pendingToolCallIds.size,
