@@ -233,7 +233,10 @@ test('TurnExecutor keeps grouped tool calls in one assistant message for the nex
   await collectEvents(executor.run(submission));
 
   assert.equal(client.requests.length, 2);
-  assert.deepEqual(client.requests[1]?.messages.slice(-3), [
+  const last3 = client.requests[1]?.messages.slice(-3).map(
+    ({ id, timestamp, ...rest }: any) => rest,
+  );
+  assert.deepEqual(last3, [
     {
       role: 'assistant',
       content: null,
@@ -323,7 +326,10 @@ test('TurnExecutor exposes committed prompt messages for session reuse', async (
   };
 
   const { result } = await collectEvents(executor.run(submission));
-  assert.deepEqual(result.promptMessages, [
+  const stripped = result.promptMessages.map(
+    ({ id, timestamp, ...rest }: any) => rest,
+  );
+  assert.deepEqual(stripped, [
     { role: 'user', content: 'remember this' },
     {
       role: 'assistant',

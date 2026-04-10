@@ -105,6 +105,60 @@ This prevents the caller from seeing transient errors that the loop can handle i
 - **Proactive:** fires before each API call when token count approaches threshold (context window minus 13k buffer). Uses circuit breaker after 3 consecutive failures.
 - **Reactive:** fires after a 413 error. One-shot attempt to summarize and strip media to get under limit. Guarded by `hasAttempted` flag.
 
+## Prerequisites: Current Codebase Gaps
+
+Before implementing, these gaps in the current codebase must be understood. Each is addressed in the implementation steps below.
+
+### 1. Provider SDK Errors Are Not Wrapped
+
+Model clients (`OpenAICompatibleClient`, `GoogleCompletionClient`) let raw SDK errors bubble up. There is no unified error shape. The `categorizeApiError()` function (step 2) must handle both:
+
+- **OpenAI SDK** (`openai` package): throws `APIError` with `.status` (number) and `.message` (string). Covers providers: openai, xai, groq, fireworks, together.
+- **Google AI SDK** (`@google/generative-ai`): throws `GoogleGenerativeAIError` / `GoogleGenerativeAIFetchError`. HTTP status is on `.status` for fetch errors; content-too-large errors appear in `.message`.
+
+Implementation approach: `categorizeApiError()` uses duck-typing — check for `.status` property first (covers both SDKs for HTTP errors), fall back to `.message` pattern matching for provider-specific errors.
+
+### 2. No Runtime Model Switching
+
+`ModelClientFactory` creates a singleton client. There is no `switchModel()` method.
+
+Implementation approach: fallback creates a **new client** via the factory rather than mutating the existing one. `callModelWithRecovery()` accepts a `clientFactory` dependency and creates a fresh client for the fallback model on demand. The original client is not modified.
+
+### 3. No Fallback Model in Config
+
+The config schema (`src/config/schema.ts`) has a single `model` block with `provider`, `name`, `api_key`, `base_url`.
+
+Implementation approach: add an optional `fallback_model` field to the schema with the same shape:
+
+```typescript
+// In src/config/schema.ts — fallback_model must match the primary model schema exactly
+const modelSchema = z.object({
+  provider: z.enum(['openai', 'anthropic', 'xai', 'groq', 'google-ai-studio', 'fireworks', 'together']),
+  name: z.string().min(1),
+  api_key: z.string().min(1),
+  base_url: z.string().optional().nullable(),
+  max_output_tokens: z.number().int().positive().default(8192),
+});
+
+// In the agentConfigSchema:
+model: modelSchema,
+fallback_model: modelSchema.optional(),
+```
+
+### 4. Backoff Timing
+
+Digitalme is public-facing — users are waiting. Use short backoff:
+
+```typescript
+export async function exponentialBackoff(attempt: number): Promise<void> {
+  // 100ms, 200ms, 400ms — short for user-facing latency
+  const delayMs = 100 * Math.pow(2, attempt);
+  await new Promise(resolve => setTimeout(resolve, delayMs));
+}
+```
+
+Max total backoff across 3 retries: 100 + 200 + 400 = 700ms. Acceptable for a user waiting on a response.
+
 ## Target Design for DigitalMe Agent
 
 ### New Type Definitions
@@ -146,6 +200,7 @@ export type ApiErrorCategory =
 export interface RecoveryState {
   hasAttemptedReactiveCompact: boolean;
   maxOutputRecoveryCount: number;
+  accumulatedText: string;  // partial assistant text across max-output continuations
   apiRetryCount: number;
   fallbackAttempted: boolean;
   lastTransition: ContinuationReason | undefined;
@@ -161,6 +216,7 @@ export function initialRecoveryState(): RecoveryState {
   return {
     hasAttemptedReactiveCompact: false,
     maxOutputRecoveryCount: 0,
+    accumulatedText: '',
     apiRetryCount: 0,
     fallbackAttempted: false,
     lastTransition: undefined,
@@ -183,7 +239,7 @@ async run(context, events, activeTurn?) {
     context.turnCount += 1;
 
     // --- Call model (with error capture, not immediate throw) ---
-    const result = await this.callModelWithRecovery(context, recovery);
+    const result = await this.callModelWithRecovery(context, recovery, events);
 
     // --- Handle context overflow (413) ---
     if (result.type === 'context_overflow') {
@@ -202,9 +258,23 @@ async run(context, events, activeTurn?) {
     }
 
     // --- Handle max output truncation ---
+    // Claudy pattern: always save partial assistant text into messages before
+    // continuing, so the model sees what it already wrote on the next call.
+    // Also accumulate partial texts so the final return contains everything.
+    //
+    // Known trade-off: blind concatenation. Models sometimes repeat a few
+    // tokens or restart the last sentence after "resume where you stopped."
+    // This can produce minor duplication at seams. Claudy accepts the same
+    // trade-off — overlap detection is fragile and not worth the complexity
+    // for a first pass. If seam quality becomes a real problem, a future
+    // improvement can add suffix-matching dedup.
     if (result.type === 'final_text' && result.truncated) {
       if (recovery.maxOutputRecoveryCount < RECOVERY_LIMITS.MAX_OUTPUT_RECOVERY_ATTEMPTS) {
         recovery.maxOutputRecoveryCount += 1;
+        // Preserve the partial assistant text in the conversation
+        context.messages.push({ role: 'assistant', content: result.text });
+        // Accumulate for final return
+        recovery.accumulatedText += result.text;
         context.messages.push({
           role: 'user',
           content: 'Output limit reached. Resume exactly where you stopped.',
@@ -216,15 +286,18 @@ async run(context, events, activeTurn?) {
         events.push({ type: 'recovery', reason: 'max_output_recovery' });
         continue;
       }
-      // Exhausted — return what we have
+      // Exhausted — return what we have (accumulated + final partial)
+      recovery.accumulatedText += result.text;
       events.push({ type: 'done', terminalReason: { reason: 'max_output_exhausted' } });
-      return result;
+      return { ...result, text: recovery.accumulatedText };
     }
 
     // --- Normal final text ---
     if (result.type === 'final_text') {
+      // If we accumulated partial text from prior continuations, prepend it
+      const fullText = recovery.accumulatedText + result.text;
       events.push({ type: 'done', terminalReason: { reason: 'completed' } });
-      return result;
+      return { ...result, text: fullText };
     }
 
     // --- Tool calls (normal continuation) ---
@@ -240,9 +313,13 @@ async run(context, events, activeTurn?) {
     recovery.apiRetryCount = 0;
   }
 
-  // Max turns reached
+  // Max turns reached — return gracefully, do not throw.
+  // Claudy pattern: return a terminal reason so callers handle it like any
+  // other completion. Throwing here would cause SubmissionQueue to emit a
+  // contradictory error event after the done event.
+  const lastText = recovery.accumulatedText || '';
   events.push({ type: 'done', terminalReason: { reason: 'max_turns' } });
-  throw new Error('max_turns_exceeded');
+  return { type: 'final_text', text: lastText, truncated: true };
 }
 ```
 
@@ -251,17 +328,23 @@ async run(context, events, activeTurn?) {
 **New method on TurnExecutor** or extracted to a helper:
 
 ```typescript
+// events queue is passed in so retries and fallback are observable to callers,
+// not silent inside the helper.
 private async callModelWithRecovery(
   context: TurnContext,
   recovery: RecoveryState,
+  events: EventQueue<AgentEvent>,
 ): Promise<ModelStepResult | { type: 'context_overflow' }> {
   let consecutive529 = 0;
+  let client = this.client; // Start with primary model client
 
   for (let attempt = 0; attempt <= RECOVERY_LIMITS.MAX_API_RETRIES; attempt++) {
     try {
-      return await this.client.generate({ messages: context.messages });
+      return await client.generate({ messages: context.messages });
     } catch (error) {
       const category = categorizeApiError(error);
+      // categorizeApiError handles both OpenAI SDK (APIError.status)
+      // and Google SDK (GoogleGenerativeAIFetchError.status / message patterns)
 
       if (category === 'context_overflow') {
         return { type: 'context_overflow' };
@@ -270,15 +353,26 @@ private async callModelWithRecovery(
       if (category === 'overloaded') {
         consecutive529++;
         if (consecutive529 >= RECOVERY_LIMITS.FALLBACK_AFTER_CONSECUTIVE_529
-            && this.config.fallbackModel
+            && this.config.fallback_model
             && !recovery.fallbackAttempted) {
           recovery.fallbackAttempted = true;
-          this.client.switchModel(this.config.fallbackModel);
+          // Create a new client via factory — don't mutate the primary client
+          client = this.clientFactory.createFromConfig(this.config.fallback_model);
+          // Claudy pattern: reset retry budget so fallback gets a full chance.
+          // In claudy this happens structurally (new withRetry generator per call),
+          // here we reset explicitly.
+          attempt = 0;
+          consecutive529 = 0;
           recovery.lastTransition = {
             reason: 'fallback_model',
-            fromModel: this.config.model,
-            toModel: this.config.fallbackModel,
+            fromModel: this.config.model.name,
+            toModel: this.config.fallback_model.name,
           };
+          events.push({
+            type: 'recovery',
+            reason: 'fallback_model',
+            detail: { from: this.config.model.name, to: this.config.fallback_model.name },
+          });
           continue;
         }
       }
@@ -292,6 +386,11 @@ private async callModelWithRecovery(
           attempt: attempt + 1,
           errorType: category,
         };
+        events.push({
+          type: 'recovery',
+          reason: 'api_retry',
+          detail: { attempt: attempt + 1, errorType: category },
+        });
         continue;
       }
 
@@ -322,7 +421,7 @@ The `recovery` event makes every extra loop iteration visible to callers, rollou
 
 ### Reactive Compaction (Minimal First Pass)
 
-Full compaction (track 03) is a separate improvement track. For this track, implement a minimal reactive compaction that:
+Full compaction (track 02 — context management) is a separate improvement track. For this track, implement a minimal reactive compaction that:
 
 1. Counts tokens in `context.messages` (use tiktoken or model's tokenizer)
 2. When triggered by 413, truncates old messages from the middle of history (keep system prompt + last N exchanges)
@@ -330,14 +429,53 @@ Full compaction (track 03) is a separate improvement track. For this track, impl
 
 This is intentionally simple. A richer compaction system belongs in its own track. The goal here is that the recovery path exists and is wired, even if the compaction strategy is basic.
 
-```typescript
-private async tryReactiveCompact(context: TurnContext): Promise<boolean> {
-  const messageCount = context.messages.length;
-  if (messageCount <= 4) return false; // Nothing to compact
+**Two invariants for safe compaction:**
 
-  // Keep system prompt (first) + last 2 exchanges (last 4 messages)
-  // Summarize or drop everything in between
-  const keep = [context.messages[0], ...context.messages.slice(-4)];
+1. Never split an assistant tool-call message from its tool result messages. Providers reject orphaned halves.
+2. Never split a user request from its assistant response. Dropping a user message while keeping the response (or vice versa) produces a nonsensical transcript.
+
+The correct unit to drop is a complete **request/response round**: a user message, the assistant reply, and all tool results from that reply. Claudy achieves this by grouping on assistant message ID boundaries. We adopt a simpler version: group on user messages, since each user message starts a new round.
+
+```typescript
+/**
+ * Group messages into complete request/response rounds.
+ *
+ * Each round starts with a user message and includes the assistant response
+ * plus all tool result messages until the next user message. The system
+ * prompt (messages[0]) is always its own group.
+ *
+ * Example transcript:
+ *   system, user1, assistant1, tool1a, tool1b, user2, assistant2, user3, assistant3
+ * Produces:
+ *   [system] [user1, assistant1, tool1a, tool1b] [user2, assistant2] [user3, assistant3]
+ *
+ * Dropping group [user1, assistant1, tool1a, tool1b] removes a complete round
+ * without orphaning tool results or separating a request from its response.
+ */
+function groupByRound(messages: Message[]): Message[][] {
+  const groups: Message[][] = [];
+  let current: Message[] = [];
+
+  for (const msg of messages) {
+    // Start a new group on each user message (except the first pass)
+    if (msg.role === 'user' && current.length > 0) {
+      groups.push(current);
+      current = [msg];
+    } else {
+      current.push(msg);
+    }
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+private async tryReactiveCompact(context: TurnContext): Promise<boolean> {
+  const groups = groupByRound(context.messages);
+  if (groups.length <= 3) return false; // system + 1 round + current — nothing to drop
+
+  // Keep first group (system prompt) and last 2 round groups (recent context).
+  // Drop complete rounds in between.
+  const keep = [groups[0], ...groups.slice(-2)].flat();
   context.messages.length = 0;
   context.messages.push(...keep);
   return true;
@@ -363,14 +501,21 @@ private async tryReactiveCompact(context: TurnContext): Promise<boolean> {
 ### Step 2: API Error Categorization and Retry
 
 **Files:**
-- New: `src/agent/apiRetry.ts`
-- Update: `src/agent/TurnExecutor.ts`
+- New: `src/agent/apiRetry.ts` — `categorizeApiError()`, `exponentialBackoff()`
+- Update: `src/agent/TurnExecutor.ts` — extract model call to `callModelWithRecovery()`
+- Update: `src/config/schema.ts` — add optional `fallback_model` field
+- Update: `src/models/ModelClientFactory.ts` — add `createFromConfig(modelConfig)` method
 
 **Work:**
-- Implement `categorizeApiError(error): ApiErrorCategory`
-- Implement `exponentialBackoff(attempt: number): Promise<void>`
+- Implement `categorizeApiError(error): ApiErrorCategory` using duck-typing:
+  - Check `error.status` (number) — works for both OpenAI `APIError` and Google `GoogleGenerativeAIFetchError`
+  - 429 → `rate_limit`, 529 → `overloaded`, 413 → `context_overflow`, 401/403 → `auth_error`, ≥500 → `server_error`
+  - Fall back to `error.message` pattern matching for errors without `.status`
+  - Default to `unknown` for unrecognized errors
+- Implement `exponentialBackoff(attempt)` — 100ms × 2^attempt (max 700ms total across 3 retries)
 - Extract model call into `callModelWithRecovery()` with bounded retry loop
-- Wire fallback model support (config field + runtime switch)
+- Add `fallback_model` optional field to config schema (same shape as `model`)
+- Add `createFromConfig(modelConfig)` to factory so fallback can create a new client on demand
 
 **Why second:** API retry is the most impactful recovery path. Today a single 429 kills the entire request. This fixes that without touching the loop structure.
 
@@ -395,9 +540,12 @@ private async tryReactiveCompact(context: TurnContext): Promise<boolean> {
 
 **Work:**
 - Detect `truncated: true` on `final_text` results
+- Push partial assistant text into `context.messages` before continuation message (so model sees what it already wrote)
+- Accumulate partial texts in `recovery.accumulatedText` for the final return
 - Inject continuation message and re-enter loop
 - Bound by `maxOutputRecoveryCount < 3`
 - Emit `recovery` event with attempt number
+- On final return (completed or exhausted), concatenate all accumulated partials into the result text
 - Surface `max_output_exhausted` terminal reason when bound is hit
 
 **Why fourth:** Max-output truncation is already detected (the `truncated` flag exists). This step uses it.
@@ -410,12 +558,13 @@ private async tryReactiveCompact(context: TurnContext): Promise<boolean> {
 
 **Work:**
 - Detect 413 / context_overflow from model client
-- Implement minimal compaction (drop middle history, keep bookends)
+- Group messages by request/response rounds (user message + assistant reply + tool results = one group)
+- Drop whole round groups from the middle, never split a round
 - Guard with `hasAttemptedReactiveCompact` (one-shot)
 - Emit `recovery` event
 - Surface `prompt_too_long` terminal reason when compaction fails or was already attempted
 
-**Why last:** Context overflow is less common than API errors or output truncation for digitalme's typical workloads (shorter conversations than a coding agent). The recovery path matters more than the compaction quality — quality improves in track 03.
+**Why last:** Context overflow is less common than API errors or output truncation for digitalme's typical workloads (shorter conversations than a coding agent). The recovery path matters more than the compaction quality — quality improves in track 02 (context management).
 
 ## Testing Strategy
 
@@ -439,13 +588,23 @@ private async tryReactiveCompact(context: TurnContext): Promise<boolean> {
 - Max-output recovery stops at 3, then returns with `max_output_exhausted`
 - Reactive compact runs at most once per request
 - Fallback triggers after 3 consecutive 529s, at most once
+- Fallback model gets a fresh retry budget (attempt counter resets to 0)
+
+**Transcript invariants:**
+- Partial assistant text is preserved in `context.messages` across max-output continuations
+- Accumulated text across continuations matches the concatenation of all partial texts
+- Compaction never splits a request/response round (user + assistant + tool results stay together)
+- After compaction, every assistant message with `toolCalls` is followed by matching tool result messages
+- After compaction, no user message is orphaned from its assistant response
+- API retries emit `recovery` events with attempt number and error type
+- Fallback model switch emits a `recovery` event with source and target model names
 
 ### Integration Tests
 
 **End-to-end recovery scenarios:**
 - Model returns 429 twice then succeeds → request completes, 2 `recovery` events emitted
 - Model returns 529 three times with fallback configured → switches model, request completes
-- Model returns truncated output → continuation message injected, model completes on retry
+- Model returns truncated output → partial text preserved, continuation injected, model completes on retry, final text is full concatenation
 - Model returns 413 → compaction runs, retries once, completes
 - Model returns 413 after compaction already attempted → `prompt_too_long` terminal reason
 
@@ -468,7 +627,7 @@ private async tryReactiveCompact(context: TurnContext): Promise<boolean> {
 | Retries mutating prompt state inconsistently | `RecoveryState` is the single source of truth for what has been attempted. Guards prevent double-attempts. |
 | Retry backoff being too slow for user-facing agent | Keep backoff short (100ms, 200ms, 400ms). Digitalme is public-facing — latency matters more than persistence. |
 | Fallback model producing different quality output | Document in agent config. Fallback is opt-in. Creator chooses acceptable fallback. |
-| Compaction losing important context | Minimal compaction (step 5) is intentionally conservative — drops middle history, keeps recent. Better compaction belongs in track 03. |
+| Compaction losing important context | Minimal compaction (step 5) drops whole turns, never splits tool call/result pairs. Better compaction belongs in track 02 (context management). |
 | Adding retry before the model client properly surfaces error types | Step 2 starts with `categorizeApiError()` — a single place to handle error shape differences across providers. |
 
 ## Success Criteria

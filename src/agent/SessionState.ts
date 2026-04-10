@@ -1,6 +1,8 @@
+import crypto from 'node:crypto';
 import type { Message } from '../models/ModelClient.js';
 import type { HistoryMessage } from '../protocol/types.js';
 import type { ToolSummaryEntry } from './types.js';
+import type { ConversationSummary } from './context/types.js';
 
 function clonePromptMessage(message: Message): Message {
   const cloned: Message = {
@@ -24,6 +26,12 @@ function clonePromptMessage(message: Message): Message {
       },
     }));
   }
+  if (message.id) {
+    cloned.id = message.id;
+  }
+  if (message.timestamp) {
+    cloned.timestamp = message.timestamp;
+  }
 
   return cloned;
 }
@@ -36,9 +44,12 @@ function historiesMatch(left: HistoryMessage[], right: HistoryMessage[]) {
 }
 
 function canonicalToPromptHistory(history: HistoryMessage[]): Message[] {
+  const now = new Date().toISOString();
   return history.map((item) => ({
     role: item.role,
     content: item.content,
+    id: crypto.randomUUID(),
+    timestamp: now,
   }));
 }
 
@@ -50,6 +61,7 @@ export class SessionState {
    * Available for future prompt projection / compaction, not immediate model consumption.
    */
   private readonly toolUseSummaries: ToolSummaryEntry[] = [];
+  private summary?: ConversationSummary;
   private nextTurnId = 1;
   private lastAccessedAt = Date.now();
   private readonly createdAt = Date.now();
@@ -99,8 +111,17 @@ export class SessionState {
     }
     this.canonicalHistory = history.map((item) => ({ ...item }));
     this.promptHistory = canonicalToPromptHistory(history);
+    this.summary = undefined;
     this.revision++;
     return 'reseeded' as const;
+  }
+
+  getSummary(): ConversationSummary | undefined {
+    return this.summary;
+  }
+
+  setSummary(summary: ConversationSummary): void {
+    this.summary = summary;
   }
 
   commitTask(

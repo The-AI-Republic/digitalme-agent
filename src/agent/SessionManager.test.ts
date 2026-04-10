@@ -62,10 +62,12 @@ test('SessionManager reuses prompt history from the live session when platform h
   };
   await manager.execute(second, events);
 
-  assert.deepEqual(turnExecutor.runs[1]?.promptHistory, [
-    { role: 'user', content: 'hello' },
-    { role: 'assistant', content: 'answer:hello' },
-  ]);
+  const history = turnExecutor.runs[1]?.promptHistory;
+  assert.equal(history?.length, 2);
+  assert.equal(history?.[0]?.role, 'user');
+  assert.equal(history?.[0]?.content, 'hello');
+  assert.equal(history?.[1]?.role, 'assistant');
+  assert.equal(history?.[1]?.content, 'answer:hello');
   assert.equal(rolloutRecorder.entries.length >= 2, true);
 });
 
@@ -97,10 +99,15 @@ test('SessionManager reseeds warm session prompt history when platform canonical
   };
   await manager.execute(second, events);
 
-  assert.deepEqual(turnExecutor.runs[1]?.promptHistory, [
-    { role: 'user', content: 'seeded by platform' },
-    { role: 'assistant', content: 'platform reply' },
-  ]);
+  const reseeded = turnExecutor.runs[1]?.promptHistory;
+  assert.equal(reseeded?.length, 2);
+  assert.equal(reseeded?.[0]?.role, 'user');
+  assert.equal(reseeded?.[0]?.content, 'seeded by platform');
+  assert.equal(reseeded?.[1]?.role, 'assistant');
+  assert.equal(reseeded?.[1]?.content, 'platform reply');
+  // Reseeded messages should have generated id and timestamp
+  assert.ok(reseeded?.[0]?.id, 'reseeded message should have an id');
+  assert.ok(reseeded?.[0]?.timestamp, 'reseeded message should have a timestamp');
   assert.equal(
     rolloutRecorder.entries.some((entry) => entry.type === 'session_reseeded'),
     true,

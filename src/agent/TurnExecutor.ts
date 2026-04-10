@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
@@ -10,6 +11,10 @@ import { ResultBudget } from '../tools/execution/ResultBudget.js';
 import { TurnContext } from './TurnContext.js';
 import type { AgentEvent, ExecutionOptions, ToolSummaryEntry, TurnExecutionResult, TurnSubmission } from './types.js';
 import type { ActiveTurn } from './ActiveTurn.js';
+import { prepareContextForModelCall, type PrepareContextDeps } from './context/prepareContextForModelCall.js';
+import { TokenBudget } from './context/TokenBudget.js';
+import { ToolResultPersistence } from './context/ToolResultPersistence.js';
+import { Microcompact } from './context/Microcompact.js';
 
 /** Shared signal that never fires — avoids per-call AbortController allocation. */
 const NEVER_ABORT = new AbortController().signal;
@@ -20,6 +25,7 @@ interface TurnExecutorDeps {
   toolRegistry?: IToolRegistry;
   toolPolicyChecker?: IToolPolicyChecker;
   toolExecutor?: ToolExecutor;
+  contextDeps?: PrepareContextDeps;
 }
 
 export class TurnExecutor {
@@ -28,6 +34,7 @@ export class TurnExecutor {
   private readonly toolRegistry: IToolRegistry;
   private readonly toolExecutor: ToolExecutor;
   private readonly policyChecker: IToolPolicyChecker;
+  private readonly contextDeps: PrepareContextDeps;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
     this.toolRegistry = deps.toolRegistry ?? createToolRegistry(config);
@@ -36,6 +43,39 @@ export class TurnExecutor {
     this.modelClientFactory = deps.modelClientFactory ?? new ModelClientFactory(config);
     this.policyChecker = deps.toolPolicyChecker ?? new DefaultToolPolicyChecker();
     this.toolExecutor = deps.toolExecutor ?? new ToolExecutor(this.toolRegistry, this.policyChecker);
+    this.contextDeps = deps.contextDeps ?? this.buildDefaultContextDeps();
+  }
+
+  private buildDefaultContextDeps(): PrepareContextDeps {
+    const ctx = this.config.context;
+    return {
+      tokenBudget: new TokenBudget({
+        modelMetadata: Object.fromEntries(
+          Object.entries(ctx.model_metadata).map(([k, v]) => [k, {
+            contextWindowSize: v.context_window_size,
+            maxOutputTokens: v.max_output_tokens,
+          }]),
+        ),
+        defaultContextWindowSize: ctx.default_context_window_size,
+        defaultMaxOutputTokens: ctx.default_max_output_tokens,
+        microcompactRatio: ctx.thresholds.microcompact_ratio,
+        projectionRatio: ctx.thresholds.projection_ratio,
+        overflowRatio: ctx.thresholds.overflow_ratio,
+        safetyMargin: ctx.thresholds.safety_margin,
+      }),
+      toolResultPersistence: new ToolResultPersistence({
+        defaultMaxResultChars: ctx.tool_result_persistence.default_max_result_chars,
+        perMessageBudgetChars: ctx.tool_result_persistence.per_message_budget_chars,
+        previewSizeBytes: ctx.tool_result_persistence.preview_size_bytes,
+        storageDir: ctx.tool_result_persistence.storage_dir,
+      }),
+      microcompact: new Microcompact({
+        gapThresholdMinutes: ctx.microcompact.gap_threshold_minutes,
+        keepRecentResults: ctx.microcompact.keep_recent_results,
+        compactableTools: new Set(['web_search']),
+        clearedMarker: '[Previous tool output cleared]',
+      }),
+    };
   }
 
   async *run(
@@ -77,7 +117,7 @@ export class TurnExecutor {
     const initialMessages = [
       { role: 'system' as const, content: builtPrompt.finalSystemPrompt.join('\n\n') },
       ...history,
-      { role: 'user' as const, content: submission.userMessage },
+      { role: 'user' as const, content: submission.userMessage, id: crypto.randomUUID(), timestamp: new Date().toISOString() },
     ];
 
     const context = new TurnContext(submission, initialMessages);
@@ -90,6 +130,20 @@ export class TurnExecutor {
       this.throwIfAborted(context.signal);
       context.turnCount += 1;
       activeTurn?.turnState.beginModelTurn();
+
+      // Per-model-step context preparation: persistence, microcompact, pressure assessment
+      const prepared = await prepareContextForModelCall(
+        context.messages,
+        modelName,
+        context.tokenUsage,
+        context.conversationId,
+        this.contextDeps,
+      );
+      // Replace messages with prepared version (may have cleared stale tool results)
+      if (prepared.rewrote) {
+        context.messages.length = 0;
+        context.messages.push(...prepared.messages);
+      }
 
       const result = await client.generate({
         model: modelName,
@@ -129,6 +183,8 @@ export class TurnExecutor {
         role: 'assistant',
         content: null,
         toolCalls: result.calls,
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
       });
 
       // Delegate all tool execution to ToolExecutor
@@ -189,6 +245,8 @@ export class TurnExecutor {
           content: record.modelContent,
           toolCallId: record.callId,
           toolName: record.toolName,
+          id: crypto.randomUUID(),
+          timestamp: new Date().toISOString(),
         });
       }
     }
