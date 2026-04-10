@@ -7,7 +7,7 @@ import type { AgentEvent, TurnSubmission, TurnExecutionResult, ExecutionOptions 
 import { consumeGenerator } from './types.js';
 import type { ToolExecutionResult, Tool, ToolDefinition } from '../tools/types.js';
 import type { ISystemPromptBuilder, BuiltPrompt, PromptContext } from '../prompts/types.js';
-import { testConfig as config, testMessage } from '../test/fixtures.js';
+import { testConfig as config } from '../test/fixtures.js';
 
 class FakeModelClient implements ModelClient {
   public readonly requests: CompletionRequest[] = [];
