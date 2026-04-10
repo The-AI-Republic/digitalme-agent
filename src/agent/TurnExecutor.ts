@@ -12,6 +12,7 @@ import { TurnContext } from './TurnContext.js';
 import { TurnExecutionState } from './TurnExecutionState.js';
 import type { AgentEvent, ExecutionOptions, ToolSummaryEntry, TurnExecutionResult, TurnSubmission } from './types.js';
 import type { ActiveTurn } from './ActiveTurn.js';
+import { EventQueue } from './EventQueue.js';
 import { prepareContextForModelCall, type PrepareContextDeps } from './context/prepareContextForModelCall.js';
 import { TokenBudget } from './context/TokenBudget.js';
 import { ToolResultPersistence } from './context/ToolResultPersistence.js';
@@ -346,20 +347,20 @@ export class TurnExecutor {
         policyConfig: {},
       };
 
-      // Collect events in real-time order via callbacks, replay after await
-      type ToolEvent =
-        | { type: 'tool_start'; name: string; callId: string }
-        | { type: 'tool_end'; name: string; callId: string; success: boolean };
-      const eventLog: ToolEvent[] = [];
+      const toolEvents = new EventQueue<AgentEvent>();
+      const emittedToolStart = new Set<string>();
+      const emittedToolEnd = new Set<string>();
 
       const callbacks: ToolExecutorCallbacks = {
         onToolStart: (name, callId) => {
           executionState.registerToolCall(callId);
-          eventLog.push({ type: 'tool_start', name, callId });
+          emittedToolStart.add(callId);
+          toolEvents.push({ type: 'tool_start', name, callId });
         },
         onToolEnd: (name, callId, success) => {
           executionState.resolveToolCall(callId);
-          eventLog.push({ type: 'tool_end', name, callId, success });
+          emittedToolEnd.add(callId);
+          toolEvents.push({ type: 'tool_end', name, callId, success });
         },
       };
 
@@ -368,21 +369,18 @@ export class TurnExecutor {
       const activeExecutor = (toolRegistry === this.toolRegistry)
         ? this.toolExecutor
         : new ToolExecutor(toolRegistry, this.policyChecker);
-      const records = await activeExecutor.runTools(
+      const recordsPromise = activeExecutor.runTools(
         result.calls, toolContext, resultBudget, callbacks,
-      );
+      ).finally(() => toolEvents.close());
 
-      // Yield events in the order they actually fired during execution.
-      // Note: events are replayed after runTools() completes, not during execution.
-      // This is an inherent limitation of async generators — the generator cannot
-      // yield while awaiting runTools(). The eventLog preserves callback-order
-      // semantics (completion order for concurrent tools), but consumers see all
-      // events batched after execution rather than truly interleaved.
-      for (const event of eventLog) {
+      for await (const event of toolEvents) {
         yield event;
       }
 
-      // Collect summaries and push results to message history
+      const records = await recordsPromise;
+
+      // Collect summaries and push results to message history.
+      // Pre-execution failures do not emit callbacks, so emit their terminal events here.
       for (const record of records) {
         toolSummaries.push({
           callId: record.callId,
@@ -391,6 +389,17 @@ export class TurnExecutor {
           durationMs: record.durationMs,
           success: record.result.success,
         });
+        if (!emittedToolStart.has(record.callId)) {
+          yield { type: 'tool_start', name: record.toolName, callId: record.callId };
+        }
+        if (!emittedToolEnd.has(record.callId)) {
+          yield {
+            type: 'tool_end',
+            name: record.toolName,
+            callId: record.callId,
+            success: record.result.success,
+          };
+        }
         const toolMsg: Message = {
           role: 'tool',
           content: record.modelContent,

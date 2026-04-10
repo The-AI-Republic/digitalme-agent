@@ -40,8 +40,8 @@ export const DEFAULT_TOOL_METADATA: ToolMetadata = {
 /**
  * Tool interface with default generic params for type erasure.
  * The registry and executor store tools as Tool (no params), which resolves
- * to Tool<Record<string, unknown>>. Concrete tools implement
- * Tool<SpecificInput> for internal type safety.
+ * to Tool<Record<string, unknown>, unknown>. Concrete tools implement
+ * Tool<SpecificInput, SpecificData> for internal type safety.
  */
 export interface Tool<TInput = Record<string, unknown>, TData = unknown> {
   readonly name: string;

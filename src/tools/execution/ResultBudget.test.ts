@@ -143,6 +143,17 @@ test('ResultBudget later batches see reduced remaining', () => {
   assert.ok(batch2[0]!.modelContent.length <= 100);
 });
 
+test('ResultBudget.normalizeBatch stops when prior consumption already exceeds the cap', () => {
+  const budget = new ResultBudget(10);
+  (budget as unknown as { consumed: number }).consumed = 20;
+  const records = [makeRecord('call-1', 't1', 'x')];
+
+  budget.normalizeBatch(records);
+
+  assert.equal(records[0]!.modelContent, '');
+  assert.equal(records[0]!.result.truncated, true);
+});
+
 test('ResultBudget.normalizeBatch does not infinite loop when budget pre-exhausted', () => {
   const budget = new ResultBudget(50);
   // Consume the entire budget via serial path

@@ -132,6 +132,78 @@ function makeExecutorWithClient(steps: ModelStepResult[]) {
   return { executor, client };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+test('TurnExecutor yields tool_start before the tool finishes', async () => {
+  const toolResult = deferred<ToolExecutionResult>();
+  const slowTool = new class extends FakeTool {
+    override async execute(): Promise<ToolExecutionResult> {
+      return toolResult.promise;
+    }
+  }();
+  const client = new FakeModelClient([
+    {
+      type: 'tool_calls',
+      calls: [
+        {
+          id: 'call-1',
+          type: 'function',
+          function: {
+            name: 'test_tool',
+            arguments: '{}',
+          },
+        },
+      ],
+    },
+    {
+      type: 'final_text',
+      text: 'done',
+    },
+  ]);
+  const executor = new TurnExecutor(config, {
+    systemPromptBuilder: makeFakeBuilder(),
+    modelClientFactory: { createClient: () => client },
+    toolRegistry: makeToolRegistry(slowTool),
+  });
+
+  const gen = executor.run({
+    requestId: 'req-stream-tool',
+    conversationId: 'conv-stream-tool',
+    userMessage: 'use a slow tool',
+    history: [],
+  });
+
+  assert.deepEqual(await gen.next(), {
+    done: false,
+    value: { type: 'tool_start', name: 'test_tool', callId: 'call-1' },
+  });
+
+  toolResult.resolve({
+    success: true,
+    data: {},
+    renderForModel: () => 'slow-result',
+  });
+
+  assert.deepEqual(await gen.next(), {
+    done: false,
+    value: { type: 'tool_end', name: 'test_tool', callId: 'call-1', success: true },
+  });
+  assert.deepEqual(await gen.next(), {
+    done: false,
+    value: { type: 'text_delta', content: 'done' },
+  });
+  const doneStep = await gen.next();
+  assert.equal(doneStep.done, false);
+  assert.equal((doneStep.value as AgentEvent).type, 'done');
+  assert.equal((await gen.next()).done, true);
+});
+
 test('TurnExecutor ends the loop when the model returns final assistant text', async () => {
   const executor = makeExecutor([
     {

@@ -72,11 +72,18 @@ export class ResultBudget {
       const largest = records.reduce((max, r) =>
         r.modelContent.length > max.modelContent.length ? r : max,
       );
-      if (largest.modelContent.length === 0) break; // nothing left to truncate
+      if (largest.modelContent.length === 0) {
+        break;
+      }
+
       const overshoot = total + this.consumed - this.maxTotalChars;
       const allowed = Math.max(0, largest.modelContent.length - overshoot);
       const truncated = truncateResult(largest.modelContent, allowed);
-      total -= largest.modelContent.length - truncated.content.length;
+      const removed = largest.modelContent.length - truncated.content.length;
+      if (removed === 0) {
+        break;
+      }
+      total -= removed;
       largest.modelContent = truncated.content;
       largest.result = { ...largest.result, truncated: true };
     }
