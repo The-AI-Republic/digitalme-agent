@@ -70,18 +70,22 @@ export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentH
 
       // Record sidechain transcript unless skipTranscript is set
       if (transcriptRecorder && !config.skipTranscript && result.newMessages.length > 0) {
-        await transcriptRecorder.insertMessageChain(
-          submission.conversationId,
-          result.newMessages,
-          true,  // isSidechain
-          agentId,
-        );
-        await transcriptRecorder.writeAgentMetadata(submission.conversationId, {
-          agentId,
-          agentType: 'fork',
-          description: config.forkLabel,
-          createdAt: new Date().toISOString(),
-        });
+        try {
+          await transcriptRecorder.insertMessageChain(
+            submission.conversationId,
+            result.newMessages,
+            true,  // isSidechain
+            agentId,
+          );
+          await transcriptRecorder.writeAgentMetadata(submission.conversationId, {
+            agentId,
+            agentType: 'fork',
+            description: config.forkLabel,
+            createdAt: new Date().toISOString(),
+          });
+        } catch {
+          // Best effort — recording failure should not block fork completion
+        }
       }
 
       const forkedResult: ForkedAgentResult = {

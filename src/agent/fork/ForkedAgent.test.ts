@@ -438,6 +438,33 @@ test('launchForkedAgent skips recording when skipTranscript is true', async () =
   assert.equal(chains.length, 0);
 });
 
+test('launchForkedAgent succeeds even when recorder throws', async () => {
+  const messages: Message[] = [
+    { role: 'assistant', content: 'result', id: generateId() },
+  ];
+  const throwingRecorder: ITranscriptRecorder = {
+    async recordMessage() {},
+    async recordLifecycleEvent() {},
+    async insertMessageChain() { throw new Error('disk_full'); },
+    async writeAgentMetadata() { throw new Error('disk_full'); },
+    async loadTranscript() { return { messages: [], leafId: null }; },
+    seedParentId() {},
+  };
+
+  const handle = launchForkedAgent({
+    submission: makeSubmission(),
+    turnExecutor: makeExecutorWithMessages('result', messages),
+    forkSemaphore: new ForkSemaphore(2),
+    sessionRuntime: makeRuntime(),
+    config: { forkLabel: 'throw-test' },
+    transcriptRecorder: throwingRecorder,
+  });
+
+  assert.ok(handle);
+  const result = await handle.promise;
+  assert.equal(result.finalText, 'result');
+});
+
 test('launchForkedAgent skips recording when no recorder provided', async () => {
   const messages: Message[] = [
     { role: 'assistant', content: 'no recorder', id: generateId() },

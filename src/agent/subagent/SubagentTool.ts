@@ -144,19 +144,23 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool<SubagentInput> 
 
         // Record sidechain transcript for the subagent's internal history
         if (deps.transcriptRecorder && result.newMessages.length > 0) {
-          const agentId = `subagent-${args.subagent_type}-${randomUUID()}`;
-          await deps.transcriptRecorder.insertMessageChain(
-            context.conversationId,
-            result.newMessages,
-            true,  // isSidechain
-            agentId,
-          );
-          await deps.transcriptRecorder.writeAgentMetadata(context.conversationId, {
-            agentId,
-            agentType: args.subagent_type,
-            description: args.description,
-            createdAt: new Date().toISOString(),
-          });
+          try {
+            const agentId = `subagent-${args.subagent_type}-${randomUUID()}`;
+            await deps.transcriptRecorder.insertMessageChain(
+              context.conversationId,
+              result.newMessages,
+              true,  // isSidechain
+              agentId,
+            );
+            await deps.transcriptRecorder.writeAgentMetadata(context.conversationId, {
+              agentId,
+              agentType: args.subagent_type,
+              description: args.description,
+              createdAt: new Date().toISOString(),
+            });
+          } catch {
+            // Best effort — recording failure should not fail the tool result
+          }
         }
 
         return {
