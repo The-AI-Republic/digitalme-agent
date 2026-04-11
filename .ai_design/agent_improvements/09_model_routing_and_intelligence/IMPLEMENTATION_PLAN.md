@@ -2,256 +2,202 @@
 
 ## What This Track Covers
 
-Multi-model selection, effort-aware routing, automatic fallback chains, cost-optimized model assignment for different execution contexts, and model capability detection.
+Context-based model routing: use the primary model for fan-facing conversation, a cheap model for all background work, and automatic fallback on provider failures. Follows Claudy's proven pattern of routing by **execution context**, not by message complexity.
 
 ## Why This Is Not Covered by Existing Tracks
 
-Track 04 (Recovery and Continuation) mentions "fallback model" as one recovery path but treats it as a single binary switch. This track designs a full model routing subsystem that makes intelligent model decisions _before_ failure, not only _after_ failure.
+Track 04 (Recovery and Continuation) implements 529 fallback as a retry mechanism inside `TurnExecutor.callModelWithRecovery()`. This track extracts model routing into a dedicated subsystem so that background work (memory extraction, compaction, future tool summaries) can use cheaper models independently of the main conversation path.
 
-## What Claudy Does
+## How Claudy Actually Routes Models
 
-Claudy has a sophisticated model layer:
+After deep-diving the Claudy source (`/home/irichard/dev/study/claudy/src`), the real pattern is simpler than originally documented:
 
-- **Model registry** with named roles: `getMainLoopModel()`, `getSmallFastModel()`, `getDefaultSonnetModel()`, `getDefaultOpusModel()`
-- **Effort levels**: `resolveAppliedEffort()` adjusts model behavior (e.g., thinking budget, response depth) based on task complexity
-- **Thinking configuration**: Per-model extended thinking support with configurable token budgets (`thinkingConfig`, `shouldEnableThinkingByDefault()`)
-- **Automatic downgrade**: After repeated 529 errors, switches from expensive to cheaper model automatically
-- **Cost-aware subagent routing**: Background/forked agents use cheaper models than the main conversation loop
-- **Model feature detection**: Runtime checks for vision, prompt caching eligibility, thinking support
-- **Model string normalization**: `getModelStrings()` handles alias resolution and display names
-- **Dynamic model override**: Live model switching per-session and per-request
+### Two-tier model system
 
-Key files:
-- Model selection logic scattered across `query.ts`, `QueryEngine.ts`
-- Model metadata in `services/api/` and configuration
-- Effort resolution in query config
+| Tier | Resolution | Used for |
+|------|-----------|----------|
+| **Main loop** | `getMainLoopModel()` — user subscription tier determines default (Opus for Max, Sonnet for Pro) | Fan-facing conversation, streaming responses |
+| **Small/fast** | `getSmallFastModel()` → Haiku 4.5 | Everything else (non-interactive, non-streaming) |
+
+### What uses Haiku (cheap model) — all via `queryHaiku()` helper
+
+- Tool use summaries (30-char labels for mobile UI)
+- Session title / rename generation
+- Web fetch content extraction
+- Shell command prefix parsing
+- MCP datetime parsing
+- Agent hooks
+- Away summaries
+
+Key properties of `queryHaiku()`:
+- Forces `getSmallFastModel()` (Haiku)
+- Disables thinking (`thinkingConfig: { type: 'disabled' }`)
+- Non-streaming only
+- **Fails gracefully** — errors don't affect the main conversation
+
+### Subagent model routing
+
+- `'inherit'` (default) — subagent uses parent's exact model
+- `'haiku'` — cheap (e.g., Explore agent for external users)
+- `'sonnet'` / `'opus'` — explicit tier, matched to parent's provider/region
+
+### 529 auto-downgrade
+
+- 3 consecutive 529 errors → throw `FallbackTriggeredError` → switch to fallback model
+- Non-foreground sources (summaries, titles) **don't retry** — fail silently to avoid amplifying load
+- Fast mode: on 429/529, enters cooldown and retries without fast mode
+
+### What Claudy does NOT do
+
+- **No per-message complexity classification** — "hello" and complex questions use the same model
+- **No automatic effort adjustment based on message content** — effort is user-set via `/effort` command or hardcoded per subscription tier
+- **No model switching mid-conversation** based on message analysis
 
 ## Current DigitalMe Agent Situation
 
-The agent has a basic model abstraction:
+### Already built (better than originally documented)
 
-- `src/models/` with a factory pattern supporting OpenAI, Anthropic, xAI, Groq, Google AI, Fireworks, Together
-- Creator config specifies a single `model` field
-- No runtime model switching
-- No effort-level awareness
-- No cost-aware routing for subagents vs main loop
-- Fallback model is mentioned in recovery but not designed as a system
+- **`src/models/ModelClientFactory.ts`** — factory pattern supporting OpenAI, Anthropic, xAI, Groq, Google AI, Fireworks, Together
+- **`src/agent/TurnExecutor.ts:callModelWithRecovery()`** — already has 529 fallback with 3-consecutive-error threshold (matches Claudy's pattern)
+- **`config/schema.ts`** — `fallback_model` field already in schema and wired into TurnExecutor
+- **`config/schema.ts`** — `extraction_model` and `summary.model` fields already defined in schema
+
+### The gap
+
+- **`extraction_model` is never read** — SessionMemoryHook always uses the primary model client
+- **`summary.model` is never read** — ConversationSummaryBuilder takes whatever client is passed to it
+- **No `createBackgroundClient()` helper** — no equivalent of Claudy's `queryHaiku()` pattern
+- **No graceful failure for background work** — if memory extraction fails, there's no silent fallback
 
 ## What To Borrow
 
-### 1. Model Role Assignment
+### 1. Background Model Client (like Claudy's `queryHaiku()`)
 
-Define named model roles rather than a single model field:
+A dedicated helper that creates a cheap model client for non-fan-facing work:
 
 ```typescript
-interface ModelRoles {
-  /** Primary model for fan-facing conversation */
-  primary: ModelSpec;
-  /** Cheaper model for background work (summaries, memory extraction) */
-  background: ModelSpec;
-  /** Fallback model when primary is unavailable */
-  fallback?: ModelSpec;
-}
+// src/models/ModelClientFactory.ts — extend existing factory
 
-interface ModelSpec {
-  provider: string;
-  model: string;
-  /** Max context window tokens */
-  contextWindow: number;
-  /** Whether this model supports extended thinking */
-  supportsThinking: boolean;
-  /** Whether this model supports vision/images */
-  supportsVision: boolean;
-  /** Relative cost tier: 'low' | 'medium' | 'high' */
-  costTier: CostTier;
+/**
+ * Create a client for background work (memory extraction, compaction, summaries).
+ * Uses the configured background model, falling back to primary if not configured.
+ * Equivalent to Claudy's queryHaiku() pattern.
+ */
+createBackgroundClient(): ModelClient {
+  const bgConfig = this.config.background_model ?? this.config.model;
+  return this.createFromConfig(bgConfig);
 }
 ```
 
-**Why:** Today the agent uses the same model for fan conversation and background work (session memory extraction, forked agents). Background work should use cheaper models automatically.
+Key properties (matching Claudy):
+- Non-streaming
+- Thinking disabled (cheaper, faster)
+- **Fails gracefully** — background work errors are logged, never propagated to fan conversation
+- Uses `background_model` from creator config, defaults to primary if not set
 
-### 2. Model Capability Detection
+### 2. Context-Based Routing (execution context, not message content)
 
-Before sending a request, verify the model supports the required capabilities:
+Route by **who is calling**, not **what the message says**:
 
-- If the conversation includes images, verify `supportsVision`
-- If extended thinking is requested, verify `supportsThinking`
-- If the prompt exceeds the model's context window, route to a model with a larger window or trigger compaction first
+| Context | Model | Rationale |
+|---------|-------|-----------|
+| Fan conversation (main loop) | `config.model` (primary) | Best quality for user-facing output |
+| Session memory extraction | `config.background_model` or primary | Internal, non-user-facing |
+| Reactive compaction summary | `config.background_model` or primary | Emergency recovery, speed matters |
+| Future: tool-use summaries | `config.background_model` or primary | Short structured output |
+
+This is exactly how Claudy does it — no classifier, no heuristics, just a switch on execution context.
+
+### 3. Wire Up Existing Schema Fields
+
+The schema already defines `extraction_model` and `summary.model` but they're never read. Wire them:
+
+- `SessionMemoryHook` → use `config.context.session_memory.extraction_model` to create a background client
+- `ConversationSummaryBuilder` → use `config.context.summary.model` to create a background client
+- Both fall back to primary model if the background field is not configured
+
+### 4. Graceful Failure for Background Work
+
+Following Claudy's pattern where `queryHaiku()` callsites all catch and swallow errors:
 
 ```typescript
-interface ModelCapabilities {
-  supportsVision: boolean;
-  supportsThinking: boolean;
-  contextWindow: number;
-  maxOutputTokens: number;
-  supportsCaching: boolean;
-}
-
-function resolveModel(
-  roles: ModelRoles,
-  requirements: ModelRequirements,
-): ModelSpec {
-  // 1. Check primary meets requirements
-  // 2. If not, check if fallback does
-  // 3. If neither, degrade gracefully (strip images, disable thinking)
+// In SessionMemoryHook — wrap the forked agent call
+try {
+  await this.extractMemory(messages, backgroundClient);
+} catch (error) {
+  this.logger.warn('Session memory extraction failed, skipping', { error });
+  // Don't propagate — fan conversation is unaffected
 }
 ```
 
-### 3. Cost-Aware Routing for Execution Contexts
-
-Different execution contexts should use different models:
-
-| Context | Preferred Model Role | Rationale |
-|---------|---------------------|-----------|
-| Fan conversation (main loop) | `primary` | Best quality for user-facing output |
-| Session memory extraction | `background` | Internal work, doesn't need best model |
-| Forked agent background work | `background` | Fire-and-forget, cost-sensitive |
-| Tool-use summary generation | `background` | Short structured output |
-| Reactive compaction summary | `background` | Emergency recovery, speed matters |
-
-```typescript
-type ExecutionContext =
-  | 'main_conversation'
-  | 'memory_extraction'
-  | 'forked_agent'
-  | 'tool_summary'
-  | 'compaction';
-
-function getModelForContext(
-  roles: ModelRoles,
-  context: ExecutionContext,
-): ModelSpec {
-  switch (context) {
-    case 'main_conversation':
-      return roles.primary;
-    case 'memory_extraction':
-    case 'forked_agent':
-    case 'tool_summary':
-    case 'compaction':
-      return roles.background;
-  }
-}
-```
-
-### 4. Automatic Fallback on Failure
-
-Extend track 04's recovery with model-level intelligence:
-
-```typescript
-interface ModelFallbackState {
-  consecutiveFailures: number;
-  lastFailureTimestamp: number;
-  currentRole: 'primary' | 'fallback';
-  /** Auto-recover to primary after this duration */
-  recoveryWindowMs: number;
-}
-```
-
-Rules:
-- After N consecutive 529/5xx errors on primary → switch to fallback
-- After `recoveryWindowMs` elapses with no failures → attempt primary again
-- If fallback also fails → terminal error (don't cascade further)
-- Record model switches in internal events (track 07)
-
-### 5. Effort-Level Routing
-
-Not all fan messages need the same depth of response. Claudy's `resolveAppliedEffort()` pattern can be adapted:
-
-```typescript
-type EffortLevel = 'low' | 'medium' | 'high';
-
-interface EffortConfig {
-  /** Max tokens the model should generate */
-  maxOutputTokens: number;
-  /** Thinking budget if supported */
-  thinkingBudget?: number;
-  /** Temperature override */
-  temperature?: number;
-}
-
-function resolveEffort(
-  message: string,
-  conversationLength: number,
-  creatorConfig: CreatorConfig,
-): EffortLevel {
-  // Simple heuristics:
-  // - Short casual messages → low effort
-  // - Questions requiring context → medium effort
-  // - Complex multi-part requests → high effort
-  // Creator can set a default floor
-}
-```
-
-**Why:** This directly reduces cost for simple exchanges ("hi", "thanks", "ok") while preserving quality for substantive questions.
+Non-foreground operations should never crash the main conversation.
 
 ## What NOT To Borrow
 
-- **Interactive model selection UI** — no user-facing model picker needed
-- **Per-session model override** — creators configure, fans don't choose models
-- **Feature gate integration for model selection** — over-engineered for current scale
+- **Effort-level classification of messages** — Claudy doesn't do this; the `/effort` command is user-initiated. Automatic message classification ("is this a simple greeting?") is over-engineering and error-prone
+- **Interactive model selection UI** — fans don't choose models
+- **Per-session model override** — creators configure, fans don't choose
+- **Model capability detection system** — premature; check capabilities if/when we add vision or thinking support
 - **Prompt caching eligibility tracking** — provider-specific optimization, premature
 
 ## Implementation
 
-### Step 1: Model Spec and Roles (types only)
+### Step 1: Extend `ModelClientFactory` with `createBackgroundClient()`
 
-Add:
-- `src/models/types.ts` — `ModelSpec`, `ModelRoles`, `ModelCapabilities`, `ExecutionContext`
-- Extend creator config schema to support `models.primary`, `models.background`, `models.fallback`
-- Keep backward compat: single `model` field maps to `primary` only
+- Add `background_model` to creator config schema (alongside existing `model` and `fallback_model`)
+- Add `createBackgroundClient()` method that uses `background_model` config, falling back to primary
+- Background client should disable thinking and use lower `max_output_tokens`
 
-### Step 2: Execution Context Routing
+### Step 2: Wire `SessionMemoryHook` to use background client
 
-Add:
-- `src/models/ModelRouter.ts` — `getModelForContext(roles, context)` with capability checks
-- Update `TurnExecutor.ts` to use `ModelRouter` instead of direct model access
-- Update forked agent and session memory extraction to request `background` context
+- Read `config.context.session_memory.extraction_model` (already in schema, never read)
+- Pass background client to the forked agent instead of primary client
+- Wrap in try/catch with graceful failure (log and skip)
 
-### Step 3: Fallback State Machine
+### Step 3: Wire `ConversationSummaryBuilder` to use background client
 
-Add:
-- `src/models/ModelFallbackTracker.ts` — tracks consecutive failures, manages primary↔fallback transitions
-- Integrate with track 04 recovery paths
-- Emit model switch events to track 07 internal event bus
+- Read `config.context.summary.model` (already in schema, never read)
+- When ReactiveCompact instantiates ConversationSummaryBuilder, pass background client
+- Wrap in try/catch with graceful failure
 
-### Step 4: Effort-Level Resolution (optional, lower priority)
+### Step 4: Consolidate config into `background_model`
 
-Add:
-- `src/models/EffortResolver.ts` — heuristic effort classification
-- Wire into model call parameters (maxOutputTokens, temperature)
-- Allow creator config to set effort floor/ceiling
+- Deprecate separate `extraction_model` and `summary.model` fields
+- Introduce single `background_model` in top-level config (like Claudy's single `getSmallFastModel()`)
+- Keep backward compat: if `extraction_model` is set, use it; otherwise fall back to `background_model`; otherwise fall back to primary
 
 ## Config Schema Extension
 
 ```yaml
-models:
-  primary:
-    provider: anthropic
-    model: claude-sonnet-4-6
-  background:
-    provider: anthropic
-    model: claude-haiku-4-5-20251001
-  fallback:
-    provider: openai
-    model: gpt-4o
+# Creator config
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  api_key: ${ANTHROPIC_API_KEY}
 
-model_routing:
-  fallback_after_consecutive_failures: 3
-  recovery_window_seconds: 300
-  effort:
-    default: medium
-    min: low
+background_model:           # NEW — cheap model for non-fan-facing work
+  provider: anthropic
+  name: claude-haiku-4-5-20251001
+  api_key: ${ANTHROPIC_API_KEY}
+
+fallback_model:              # EXISTING — used on 529 errors (already wired)
+  provider: openai
+  name: gpt-4o
+  api_key: ${OPENAI_API_KEY}
 ```
+
+If `background_model` is omitted, all background work uses the primary model (safe default, no behavior change).
 
 ## Dependencies
 
-- Track 04 (Recovery) — fallback model recovery path
-- Track 07 (Events) — model switch events
-- Track 08 (Forked Agents) — background model assignment
+- Track 04 (Recovery) — 529 fallback already implemented in TurnExecutor, no changes needed
+- Track 07 (Events) — emit model switch events when background model is used
+- Track 08 (Forked Agents) — forked agents should accept a model client parameter
 
 ## Success Criteria
 
-- Background work (memory extraction, forked agents, summaries) uses cheaper models automatically
-- Primary model failure triggers automatic fallback with bounded recovery
-- Model capabilities are checked before sending requests (no wasted calls with unsupported features)
-- Creator can configure model roles in YAML config
-- Cost reduction is measurable: background work should cost ≤50% of primary model cost
+- Background work (memory extraction, compaction summaries) uses `background_model` when configured
+- Background work fails gracefully — errors are logged, never propagated to fan conversation
+- Existing `extraction_model` and `summary.model` schema fields are actually read and used
+- No behavior change when `background_model` is not configured (safe default)
+- Cost reduction is measurable: background work should cost ≤50% of primary model cost when background_model is Haiku
