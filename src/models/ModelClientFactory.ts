@@ -4,6 +4,8 @@ import { GoogleCompletionClient } from './client/GoogleCompletionClient.js';
 import { OpenAICompatibleClient } from './client/OpenAICompatibleClient.js';
 import { OpenAIChatCompletionClient } from './client/OpenAIChatCompletionClient.js';
 import { ModelClient } from './ModelClient.js';
+import { ModelRouter } from './ModelRouter.js';
+import type { HealthTrackerConfig, ModelTask, RoutingDecision } from './types.js';
 
 const PROVIDER_BASE_URLS: Record<string, string> = {
   xai: 'https://api.x.ai/v1',
@@ -12,7 +14,7 @@ const PROVIDER_BASE_URLS: Record<string, string> = {
   together: 'https://api.together.xyz/v1',
 };
 
-function createClientFromModelConfig(modelConfig: ModelConfig): ModelClient {
+export function createClientFromModelConfig(modelConfig: ModelConfig): ModelClient {
   const provider = modelConfig.provider;
   const model = modelConfig.name;
   const apiKey = modelConfig.api_key;
@@ -43,6 +45,7 @@ function createClientFromModelConfig(modelConfig: ModelConfig): ModelClient {
 
 export class ModelClientFactory {
   private client: ModelClient | undefined;
+  private router: ModelRouter | undefined;
 
   constructor(private readonly config: AgentConfig) {}
 
@@ -59,9 +62,24 @@ export class ModelClientFactory {
   createFromConfig(modelConfig: ModelConfig): ModelClient {
     return createClientFromModelConfig(modelConfig);
   }
+
+  /**
+   * Returns a ModelRouter instance, creating it on first call.
+   * The router uses this factory for client creation and caches clients.
+   */
+  getRouter(healthConfig?: Partial<HealthTrackerConfig>): ModelRouter {
+    if (this.router) {
+      return this.router;
+    }
+    this.router = new ModelRouter(this.config, this, healthConfig);
+    return this.router;
+  }
 }
 
 export interface IModelClientFactory {
   createClient(): ModelClient;
   createFromConfig?(modelConfig: ModelConfig): ModelClient;
+  getRouter?(healthConfig?: Partial<HealthTrackerConfig>): ModelRouter;
 }
+
+export type { ModelTask, RoutingDecision };
