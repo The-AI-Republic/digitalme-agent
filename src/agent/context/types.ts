@@ -93,4 +93,10 @@ export interface PrepareContextResult {
   messages: Message[];
   rewrote: boolean;
   pressure: PressureBand;
+  /** Number of messages removed during compaction (0 if no compaction ran). */
+  messagesRemoved: number;
+  /** Estimated tokens saved during compaction (0 if no compaction ran). */
+  tokensSaved: number;
+  /** Which compaction ran, if any. */
+  compactionType?: 'microcompact' | 'projection' | 'reactive';
 }

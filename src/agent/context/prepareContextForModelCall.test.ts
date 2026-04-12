@@ -75,6 +75,31 @@ test('pipeline detects overflow pressure', async () => {
   assert.equal(result.pressure, 'overflow');
 });
 
+test('pipeline returns zero compaction stats when no compaction runs', async () => {
+  const messages: Message[] = [
+    { role: 'system', content: 'You are helpful.', id: generateId() },
+    { role: 'user', content: 'hello', id: generateId() },
+  ];
+  const result = await prepareContextForModelCall(messages, 'test-model', undefined, 'conv-1', makeDeps());
+  assert.equal(result.messagesRemoved, 0);
+  assert.equal(result.tokensSaved, 0);
+  assert.equal(result.compactionType, undefined);
+});
+
+test('pipeline returns microcompact stats when microcompact runs', async () => {
+  const oldTs = new Date(Date.now() - 120 * 60_000).toISOString();
+  const messages: Message[] = [
+    { role: 'user', content: 'search', id: generateId() },
+    { role: 'assistant', content: null, timestamp: oldTs, id: generateId() },
+    { role: 'tool', content: 'old result 1', toolCallId: 'c1', toolName: 'web_search', id: generateId() },
+    { role: 'tool', content: 'old result 2', toolCallId: 'c2', toolName: 'web_search', id: generateId() },
+  ];
+  const result = await prepareContextForModelCall(messages, 'test-model', undefined, 'conv-1', makeDeps());
+  assert.equal(result.compactionType, 'microcompact');
+  assert.ok(result.tokensSaved >= 0);
+  // messagesRemoved can be 0 since microcompact replaces content but may not remove messages
+});
+
 test('pipeline runs on every call (idempotent when nothing to compact)', async () => {
   const messages: Message[] = [
     { role: 'user', content: 'hi', id: generateId() },

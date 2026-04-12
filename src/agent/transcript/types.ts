@@ -1,10 +1,26 @@
 import type { Message, TokenUsage } from '../../models/ModelClient.js';
 import type { ArtifactRef } from '../context/ToolResultPersistence.js';
+import type { PressureBand } from '../context/types.js';
 
 // ----- Entry types -----
 
 export interface TranscriptEntry {
-  type: 'message' | 'task_started' | 'task_completed' | 'task_failed' | 'session_reseeded';
+  type:
+    | 'message'
+    | 'task_started'
+    | 'task_completed'
+    | 'task_failed'
+    | 'session_reseeded'
+    | 'fork_started'
+    | 'fork_completed'
+    | 'fork_failed'
+    | 'fork_rejected'
+    | 'subagent_started'
+    | 'subagent_completed'
+    | 'subagent_failed'
+    | 'hook_executed'
+    | 'compact_started'
+    | 'compact_completed';
   conversationId: string;
   taskId?: string;
   turnId?: number;
@@ -65,6 +81,89 @@ export interface TaskFailedEntry extends TranscriptEntry {
 export interface SessionReseededEntry extends TranscriptEntry {
   type: 'session_reseeded';
   historyCount: number;
+}
+
+// ----- Fork lifecycle entries -----
+
+export interface ForkStartedEntry extends TranscriptEntry {
+  type: 'fork_started';
+  forkId: string;
+  forkLabel: string;
+}
+
+export interface ForkCompletedEntry extends TranscriptEntry {
+  type: 'fork_completed';
+  forkId: string;
+  forkLabel: string;
+  tokenUsage: TokenUsage;
+  durationMs: number;
+  toolCallCount: number;
+  transcriptPath?: string;
+}
+
+export interface ForkFailedEntry extends TranscriptEntry {
+  type: 'fork_failed';
+  forkId: string;
+  forkLabel: string;
+  error: string;
+}
+
+export interface ForkRejectedEntry extends TranscriptEntry {
+  type: 'fork_rejected';
+  forkLabel: string;
+  reason: 'semaphore_full' | 'forks_disabled';
+}
+
+// ----- Subagent lifecycle entries -----
+
+export interface SubagentStartedEntry extends TranscriptEntry {
+  type: 'subagent_started';
+  subagentType: string;
+  model: string;
+  toolCount: number;
+}
+
+export interface SubagentCompletedEntry extends TranscriptEntry {
+  type: 'subagent_completed';
+  subagentType: string;
+  tokenUsage?: TokenUsage;
+  toolCallCount: number;
+  completedTurns: number;
+  durationMs: number;
+  model: string;
+}
+
+export interface SubagentFailedEntry extends TranscriptEntry {
+  type: 'subagent_failed';
+  subagentType: string;
+  error: string;
+}
+
+// ----- Hook lifecycle entries -----
+
+export type HookOutcome = 'success' | 'error' | 'timeout';
+
+export interface HookExecutedEntry extends TranscriptEntry {
+  type: 'hook_executed';
+  hookName: string;
+  outcome: HookOutcome;
+  durationMs: number;
+  error?: string;
+}
+
+// ----- Context pressure entries -----
+
+export interface CompactStartedEntry extends TranscriptEntry {
+  type: 'compact_started';
+  trigger: 'reactive' | 'proactive';
+  pressureBand: PressureBand;
+}
+
+export interface CompactCompletedEntry extends TranscriptEntry {
+  type: 'compact_completed';
+  trigger: 'reactive' | 'proactive';
+  messagesRemoved: number;
+  tokensSaved: number;
 }
 
 // ----- Recorder interface -----

@@ -29,6 +29,11 @@ export async function prepareContextForModelCall(
 ): Promise<PrepareContextResult> {
   let rewrote = false;
   let currentMessages = messages;
+  let messagesRemoved = 0;
+  let tokensSaved = 0;
+  let compactionType: 'microcompact' | 'projection' | 'reactive' | undefined;
+
+  const messageCountBefore = currentMessages.length;
 
   // Step 1: Enforce per-message tool result budget
   const budgetEnforced = await deps.toolResultPersistence.enforceMessageBudget(
@@ -45,6 +50,9 @@ export async function prepareContextForModelCall(
   if (mcResult.resultsCleared > 0) {
     rewrote = true;
     currentMessages = mcResult.messages;
+    compactionType = 'microcompact';
+    tokensSaved = mcResult.tokensFreed;
+    messagesRemoved = messageCountBefore - currentMessages.length;
   }
 
   // Step 3: Assess pressure (invalidate baseline if we rewrote)
@@ -57,5 +65,8 @@ export async function prepareContextForModelCall(
     messages: currentMessages,
     rewrote,
     pressure,
+    messagesRemoved,
+    tokensSaved,
+    compactionType,
   };
 }

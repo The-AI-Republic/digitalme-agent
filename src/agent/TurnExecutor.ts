@@ -24,7 +24,22 @@ import {
 } from './types/recovery.js';
 import { categorizeApiError, exponentialBackoff } from './apiRetry.js';
 import { tryReactiveCompact } from './reactiveCompact.js';
-import type { ITranscriptRecorder } from './transcript/types.js';
+import type { ITranscriptRecorder, CompactStartedEntry, CompactCompletedEntry } from './transcript/types.js';
+import {
+  startInteractionSpan,
+  startModelCallSpan,
+  endSpan,
+  endSpanWithError,
+} from '../telemetry/spans.js';
+import { interactionContext } from '../telemetry/instrumentation.js';
+import {
+  recordTurnCompleted,
+  recordModelCall,
+  recordTokens,
+  recordToolCall,
+  recordError,
+} from '../telemetry/metrics.js';
+import type { Span, SpanContext } from '@opentelemetry/api';
 
 /** Shared signal that never fires — avoids per-call AbortController allocation. */
 const NEVER_ABORT = new AbortController().signal;
@@ -113,6 +128,11 @@ export class TurnExecutor {
     const toolRegistry = options?.toolRegistry ?? this.toolRegistry;
     const recorder = this.transcriptRecorder;
 
+    // Start interaction span — capture context for background work
+    const interactionSpan: Span = startInteractionSpan(submission.conversationId);
+    const capturedSpanContext: SpanContext = interactionSpan.spanContext();
+    const turnStartTime = Date.now();
+
     const executionState = activeTurn?.executionState ?? new TurnExecutionState();
 
     const history = submission.promptHistory ?? submission.history.map((item) => ({
@@ -193,7 +213,44 @@ export class TurnExecutor {
         context.messages.push(...prepared.messages);
       }
 
+      // Record context pressure events to transcript
+      if (prepared.compactionType && recorder) {
+        const trigger = prepared.compactionType === 'reactive' ? 'reactive' as const : 'proactive' as const;
+        const startedEntry: CompactStartedEntry = {
+          type: 'compact_started',
+          conversationId: submission.conversationId,
+          taskId: submission.requestId,
+          turnId: activeTurn?.turnId,
+          timestamp: new Date().toISOString(),
+          trigger,
+          pressureBand: prepared.pressure,
+        };
+        recorder.recordLifecycleEvent(startedEntry).catch(() => {});
+
+        const completedEntry: CompactCompletedEntry = {
+          type: 'compact_completed',
+          conversationId: submission.conversationId,
+          taskId: submission.requestId,
+          turnId: activeTurn?.turnId,
+          timestamp: new Date().toISOString(),
+          trigger,
+          messagesRemoved: prepared.messagesRemoved,
+          tokensSaved: prepared.tokensSaved,
+        };
+        recorder.recordLifecycleEvent(completedEntry).catch(() => {});
+
+        // Also emit as OTEL span event on the interaction span
+        interactionSpan.addEvent('compact', {
+          'compact.type': prepared.compactionType,
+          'compact.trigger': trigger,
+          'compact.pressure_band': prepared.pressure,
+          'compact.messages_removed': prepared.messagesRemoved,
+          'compact.tokens_saved': prepared.tokensSaved,
+        });
+      }
+
       // --- Call model (with retry/fallback, error capture) ---
+      const modelSpan = startModelCallSpan(modelName, interactionSpan);
       let callResult: { result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] };
       try {
         callResult = await this.callModelWithRecovery(
@@ -201,14 +258,21 @@ export class TurnExecutor {
           { model: modelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
           recovery,
         );
+        recordModelCall(modelName, true);
+        endSpan(modelSpan);
       } catch (error) {
+        recordModelCall(modelName, false);
+        recordError('model_call');
+        endSpanWithError(modelSpan, error);
         // Emit any buffered recovery events before propagating the original error
         if (error instanceof RecoveryError) {
           for (const event of error.recoveryEvents) {
             yield event;
           }
+          endSpanWithError(interactionSpan, error.cause);
           throw error.cause;
         }
+        endSpanWithError(interactionSpan, error);
         throw error;
       }
 
@@ -233,6 +297,8 @@ export class TurnExecutor {
         // Recovery exhausted
         const lastText = recovery.accumulatedText || '';
         yield { type: 'done', terminalReason: { reason: 'prompt_too_long' } };
+        recordTurnCompleted(modelName, Date.now() - turnStartTime, false);
+        endSpan(interactionSpan, { 'terminal.reason': 'prompt_too_long' });
         return {
           finalText: lastText,
           tokenUsage: executionState.getTokenUsage(),
@@ -244,6 +310,7 @@ export class TurnExecutor {
 
       if (result.tokenUsage) {
         executionState.setTokenUsage(result.tokenUsage);
+        recordTokens(modelName, result.tokenUsage.inputTokens ?? 0, result.tokenUsage.outputTokens ?? 0);
       }
 
       // --- Handle max output truncation ---
@@ -278,6 +345,8 @@ export class TurnExecutor {
           yield { type: 'text_delta', content: result.text };
         }
         yield { type: 'done', terminalReason: { reason: 'max_output_exhausted' }, tokenUsage: result.tokenUsage };
+        recordTurnCompleted(modelName, Date.now() - turnStartTime, true);
+        endSpan(interactionSpan, { 'terminal.reason': 'max_output_exhausted' });
         return {
           finalText: recovery.accumulatedText,
           tokenUsage: result.tokenUsage,
@@ -312,6 +381,12 @@ export class TurnExecutor {
           yield { type: 'text_delta', content: result.text };
         }
         yield { type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage, terminalReason: { reason: 'completed' } };
+        recordTurnCompleted(modelName, Date.now() - turnStartTime, true);
+        endSpan(interactionSpan, {
+          'terminal.reason': 'completed',
+          'turns.completed': executionState.getIterationIndex(),
+          'tools.call_count': executionState.snapshot().toolCallCount,
+        });
         return {
           finalText: fullText,
           tokenUsage: result.tokenUsage,
@@ -389,6 +464,7 @@ export class TurnExecutor {
           durationMs: record.durationMs,
           success: record.result.success,
         });
+        recordToolCall(record.toolName, record.durationMs, record.result.success);
         if (!emittedToolStart.has(record.callId)) {
           yield { type: 'tool_start', name: record.toolName, callId: record.callId };
         }
@@ -445,6 +521,8 @@ export class TurnExecutor {
     // Max turns reached — return gracefully, do not throw.
     const lastText = recovery.accumulatedText || '';
     yield { type: 'done', terminalReason: { reason: 'max_turns' } };
+    recordTurnCompleted(modelName, Date.now() - turnStartTime, true);
+    endSpan(interactionSpan, { 'terminal.reason': 'max_turns' });
     return {
       finalText: lastText,
       tokenUsage: executionState.getTokenUsage(),
