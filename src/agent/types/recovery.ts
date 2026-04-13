@@ -15,7 +15,8 @@ export type TerminalReason =
   | { reason: 'prompt_too_long' }
   | { reason: 'model_error'; error: string }
   | { reason: 'aborted'; phase: 'streaming' | 'tools' }
-  | { reason: 'max_output_exhausted' };
+  | { reason: 'max_output_exhausted' }
+  | { reason: 'quota_exceeded' };
 
 // --- API error categories (for retry decisions) ---
 

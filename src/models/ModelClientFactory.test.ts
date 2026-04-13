@@ -60,6 +60,7 @@ function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfi
       reactive_compact: { max_retries: 1, aggressive_preserve_messages: 3 },
       max_output_recovery: { max_retries: 2 },
     },
+    quotas: { enabled: false, on_quota_exceeded: 'graceful_refuse', quota_warning_threshold: 0.8 },
     forked_agents: { enabled: true, max_concurrent: 2 },
     hooks: { post_turn: { enabled: true, timeout_ms: 30000 } },
   };

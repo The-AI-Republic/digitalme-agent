@@ -25,6 +25,10 @@ import {
 import { categorizeApiError, exponentialBackoff } from './apiRetry.js';
 import { tryReactiveCompact } from './reactiveCompact.js';
 import type { ITranscriptRecorder } from './transcript/types.js';
+import { UsageRecorder } from '../usage/UsageRecorder.js';
+import { ConversationUsageTracker } from '../usage/ConversationUsageTracker.js';
+import { CostAwareRouter } from '../usage/CostAwareRouter.js';
+import type { UsageAggregator } from '../usage/UsageAggregator.js';
 
 /** Shared signal that never fires — avoids per-call AbortController allocation. */
 const NEVER_ABORT = new AbortController().signal;
@@ -48,6 +52,7 @@ export interface TurnExecutorDeps {
   toolExecutor?: ToolExecutor;
   contextDeps?: PrepareContextDeps;
   transcriptRecorder?: ITranscriptRecorder;
+  usageAggregator?: UsageAggregator;
 }
 
 export class TurnExecutor {
@@ -58,6 +63,8 @@ export class TurnExecutor {
   private readonly policyChecker: IToolPolicyChecker;
   private readonly contextDeps: PrepareContextDeps;
   private readonly transcriptRecorder?: ITranscriptRecorder;
+  private readonly costAwareRouter?: CostAwareRouter;
+  private readonly usageAggregator?: UsageAggregator;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
     this.toolRegistry = deps.toolRegistry ?? createToolRegistry(config);
@@ -68,6 +75,26 @@ export class TurnExecutor {
     this.toolExecutor = deps.toolExecutor ?? new ToolExecutor(this.toolRegistry, this.policyChecker);
     this.contextDeps = deps.contextDeps ?? this.buildDefaultContextDeps();
     this.transcriptRecorder = deps.transcriptRecorder;
+    this.usageAggregator = deps.usageAggregator;
+
+    // Initialize cost-aware routing if quotas are enabled
+    const quotas = config.quotas;
+    if (quotas?.enabled) {
+      this.costAwareRouter = new CostAwareRouter({
+        quotaConfig: {
+          quota: {
+            maxCostPerConversation: quotas.max_cost_per_conversation_usd,
+            maxCostPerDay: quotas.max_cost_per_day_usd,
+            maxCostPerMonth: quotas.max_cost_per_month_usd,
+            maxTokensPerConversation: quotas.max_tokens_per_conversation,
+            maxTurnsPerConversation: quotas.max_turns_per_conversation,
+          },
+          warningThreshold: quotas.quota_warning_threshold,
+          onExceeded: quotas.on_quota_exceeded,
+          refusalMessage: quotas.refusal_message,
+        },
+      });
+    }
   }
 
   private buildDefaultContextDeps(): PrepareContextDeps {
@@ -106,14 +133,68 @@ export class TurnExecutor {
     submission: TurnSubmission,
     options?: ExecutionOptions,
     activeTurn?: ActiveTurn,
+    usageTracker?: ConversationUsageTracker,
   ): AsyncGenerator<AgentEvent, TurnExecutionResult> {
     const maxTurns = options?.maxTurns ?? this.config.limits.max_turns;
     const maxOutputTokens = options?.maxOutputTokens ?? this.config.model.max_output_tokens;
-    const modelName = options?.model ?? this.config.model.name;
+    let modelName = options?.model ?? this.config.model.name;
     const toolRegistry = options?.toolRegistry ?? this.toolRegistry;
     const recorder = this.transcriptRecorder;
 
     const executionState = activeTurn?.executionState ?? new TurnExecutionState();
+
+    // Usage tracking: create a per-turn recorder
+    const usageRecorder = new UsageRecorder({
+      provider: this.config.model.provider,
+      model: modelName,
+      conversationId: submission.conversationId,
+      requestId: submission.requestId,
+      executionContext: options?.model ? 'background' : 'main',
+    });
+
+    // Wire usage recorder to aggregator and tracker
+    usageRecorder.onRecord((record) => {
+      usageTracker?.addRecord(record);
+      this.usageAggregator?.recordUsage(record);
+    });
+
+    // Pre-turn quota check
+    if (this.costAwareRouter && usageTracker) {
+      const usage = usageTracker.getUsage();
+      const dailyCost = this.usageAggregator?.getDailyCost();
+      const monthlyCost = this.usageAggregator?.getMonthlyCost();
+      const decision = this.costAwareRouter.evaluate(usage, dailyCost, monthlyCost);
+
+      if (!decision.allowed) {
+        yield { type: 'quota_exceeded', reason: decision.quotaResult.reason ?? 'quota_exceeded', refusalMessage: decision.refusalMessage ?? '' };
+        yield { type: 'text_delta', content: decision.refusalMessage ?? '' };
+        yield { type: 'done', terminalReason: { reason: 'quota_exceeded' } };
+        return {
+          finalText: decision.refusalMessage ?? '',
+          tokenUsage: undefined,
+          completedTurns: 0,
+          toolCallCount: 0,
+          newMessages: [],
+        };
+      }
+
+      // Emit warnings from quota enforcer
+      const enforcer = this.costAwareRouter.getEnforcer();
+      if (enforcer) {
+        enforcer.onWarning((warning) => {
+          // Warnings are pushed synchronously during checkAll — we store them for yield
+        });
+      }
+
+      // Cost-aware model downgrade
+      if (decision.useFallbackModel && this.config.fallback_model) {
+        modelName = this.config.fallback_model.name;
+        yield { type: 'recovery', reason: 'cost_aware_downgrade', detail: { from: this.config.model.name, to: modelName } };
+      }
+    }
+
+    // Increment turn count
+    usageTracker?.incrementTurnCount();
 
     const history = submission.promptHistory ?? submission.history.map((item) => ({
       role: item.role as Message['role'],
@@ -244,6 +325,18 @@ export class TurnExecutor {
 
       if (result.tokenUsage) {
         executionState.setTokenUsage(result.tokenUsage);
+
+        // Record usage from this model call
+        usageRecorder.setTurnNumber(executionState.getIterationIndex());
+        usageRecorder.setToolCallCount(executionState.snapshot().toolCallCount);
+        const usageRecord = usageRecorder.record(result.tokenUsage, {
+          model: modelName,
+          isRetry: recovery.lastTransition?.reason === 'api_retry',
+          isFallback: recovery.fallbackAttempted,
+        });
+        if (usageRecord) {
+          yield { type: 'usage', record: usageRecord };
+        }
       }
 
       // --- Handle max output truncation ---

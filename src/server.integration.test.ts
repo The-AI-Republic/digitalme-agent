@@ -62,6 +62,7 @@ const TEST_CONFIG: AgentConfig = {
     reactive_compact: { max_retries: 1, aggressive_preserve_messages: 3 },
     max_output_recovery: { max_retries: 2 },
   },
+  quotas: { enabled: false, on_quota_exceeded: 'graceful_refuse', quota_warning_threshold: 0.8 },
   forked_agents: { enabled: true, max_concurrent: 2 },
   hooks: { post_turn: { enabled: true, timeout_ms: 30000 } },
 };
@@ -114,7 +115,7 @@ test('POST /verify echoes the signed challenge', async () => {
   const agent = new Agent(TEST_CONFIG, {
     sessionManager: {
       async execute() { throw new Error('not_used'); },
-      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000, usage: { totalCostUsd: 0, dailyCostUsd: 0, monthlyCostUsd: 0 } }; },
       beginDrain() {},
     },
   });
@@ -153,7 +154,7 @@ test('POST /v1/task streams tool and terminal events over SSE', async () => {
           events.push(event);
         }
       },
-      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000, usage: { totalCostUsd: 0, dailyCostUsd: 0, monthlyCostUsd: 0 } }; },
       beginDrain() {},
     },
   });
@@ -187,7 +188,7 @@ test('POST /v1/task rejects replayed requests with stale timestamps', async () =
   const agent = new Agent(TEST_CONFIG, {
     sessionManager: {
       async execute() { throw new Error('not_used'); },
-      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000, usage: { totalCostUsd: 0, dailyCostUsd: 0, monthlyCostUsd: 0 } }; },
       beginDrain() {},
     },
   });
@@ -228,7 +229,7 @@ test('POST /v1/task rejects invalid signatures before opening SSE', async () => 
   const agent = new Agent(TEST_CONFIG, {
     sessionManager: {
       async execute() { throw new Error('not_used'); },
-      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000, usage: { totalCostUsd: 0, dailyCostUsd: 0, monthlyCostUsd: 0 } }; },
       beginDrain() {},
     },
   });

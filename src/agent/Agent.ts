@@ -8,10 +8,12 @@ import { createRuntimeObservers, type RuntimeListeners } from './RuntimeObserver
 import type { AgentEvent } from './types.js';
 import type { TurnSubmission } from './types.js';
 import type { EventQueue } from './EventQueue.js';
+import type { UsageAggregator } from '../usage/UsageAggregator.js';
+import type { UsageSnapshot } from '../usage/types.js';
 
 interface AgentDeps {
   queueFactory?: (getState: () => ProcessRuntimeState) => SubmissionQueue;
-  sessionManager?: Pick<SessionManager, 'execute' | 'getStats' | 'beginDrain'>;
+  sessionManager?: Pick<SessionManager, 'execute' | 'getStats' | 'beginDrain'> & { usageAggregator?: UsageAggregator };
   runtimeListeners?: RuntimeListeners;
 }
 
@@ -90,5 +92,10 @@ export class Agent {
   beginDrain() {
     this.store.setState(prev => ({ ...prev, draining: true }));
     this.executor.beginDrain?.();
+  }
+
+  /** Get usage snapshot for reporting/billing. */
+  getUsageSnapshot(since?: number): UsageSnapshot | undefined {
+    return (this.executor as { usageAggregator?: UsageAggregator }).usageAggregator?.snapshot(since);
   }
 }
