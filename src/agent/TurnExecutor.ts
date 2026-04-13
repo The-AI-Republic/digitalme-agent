@@ -1,6 +1,7 @@
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
 import { generateId, type Message, type ToolCall, type ModelStepResult, type ModelClient } from '../models/ModelClient.js';
+import type { ModelRouter } from '../models/ModelRouter.js';
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
 import { TemplateLoader } from '../prompts/TemplateLoader.js';
 import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
@@ -43,6 +44,7 @@ class RecoveryError extends Error {
 export interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
+  modelRouter?: ModelRouter;
   toolRegistry?: IToolRegistry;
   toolPolicyChecker?: IToolPolicyChecker;
   toolExecutor?: ToolExecutor;
@@ -53,6 +55,7 @@ export interface TurnExecutorDeps {
 export class TurnExecutor {
   private readonly systemPromptBuilder: ISystemPromptBuilder;
   private readonly modelClientFactory: IModelClientFactory;
+  private readonly modelRouter?: ModelRouter;
   private readonly toolRegistry: IToolRegistry;
   private readonly toolExecutor: ToolExecutor;
   private readonly policyChecker: IToolPolicyChecker;
@@ -68,6 +71,16 @@ export class TurnExecutor {
     this.toolExecutor = deps.toolExecutor ?? new ToolExecutor(this.toolRegistry, this.policyChecker);
     this.contextDeps = deps.contextDeps ?? this.buildDefaultContextDeps();
     this.transcriptRecorder = deps.transcriptRecorder;
+    // Only auto-enable router behavior when task-specific routing is configured.
+    // This preserves existing fallback_model semantics for configs that have only
+    // schema-default routing values.
+    this.modelRouter = deps.modelRouter
+      ?? (this.hasTaskSpecificRouting() ? this.modelClientFactory.getRouter?.() : undefined);
+  }
+
+  private hasTaskSpecificRouting(): boolean {
+    const taskModels = this.config.routing.task_models;
+    return Boolean(taskModels.summary || taskModels.extraction || taskModels.forked);
   }
 
   private buildDefaultContextDeps(): PrepareContextDeps {
@@ -115,6 +128,21 @@ export class TurnExecutor {
 
     const executionState = activeTurn?.executionState ?? new TurnExecutionState();
 
+    // Resolve the model before prompt construction so the prompt can reference the resolved model
+    let resolvedModelName = modelName;
+    let resolvedProvider = this.config.model.provider;
+    let primaryClient: ModelClient;
+    if (options?.model) {
+      primaryClient = this.modelClientFactory.createClient();
+    } else if (this.modelRouter) {
+      const { client, decision } = this.modelRouter.resolveClient('primary');
+      primaryClient = client;
+      resolvedModelName = decision.modelConfig.name;
+      resolvedProvider = decision.modelConfig.provider;
+    } else {
+      primaryClient = this.modelClientFactory.createClient();
+    }
+
     const history = submission.promptHistory ?? submission.history.map((item) => ({
       role: item.role as Message['role'],
       content: item.content,
@@ -131,8 +159,8 @@ export class TurnExecutor {
       soulSystemPromptOverride: this.config.soul.system_prompt_override ?? null,
       soulSystemPromptAppend: this.config.soul.system_prompt_append ?? null,
       approvedToolNames: toolRegistry.listNames(),
-      modelName,
-      providerName: this.config.model.provider,
+      modelName: resolvedModelName,
+      providerName: resolvedProvider,
     };
 
     const builtPrompt = this.systemPromptBuilder.build(promptContext);
@@ -149,7 +177,6 @@ export class TurnExecutor {
     ];
 
     const context = new TurnContext(submission, initialMessages);
-    const primaryClient = this.modelClientFactory.createClient();
     const recovery = initialRecoveryState();
     const toolSummaries: ToolSummaryEntry[] = [];
     const resultBudget = new ResultBudget(); // fresh per request
@@ -198,8 +225,9 @@ export class TurnExecutor {
       try {
         callResult = await this.callModelWithRecovery(
           primaryClient,
-          { model: modelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
+          { model: resolvedModelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
           recovery,
+          resolvedProvider,
         );
       } catch (error) {
         // Emit any buffered recovery events before propagating the original error
@@ -464,18 +492,27 @@ export class TurnExecutor {
     primaryClient: ModelClient,
     initialRequest: Parameters<ModelClient['generate']>[0],
     recovery: RecoveryState,
+    provider?: string,
   ): Promise<{ result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] }> {
     let consecutive529 = 0;
     let client = primaryClient;
     let request = initialRequest;
+    let currentProvider = provider ?? this.config.model.provider;
     const events: AgentEvent[] = [];
 
     for (let attempt = 0; attempt <= RECOVERY_LIMITS.MAX_API_RETRIES; attempt++) {
+      const startTime = Date.now();
       try {
         const result = await client.generate(request);
+        // Record success for health tracking
+        this.modelRouter?.recordSuccess(currentProvider, request.model, Date.now() - startTime);
         return { result, events };
       } catch (error) {
+        const latencyMs = Date.now() - startTime;
         const category = categorizeApiError(error);
+
+        // Record failure for health tracking
+        this.modelRouter?.recordFailure(currentProvider, request.model, latencyMs, category);
 
         if (category === 'context_overflow') {
           return { result: { type: 'context_overflow' as const }, events };
@@ -489,7 +526,12 @@ export class TurnExecutor {
               && this.modelClientFactory.createFromConfig) {
             recovery.fallbackAttempted = true;
             // Create a new client via factory — don't mutate the primary client
-            client = this.modelClientFactory.createFromConfig(this.config.fallback_model);
+            if (this.modelRouter) {
+              client = this.modelRouter.getOrCreateClient(this.config.fallback_model);
+            } else {
+              client = this.modelClientFactory.createFromConfig(this.config.fallback_model);
+            }
+            currentProvider = this.config.fallback_model.provider;
             // Switch to the fallback model name so the client uses it
             request = { ...request, model: this.config.fallback_model.name };
             // Reset retry budget so fallback gets a full chance
@@ -532,6 +574,11 @@ export class TurnExecutor {
     }
 
     throw new RecoveryError(new Error('api_retries_exhausted'), events);
+  }
+
+  /** Returns the ModelRouter if available, for health inspection. */
+  getRouter(): ModelRouter | undefined {
+    return this.modelRouter;
   }
 
   private throwIfAborted(signal?: AbortSignal) {
