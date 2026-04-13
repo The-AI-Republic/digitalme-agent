@@ -1,4 +1,4 @@
-# 12 — Configuration Lifecycle Tasks
+# 12 — Configuration Lifecycle Tasks [deferred]
 
 ## Step 1: Versioned Config and Protocol Extension
 

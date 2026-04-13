@@ -22,8 +22,8 @@ Detailed per-sector plans live in:
 - `09_model_routing_and_intelligence/IMPLEMENTATION_PLAN.md`
 - `10_creator_guardrails_and_safety/IMPLEMENTATION_PLAN.md`
 - `11_usage_tracking_and_quotas/IMPLEMENTATION_PLAN.md`
-- `12_configuration_lifecycle/IMPLEMENTATION_PLAN.md`
-- `13_structured_analytics/IMPLEMENTATION_PLAN.md`
+- `12_configuration_lifecycle/IMPLEMENTATION_PLAN.md` [deferred]
+- `13_structured_analytics/IMPLEMENTATION_PLAN.md` [deferred]
 - `14_creator_skills/IMPLEMENTATION_PLAN.md`
 
 It assumes:
@@ -563,30 +563,31 @@ Improve observability without changing the external SSE contract.
 - add model pricing registry
 - wire quota pressure into model routing
 
-### PR 11: Configuration Lifecycle (Track 12)
+### PR 11: Configuration Lifecycle (Track 12) [deferred]
 
-- add config versioning with content hash
-- add `ConfigDiffer` and `ConfigReloader` for hot-reload
-- add `PlatformOverrides` merge logic
-- add simple `FeatureGates` system
+- ~~add config versioning with content hash~~
+- ~~add `ConfigDiffer` and `ConfigReloader` for hot-reload~~
+- ~~add `PlatformOverrides` merge logic~~
+- ~~add simple `FeatureGates` system~~
 
-### PR 12: Structured Analytics (Track 13)
+### PR 12: Structured Analytics (Track 13) [deferred]
 
-- add typed metric events and `MetricsLogger`
-- add `PerformanceProfiler` with checkpoint API
-- add `ErrorBuffer` ring buffer
-- add `MetricsAggregator` with rolling windows
-- enhance `/health` endpoint with operational metrics
+- ~~add typed metric events and `MetricsLogger`~~
+- ~~add `PerformanceProfiler` with checkpoint API~~
+- ~~add `ErrorBuffer` ring buffer~~
+- ~~add `MetricsAggregator` with rolling windows~~
+- ~~enhance `/health` endpoint with operational metrics~~
 
 ### PR 13: Creator Skills (Track 14)
 
-- add skill config schema and `SkillValidator`
-- add `SkillRegistry` with load, resolve, list, reload
-- add `PromptTemplate` engine with `$VARIABLE` expansion
-- add `CreatorSkillTool` with inline and forked execution paths
+- add `SkillParser` for SKILL.md (YAML frontmatter + markdown body, Claude Code compatible format)
+- add `SkillScanner` to scan `/app/skills/` (bundled) and `/app/skills-local/` (creator's `~/.digitalme/skills/`)
+- add `SkillRegistry` to merge bundled + local skills into one flat list (local overrides bundled on name collision)
+- add `CreatorSkillTool` with `$ARGUMENTS` expansion, inline and forked execution paths
 - add `SkillListingBuilder` for model-facing discovery in system prompt
 - wire guardrail checks on skill input/output
 - add `SkillTracker` for execution metrics
+- add bundled default skills: `faq-lookup`, `contact-info`, `off-topic-redirect`
 
 ## Risks
 

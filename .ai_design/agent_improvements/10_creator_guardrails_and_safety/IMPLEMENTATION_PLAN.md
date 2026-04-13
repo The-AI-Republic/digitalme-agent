@@ -245,6 +245,25 @@ const JAILBREAK_PATTERNS: RegExp[] = [
 
 Following Claudy's pattern: start with fast, cheap, deterministic pattern matching. No LLM calls. Fail-closed on errors.
 
+## Explicit Layer 1 Scope and Non-Goals
+
+This track implements **runtime guardrails for top-level fan-facing turns only**.
+
+Scope for this PR:
+- Screen the inbound fan message before the model is called
+- Validate the outbound assistant text before it is delivered to the platform
+- Persist the effective blocked/modified/final text consistently in session state and transcript storage
+- Emit structured observability events for platform logging
+
+Explicitly out of scope for this PR:
+- LLM-based moderation or semantic classification
+- Rich topic taxonomies such as `medical_advice` or `financial_advice`
+- Tone/style semantic enforcement
+- Rewriting partial text already streamed to the client
+- Applying fan-facing guardrails to internal subagent turns
+
+This is a minimum viable enforcement layer. It closes obvious gaps deterministically, but it does not attempt to solve nuanced semantic safety.
+
 ### Step 1: Guardrails Config Schema
 
 Extend `src/config/schema.ts` with an optional `guardrails` section:
@@ -318,6 +337,64 @@ Files:
 - `src/config/schema.ts` — add `guardrailsSchema` and wire into `agentConfigSchema`
 - `src/guardrails/types.ts` — `export type GuardrailsConfig = AgentConfig['guardrails']` (inferred, not hand-written)
 
+## Runtime Semantics That Must Be Implemented
+
+These semantics are normative for Layer 1. The code should follow them exactly.
+
+### 1. Guardrail audience/scope
+
+Guardrails in this track apply only to **top-level public turns** initiated by a fan through `/v1/task`.
+
+Internal subagent turns must NOT use fan-facing input/output guardrails in Layer 1 because:
+- subagents share the same `TurnExecutor`
+- internal prompts may legitimately contain blocked keywords, links, or PII examples while analyzing user-visible safety issues
+- fan-facing substitution messages would corrupt tool workflows
+
+Implementation requirement:
+- add a `guardrailScope?: 'public' | 'internal'` field to `ExecutionOptions`
+- default is `'public'` for normal turns
+- `SubagentTool` passes `guardrailScope: 'internal'`
+- `TurnExecutor` only runs input/output guardrails when `guardrailScope !== 'internal'`
+
+### 2. Blocked-turn contract
+
+When input is blocked before any model call, `TurnExecutor.run()` must still return a valid `TurnExecutionResult`.
+
+Required behavior:
+- the incoming user message is still added to `context.messages`
+- the incoming user message is still recorded to transcript storage if enabled
+- a synthetic assistant refusal message is created using `guardrails.messages.input_blocked`
+- that refusal message is added to `context.messages`
+- that refusal message is recorded to transcript storage
+- a `guardrail_block` event is emitted
+- a `text_delta` event is emitted with the refusal text
+- a `done` event is emitted with `terminalReason: { reason: 'completed' }`
+- the returned `TurnExecutionResult.finalText` is the refusal text
+- `TurnExecutionResult.newMessages` contains both the user message and the refusal assistant message
+- `completedTurns` is `0` because no model turn executed
+- `toolCallCount` is `0`
+
+Rationale:
+- session state remains coherent
+- transcript storage reflects what the fan actually saw
+- post-turn hooks and lifecycle logging continue to work without special cases
+
+### 3. Output delivery model for Layer 1
+
+Layer 1 must preserve the current streaming contract of `TurnExecutor` as much as possible, but safety guarantees differ by path:
+
+- **Normal final text path**: full response is validated before any assistant text is emitted to the caller
+- **Truncation recovery path**: partial chunks are validated before each emitted chunk, but already-emitted chunks cannot be recalled or rewritten
+
+This means Layer 1 provides:
+- strong pre-delivery validation on the normal final-text path
+- best-effort chunk validation on the truncation-recovery path
+- a final full-text validation pass after recovery assembly to catch cross-chunk matches for storage and future history consistency
+
+It does **not** guarantee that content already streamed in a prior recovery chunk can be retroactively replaced.
+
+Future Layer 2 may introduce optional buffering for stronger guarantees, but Layer 1 will not change the current streaming model.
+
 ### Step 2: Pattern Library
 
 A shared, extensible set of regex patterns:
@@ -357,9 +434,11 @@ Check order (fast to slow, exit on first block):
 
 On block:
 - Do NOT call the model — skip entirely
+- Create a synthetic assistant refusal message using `messages.input_blocked`
+- Yield `guardrail_block`
 - Yield canned `input_blocked` message as `text_delta`
-- Yield `done` event
-- Return early from `TurnExecutor.run()`
+- Yield `done` event with `terminalReason: { reason: 'completed' }`
+- Return a valid `TurnExecutionResult` as defined in "Blocked-turn contract"
 - Log the decision (category, matched rule, truncated input preview)
 
 Files:
@@ -381,7 +460,13 @@ On violation:
 - **Low** (length exceeded): truncate at limit with "..." suffix
 - Log all violations
 
-**Streaming semantics for `action: 'modify'`**: The OutputValidator returns the modified text. The caller (TurnExecutor) uses this modified text for **all** downstream operations — the `text_delta` SSE event, the assistant message pushed to `context.messages`, the transcript recording, and `TurnExecutionResult.finalText`. There is a single source of truth: whatever the validator returns is what the fan sees, what's stored, and what future model calls see in history. The validator does NOT emit its own events — it returns a result and the caller decides what to yield.
+**Streaming semantics for `action: 'modify'`**:
+
+- On the normal final-text path, the validator result is the single source of truth for SSE delivery, `context.messages`, transcript recording, and `TurnExecutionResult.finalText`
+- On the truncation-recovery path, the validator result is the source of truth only for the chunk currently being emitted and for the partial assistant message appended to context
+- A later full-text validation pass may detect a violation that spans chunk boundaries; in that case, storage and future history use the fully validated text, but prior chunks already emitted to the client are not rewritten
+
+The validator does NOT emit its own events — it returns a result and the caller decides what to yield.
 
 Files:
 - `src/guardrails/OutputValidator.ts` — stateless, takes `GuardrailConfig` + response string → `OutputValidationResult`
@@ -394,7 +479,9 @@ Three hook points in `src/agent/TurnExecutor.ts`:
 ```
 line 167: context.messages.push(userMsg);
 // ← INSERT: InputScreener.screen(submission.userMessage, guardrailConfig)
-//    If blocked: yield guardrail_block event, yield text_delta with canned message, yield done, return early
+//    If blocked: construct refusal assistant message, push it to context, record it,
+//                yield guardrail_block event, yield text_delta with canned message,
+//                yield done, return TurnExecutionResult
 //    The model is never called — saves cost and eliminates risk
 line 177: while (executionState.getIterationIndex() < maxTurns) {
 ```
@@ -409,14 +496,14 @@ line 253:   if (recovery.maxOutputRecoveryCount < RECOVERY_LIMITS.MAX_OUTPUT_REC
              ...
 // ← INSERT before line 257: OutputValidator.validate(result.text, guardrailConfig)
 //    If blocked (critical): yield guardrail_block event, yield text_delta with canned message,
-//                           yield done, return early — abort the recovery loop entirely
+//                           yield done, return TurnExecutionResult — abort the recovery loop entirely
 //    If modified: use modified text for the text_delta and the assistant message pushed at line 260
 //    If allowed: proceed unchanged
 line 257:     if (result.text) {
 line 258:       yield { type: 'text_delta', content: result.text };
 ```
 
-On block, the recovery loop aborts immediately. The fan receives the canned `output_blocked` message. Partial text already streamed in prior recovery iterations cannot be recalled — this is an accepted limitation of streaming. The `guardrail_block` event records that the response was terminated mid-recovery.
+On block, the recovery loop aborts immediately. The fan receives the canned `output_blocked` message. Partial text already streamed in prior recovery iterations cannot be recalled — this is an accepted limitation of Layer 1 streaming. The `guardrail_block` event records that the response was terminated mid-recovery.
 
 **Hook 3 — Output validation on final response** (before message construction, context push, transcript, and SSE):
 
@@ -443,7 +530,7 @@ line 311:   if (effectiveText) {
 line 312:     yield { type: 'text_delta', content: effectiveText };  // ← fan gets validated text
 ```
 
-If the response was assembled across recovery iterations (Hook 2 passed each chunk), Hook 3 is a belt-and-suspenders check on the full text. A pattern might span a chunk boundary (e.g., a phone number split across two recovery chunks) — Hook 3 catches that.
+If the response was assembled across recovery iterations (Hook 2 passed each chunk), Hook 3 is a belt-and-suspenders check on the full text. A pattern might span a chunk boundary (e.g., a phone number split across two recovery chunks) — Hook 3 catches that for final stored text and future prompt history, but not for already-emitted client chunks.
 
 **New `AgentEvent` variant** for observability:
 ```typescript
@@ -460,7 +547,15 @@ export interface TurnExecutorDeps {
 }
 ```
 
-Construction: `Agent.ts` reads `config.guardrails`, and if `enabled` is true, instantiates `InputScreener` and `OutputValidator` with the config and passes them into `TurnExecutorDeps`. If `enabled` is false, omits them.
+Construction: `SessionManager.ts` currently instantiates `TurnExecutor`, not `Agent.ts`. The wiring for this track must therefore live in the `SessionManager -> TurnExecutor` construction path.
+
+Implementation requirement:
+- `SessionManager` reads `config.guardrails`
+- if `enabled` is true, it instantiates `InputScreener` and `OutputValidator`
+- it passes them into `new TurnExecutor(config, { ... })`
+- if `enabled` is false, it omits them
+
+This keeps wiring aligned with the current codebase.
 
 ### Step 6: Guardrail Logging
 
@@ -470,6 +565,14 @@ Guardrail decisions logged via existing patterns:
 - `guardrail_block` event emitted via SSE so the platform can record it
 
 No separate logger class — use existing infrastructure.
+
+Minimum fields to log:
+- phase: `input` or `output`
+- category: `jailbreak` | `pii_exposure` | `blocked_keyword` | `external_link` | `length`
+- matched rule name
+- action taken
+- truncated preview of source text
+- whether this occurred on `guardrailScope: 'public'` or `'internal'`
 
 ### Step 7: Tests
 
@@ -500,6 +603,7 @@ InputScreener is stateless: config + string → result. Pure unit tests, no mock
 | Unicode in message | Jailbreak attempt in non-ASCII | Should still match patterns |
 | Guardrails disabled | Any message + `enabled: false` | `{ safe: true }` (no-op) |
 | Check order: jailbreak wins over PII | Message with both jailbreak + PII | Category should be `'jailbreak'` (checked first) |
+| Whitespace-only blocked keyword config entry ignored | `blocked_keywords: ["   "]` | `{ safe: true }` and config entry has no effect |
 
 #### Unit tests — `src/guardrails/OutputValidator.test.ts`
 
@@ -518,6 +622,36 @@ Same pattern — stateless, config + string → result.
 | Multiple violations | Response with blocked keyword + PII + URL | First critical violation wins → `action: 'block'` |
 | Empty response | `""` | `{ safe: true }` |
 | Guardrails disabled | Any response + `enabled: false` | `{ safe: true }` (no-op) |
+| URL stripping removes multiple links | Response with two URLs | Both removed in modified response |
+| Final truncation appends ellipsis only when modified | Response exceeds limit | Exactly one `...` suffix |
+
+#### Integration tests — `TurnExecutor`
+
+The integration suite must cover runtime semantics, not just pure validator behavior.
+
+Required cases:
+- blocked input returns a valid `TurnExecutionResult` with `completedTurns = 0`
+- blocked input appends both user and refusal assistant messages to `newMessages`
+- blocked input records refusal assistant text when transcript recorder is present
+- normal final-text output block replaces text in SSE, transcript, `context.messages`, and `finalText`
+- truncation recovery chunk validation blocks mid-recovery and returns a valid `TurnExecutionResult`
+- `guardrailScope: 'internal'` bypasses fan-facing guardrails
+- `guardrailScope: 'public'` remains the default when `ExecutionOptions.guardrailScope` is omitted
+
+## Implementation Notes for Engineers
+
+To keep the patch low-risk, implementation should follow this sequence:
+
+1. Add config schema and pure `guardrails/` module types
+2. Implement and unit-test `patterns.ts`, `InputScreener.ts`, and `OutputValidator.ts`
+3. Extend `AgentEvent` and `ExecutionOptions` types
+4. Wire `SessionManager` to construct guardrail deps
+5. Integrate TurnExecutor Hook 1 first and land blocked-turn semantics
+6. Integrate Hook 3 on the normal final-text path
+7. Integrate Hook 2 for truncation recovery
+8. Add integration tests covering public vs internal scope
+
+This order minimizes the risk of breaking existing normal-turn and tool-call behavior.
 
 #### Integration tests — `src/guardrails/TurnExecutor.guardrails.test.ts`
 

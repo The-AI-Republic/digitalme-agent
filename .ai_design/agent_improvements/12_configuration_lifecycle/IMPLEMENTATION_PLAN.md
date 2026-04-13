@@ -1,4 +1,4 @@
-# 12 — Configuration Lifecycle
+# 12 — Configuration Lifecycle [deferred]
 
 ## What This Track Covers
 
