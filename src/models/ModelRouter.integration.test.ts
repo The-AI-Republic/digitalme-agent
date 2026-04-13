@@ -186,6 +186,35 @@ test('TurnExecutor works without router (backwards compatible)', async () => {
   assert.equal(executor.getRouter(), undefined);
 });
 
+test('TurnExecutor does not auto-enable router for fallback_model-only configs', async () => {
+  const primaryClient = new TrackingModelClient('primary', [
+    { type: 'final_text', text: 'still-primary' },
+  ]);
+
+  const fallbackModel: ModelConfig = {
+    provider: 'anthropic',
+    name: 'claude-sonnet',
+    api_key: 'key2',
+    base_url: null,
+    max_output_tokens: 8192,
+  };
+
+  const executor = new TurnExecutor({
+    ...testConfig,
+    fallback_model: fallbackModel,
+  }, {
+    systemPromptBuilder: makeFakeBuilder(),
+    modelClientFactory: {
+      createClient: () => primaryClient,
+    },
+  });
+
+  const { result } = await collectEvents(executor.run(makeSubmission()));
+  assert.equal(result.finalText, 'still-primary');
+  assert.equal(executor.getRouter(), undefined);
+  assert.equal(primaryClient.calls[0]?.model, 'gpt-4o');
+});
+
 test('ModelRouter health-aware routing with fallback model config', async () => {
   const primaryClient = new TrackingModelClient('primary', [
     { type: 'final_text', text: 'from-primary' },

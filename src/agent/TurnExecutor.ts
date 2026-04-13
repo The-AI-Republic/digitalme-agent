@@ -71,8 +71,16 @@ export class TurnExecutor {
     this.toolExecutor = deps.toolExecutor ?? new ToolExecutor(this.toolRegistry, this.policyChecker);
     this.contextDeps = deps.contextDeps ?? this.buildDefaultContextDeps();
     this.transcriptRecorder = deps.transcriptRecorder;
-    // Initialize router: prefer explicit dep, then factory's getRouter, otherwise undefined
-    this.modelRouter = deps.modelRouter ?? this.modelClientFactory.getRouter?.();
+    // Only auto-enable router behavior when task-specific routing is configured.
+    // This preserves existing fallback_model semantics for configs that have only
+    // schema-default routing values.
+    this.modelRouter = deps.modelRouter
+      ?? (this.hasTaskSpecificRouting() ? this.modelClientFactory.getRouter?.() : undefined);
+  }
+
+  private hasTaskSpecificRouting(): boolean {
+    const taskModels = this.config.routing.task_models;
+    return Boolean(taskModels.summary || taskModels.extraction || taskModels.forked);
   }
 
   private buildDefaultContextDeps(): PrepareContextDeps {
@@ -124,7 +132,9 @@ export class TurnExecutor {
     let resolvedModelName = modelName;
     let resolvedProvider = this.config.model.provider;
     let primaryClient: ModelClient;
-    if (this.modelRouter) {
+    if (options?.model) {
+      primaryClient = this.modelClientFactory.createClient();
+    } else if (this.modelRouter) {
       const { client, decision } = this.modelRouter.resolveClient('primary');
       primaryClient = client;
       resolvedModelName = decision.modelConfig.name;
