@@ -46,6 +46,7 @@ export function initTelemetry(config: TelemetryConfig): TelemetryProviders {
     resource,
     spanProcessors: [new BatchSpanProcessor(traceExporter)],
   });
+  trace.setGlobalTracerProvider(tracerProvider);
 
   // Meter provider with periodic OTLP exporter
   const metricExporter = new OTLPMetricExporter({

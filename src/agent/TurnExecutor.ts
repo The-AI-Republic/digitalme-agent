@@ -240,20 +240,15 @@ export class TurnExecutor {
       }
 
       // --- Call model (with retry/fallback, error capture) ---
-      const modelSpan = startModelCallSpan(modelName, interactionSpan);
       let callResult: { result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] };
       try {
         callResult = await this.callModelWithRecovery(
           primaryClient,
           { model: modelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
           recovery,
+          interactionSpan,
         );
-        recordModelCall(modelName, true);
-        endSpan(modelSpan);
       } catch (error) {
-        recordModelCall(modelName, false);
-        recordError('model_call');
-        endSpanWithError(modelSpan, error);
         // Emit any buffered recovery events before propagating the original error
         if (error instanceof RecoveryError) {
           for (const event of error.recoveryEvents) {
@@ -547,18 +542,27 @@ export class TurnExecutor {
     primaryClient: ModelClient,
     initialRequest: Parameters<ModelClient['generate']>[0],
     recovery: RecoveryState,
+    parentSpan: Span,
   ): Promise<{ result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] }> {
     let consecutive529 = 0;
     let client = primaryClient;
     let request = initialRequest;
+    let currentModel = initialRequest.model;
     const events: AgentEvent[] = [];
 
     for (let attempt = 0; attempt <= RECOVERY_LIMITS.MAX_API_RETRIES; attempt++) {
+      const attemptSpan = startModelCallSpan(currentModel, parentSpan);
       try {
         const result = await client.generate(request);
+        recordModelCall(currentModel, true);
+        endSpan(attemptSpan);
         return { result, events };
       } catch (error) {
         const category = categorizeApiError(error);
+
+        recordModelCall(currentModel, false);
+        recordError('model_call');
+        endSpanWithError(attemptSpan, error);
 
         if (category === 'context_overflow') {
           return { result: { type: 'context_overflow' as const }, events };
@@ -574,7 +578,8 @@ export class TurnExecutor {
             // Create a new client via factory — don't mutate the primary client
             client = this.modelClientFactory.createFromConfig(this.config.fallback_model);
             // Switch to the fallback model name so the client uses it
-            request = { ...request, model: this.config.fallback_model.name };
+            currentModel = this.config.fallback_model.name;
+            request = { ...request, model: currentModel };
             // Reset retry budget so fallback gets a full chance
             // -1 because the for-loop increment runs before the next iteration
             attempt = -1;
