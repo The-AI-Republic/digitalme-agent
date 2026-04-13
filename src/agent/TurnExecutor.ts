@@ -72,20 +72,7 @@ export class TurnExecutor {
     this.contextDeps = deps.contextDeps ?? this.buildDefaultContextDeps();
     this.transcriptRecorder = deps.transcriptRecorder;
     // Initialize router: prefer explicit dep, then factory's getRouter, otherwise undefined
-    this.modelRouter = deps.modelRouter
-      ?? (this.modelClientFactory as ModelClientFactory).getRouter?.(
-          this.buildHealthConfig(),
-        );
-  }
-
-  private buildHealthConfig() {
-    const routing = (this.config as AgentConfig & { routing?: { health?: { window_size?: number; failure_threshold?: number; recovery_after_seconds?: number } } }).routing;
-    if (!routing?.health) return undefined;
-    return {
-      windowSize: routing.health.window_size ?? 20,
-      failureThreshold: routing.health.failure_threshold ?? 0.5,
-      recoveryAfterSeconds: routing.health.recovery_after_seconds ?? 60,
-    };
+    this.modelRouter = deps.modelRouter ?? this.modelClientFactory.getRouter?.();
   }
 
   private buildDefaultContextDeps(): PrepareContextDeps {

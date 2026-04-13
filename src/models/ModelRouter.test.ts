@@ -185,12 +185,11 @@ test('ModelRouter: different configs get different cached clients', () => {
 
 test('ModelRouter: routes to fallback when primary provider is unhealthy', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({ fallback_model: fallbackModel });
-  const router = new ModelRouter(config, factory, {
-    windowSize: 4,
-    failureThreshold: 0.5,
-    recoveryAfterSeconds: 60,
+  const config = makeConfig({
+    fallback_model: fallbackModel,
+    routing: { task_models: {}, health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
   });
+  const router = new ModelRouter(config, factory);
 
   // Make openai unhealthy
   for (let i = 0; i < 4; i++) {
@@ -204,12 +203,11 @@ test('ModelRouter: routes to fallback when primary provider is unhealthy', () =>
 
 test('ModelRouter: uses primary when all providers unhealthy', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({ fallback_model: fallbackModel });
-  const router = new ModelRouter(config, factory, {
-    windowSize: 4,
-    failureThreshold: 0.5,
-    recoveryAfterSeconds: 60,
+  const config = makeConfig({
+    fallback_model: fallbackModel,
+    routing: { task_models: {}, health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
   });
+  const router = new ModelRouter(config, factory);
 
   // Make both providers unhealthy
   for (let i = 0; i < 4; i++) {
@@ -231,11 +229,7 @@ test('ModelRouter: health-aware routing for task-specific models', () => {
       health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 },
     },
   } as Partial<AgentConfig>);
-  const router = new ModelRouter(config, factory, {
-    windowSize: 4,
-    failureThreshold: 0.5,
-    recoveryAfterSeconds: 60,
-  });
+  const router = new ModelRouter(config, factory);
 
   // Make the summary model's provider (openai) unhealthy
   for (let i = 0; i < 4; i++) {
@@ -284,11 +278,10 @@ test('ModelRouter: getAllProviderHealth returns all provider snapshots', () => {
 
 test('ModelRouter: isProviderHealthy delegates to health tracker', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const router = new ModelRouter(makeConfig(), factory, {
-    windowSize: 4,
-    failureThreshold: 0.5,
-    recoveryAfterSeconds: 60,
+  const config = makeConfig({
+    routing: { task_models: {}, health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
   });
+  const router = new ModelRouter(config, factory);
 
   assert.ok(router.isProviderHealthy('openai'));
 
@@ -318,7 +311,7 @@ test('ModelRouter: reset clears health data and client cache', () => {
 
 // --- getOrCreateClient ---
 
-test('ModelRouter: getOrCreateClient caches by provider+name+base_url', () => {
+test('ModelRouter: getOrCreateClient caches by provider+name+base_url+api_key', () => {
   const factory = makeFactory(new StubClient('primary'));
   const router = new ModelRouter(makeConfig(), factory);
 
@@ -346,12 +339,10 @@ test('ModelRouter: getOrCreateClient differentiates by base_url', () => {
 
 test('ModelRouter: without fallback, unhealthy primary still returns primary', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig(); // No fallback_model
-  const router = new ModelRouter(config, factory, {
-    windowSize: 4,
-    failureThreshold: 0.5,
-    recoveryAfterSeconds: 60,
-  });
+  const config = makeConfig({
+    routing: { task_models: {}, health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
+  }); // No fallback_model
+  const router = new ModelRouter(config, factory);
 
   for (let i = 0; i < 4; i++) {
     router.recordFailure('openai', 'gpt-4o', 100);
@@ -366,12 +357,11 @@ test('ModelRouter: without fallback, unhealthy primary still returns primary', (
 
 test('ModelRouter: provider recovers after success', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({ fallback_model: fallbackModel });
-  const router = new ModelRouter(config, factory, {
-    windowSize: 4,
-    failureThreshold: 0.5,
-    recoveryAfterSeconds: 60,
+  const config = makeConfig({
+    fallback_model: fallbackModel,
+    routing: { task_models: {}, health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
   });
+  const router = new ModelRouter(config, factory);
 
   // Make openai unhealthy
   for (let i = 0; i < 4; i++) {

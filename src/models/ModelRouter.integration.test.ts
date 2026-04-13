@@ -205,6 +205,10 @@ test('ModelRouter health-aware routing with fallback model config', async () => 
   const configWithFallback: AgentConfig = {
     ...testConfig,
     fallback_model: fallbackModel,
+    routing: {
+      task_models: {},
+      health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 },
+    },
   };
 
   const router = new ModelRouter(configWithFallback, {
@@ -213,10 +217,6 @@ test('ModelRouter health-aware routing with fallback model config', async () => 
       if (config.provider === 'anthropic') return fallbackClient;
       return primaryClient;
     },
-  }, {
-    windowSize: 4,
-    failureThreshold: 0.5,
-    recoveryAfterSeconds: 60,
   });
 
   // Make openai unhealthy

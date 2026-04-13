@@ -1,9 +1,9 @@
 import type { AgentConfig, ModelConfig } from '../config/schema.js';
+import { createHash } from 'node:crypto';
 import type { ModelClient } from './ModelClient.js';
 import type { IModelClientFactory } from './ModelClientFactory.js';
 import { ProviderHealthTracker } from './ProviderHealthTracker.js';
 import type {
-  HealthTrackerConfig,
   ModelTask,
   RoutingDecision,
   ProviderHealthSnapshot,
@@ -28,10 +28,22 @@ export class ModelRouter {
   constructor(
     private readonly config: AgentConfig,
     private readonly clientFactory: IModelClientFactory,
-    healthConfig?: Partial<HealthTrackerConfig>,
   ) {
-    const cfgHealth = (config as AgentConfig & { routing?: { health?: Partial<HealthTrackerConfig> } }).routing?.health;
-    this.healthTracker = new ProviderHealthTracker(healthConfig ?? cfgHealth);
+    const health = config.routing.health;
+    this.healthTracker = new ProviderHealthTracker(
+      health.enabled
+        ? {
+            windowSize: health.window_size,
+            failureThreshold: health.failure_threshold,
+            recoveryAfterSeconds: health.recovery_after_seconds,
+          }
+        : undefined,
+    );
+  }
+
+  /** Whether health-aware routing is enabled. */
+  get healthEnabled(): boolean {
+    return this.config.routing.health.enabled;
   }
 
   /**
@@ -42,7 +54,7 @@ export class ModelRouter {
     const taskModel = this.getTaskModel(task);
     if (taskModel) {
       // Check health of the task-specific provider
-      if (this.healthTracker.isHealthy(taskModel.provider)) {
+      if (!this.healthEnabled || this.healthTracker.isHealthy(taskModel.provider)) {
         return {
           modelConfig: taskModel,
           reason: 'config_task_specific',
@@ -66,7 +78,7 @@ export class ModelRouter {
     }
 
     // 2. Use primary model
-    if (this.healthTracker.isHealthy(this.config.model.provider)) {
+    if (!this.healthEnabled || this.healthTracker.isHealthy(this.config.model.provider)) {
       return {
         modelConfig: this.config.model,
         reason: task === 'primary' ? 'config_primary' : 'fallback_not_configured',
@@ -102,7 +114,7 @@ export class ModelRouter {
 
   /**
    * Get or create a cached client for a given model config.
-   * Clients are cached by a composite key of provider + name + base_url.
+   * Clients are cached by a composite key of provider + name + base_url + api_key hash.
    */
   getOrCreateClient(modelConfig: ModelConfig): ModelClient {
     const key = this.configKey(modelConfig);
@@ -178,37 +190,22 @@ export class ModelRouter {
    * Look up the task-specific model config from the routing configuration.
    */
   private getTaskModel(task: ModelTask): ModelConfig | undefined {
-    const routing = (this.config as AgentConfig & { routing?: { task_models?: Record<string, ModelConfig> } }).routing;
-
     switch (task) {
       case 'primary':
         return undefined; // Always falls through to config.model
       case 'fallback':
         return this.config.fallback_model;
-      case 'summary': {
-        // Check routing.task_models.summary first, then context.summary.model (legacy)
-        const taskModel = routing?.task_models?.summary;
-        if (taskModel) return taskModel;
-        // Legacy: context.summary.model is just a model name string, not a full ModelConfig
-        // So we can't use it directly — return undefined to fall through to primary
-        return undefined;
-      }
-      case 'extraction': {
-        const taskModel = routing?.task_models?.extraction;
-        if (taskModel) return taskModel;
-        return undefined;
-      }
-      case 'forked': {
-        const taskModel = routing?.task_models?.forked;
-        if (taskModel) return taskModel;
-        return undefined;
-      }
+      case 'summary':
+      case 'extraction':
+      case 'forked':
+        return this.config.routing.task_models[task];
       default:
         return undefined;
     }
   }
 
   private configKey(config: ModelConfig): string {
-    return `${config.provider}:${config.name}:${config.base_url ?? ''}`;
+    const keyHash = createHash('sha256').update(config.api_key).digest('hex').slice(0, 8);
+    return `${config.provider}:${config.name}:${config.base_url ?? ''}:${keyHash}`;
   }
 }

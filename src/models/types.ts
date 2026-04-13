@@ -22,7 +22,7 @@ export interface ProviderHealthSnapshot {
   failureRate: number;
   /** Whether the provider is currently considered healthy */
   healthy: boolean;
-  /** Exponential moving average latency in milliseconds (0 if no data) */
+  /** Average latency in milliseconds from successful events (0 if no data) */
   avgLatencyMs: number;
   /** Timestamp when the circuit was opened (undefined if healthy) */
   circuitOpenedAt?: number;
@@ -52,25 +52,7 @@ export type RoutingReason =
   | 'config_primary'           // Direct config match for this task
   | 'config_task_specific'     // Task-specific model configured
   | 'fallback_health'          // Primary unhealthy, fell back
-  | 'fallback_not_configured'  // No task-specific model, using primary
-  | 'override';                // Explicit override via ExecutionOptions
-
-// --- Model capability profiles ---
-
-export interface ModelCapability {
-  /** Model name (e.g. 'gpt-4o', 'claude-3-opus') */
-  modelName: string;
-  /** Provider name */
-  provider: string;
-  /** Context window size in tokens */
-  contextWindowSize: number;
-  /** Max output tokens */
-  maxOutputTokens: number;
-  /** Whether the model supports tool/function calling */
-  supportsTools: boolean;
-  /** Relative cost tier for routing decisions */
-  costTier: 'low' | 'medium' | 'high';
-}
+  | 'fallback_not_configured'; // No task-specific model, using primary
 
 // --- Health tracker configuration ---
 

@@ -5,7 +5,7 @@ import { OpenAICompatibleClient } from './client/OpenAICompatibleClient.js';
 import { OpenAIChatCompletionClient } from './client/OpenAIChatCompletionClient.js';
 import { ModelClient } from './ModelClient.js';
 import { ModelRouter } from './ModelRouter.js';
-import type { HealthTrackerConfig, ModelTask, RoutingDecision } from './types.js';
+import type { ModelTask, RoutingDecision } from './types.js';
 
 const PROVIDER_BASE_URLS: Record<string, string> = {
   xai: 'https://api.x.ai/v1',
@@ -67,11 +67,11 @@ export class ModelClientFactory {
    * Returns a ModelRouter instance, creating it on first call.
    * The router uses this factory for client creation and caches clients.
    */
-  getRouter(healthConfig?: Partial<HealthTrackerConfig>): ModelRouter {
+  getRouter(): ModelRouter {
     if (this.router) {
       return this.router;
     }
-    this.router = new ModelRouter(this.config, this, healthConfig);
+    this.router = new ModelRouter(this.config, this);
     return this.router;
   }
 }
@@ -79,7 +79,7 @@ export class ModelClientFactory {
 export interface IModelClientFactory {
   createClient(): ModelClient;
   createFromConfig?(modelConfig: ModelConfig): ModelClient;
-  getRouter?(healthConfig?: Partial<HealthTrackerConfig>): ModelRouter;
+  getRouter?(): ModelRouter;
 }
 
 export type { ModelTask, RoutingDecision };
