@@ -8,6 +8,7 @@ export interface ToolContext {
   conversationId: string;
   signal: AbortSignal;
   policyConfig: ToolPolicyConfig;
+  currentModelName?: string;
 }
 
 export interface ToolDefinition {
