@@ -178,14 +178,6 @@ export class TurnExecutor {
         };
       }
 
-      // Emit warnings from quota enforcer
-      const enforcer = this.costAwareRouter.getEnforcer();
-      if (enforcer) {
-        enforcer.onWarning((warning) => {
-          // Warnings are pushed synchronously during checkAll — we store them for yield
-        });
-      }
-
       // Cost-aware model downgrade
       if (decision.useFallbackModel && this.config.fallback_model) {
         modelName = this.config.fallback_model.name;

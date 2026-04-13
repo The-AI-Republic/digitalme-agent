@@ -24,6 +24,7 @@ export class Agent {
     execute(submission: TurnSubmission, events: EventQueue<AgentEvent>): Promise<void>;
     getStats?: () => Record<string, unknown>;
     beginDrain?: () => void;
+    usageAggregator?: UsageAggregator;
   };
   private readonly activeRequests = new Set<string>();
   private completedRequests = 0;
@@ -96,6 +97,6 @@ export class Agent {
 
   /** Get usage snapshot for reporting/billing. */
   getUsageSnapshot(since?: number): UsageSnapshot | undefined {
-    return (this.executor as { usageAggregator?: UsageAggregator }).usageAggregator?.snapshot(since);
+    return this.executor.usageAggregator?.snapshot(since);
   }
 }
