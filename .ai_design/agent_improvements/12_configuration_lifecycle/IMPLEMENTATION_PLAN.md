@@ -2,281 +2,628 @@
 
 ## What This Track Covers
 
-Configuration hot-reload, creator config versioning, feature gates for gradual rollout, dynamic runtime configuration, and configuration validation lifecycle.
+Request-driven config reload, creator config versioning, platform overrides, feature gates for gradual rollout, and config change auditing.
 
-## Why This Is Not Covered by Existing Tracks
+## Why This Matters
 
-No existing track addresses how configuration changes propagate through the running agent. Today, configuration is loaded once at startup (or once per session creation). Claudy demonstrates that a production agent runtime needs live configuration updates, especially when serving multiple creators concurrently.
+Today, creator config is loaded once at startup from `config.yaml` and frozen for the lifetime of the process. Every session, every turn, every conversation shares the same immutable snapshot. If a creator updates their agent personality, boundaries, or model choice, the change only takes effect after a full process restart.
 
-## What Claudy Does
+This is fine for a single-creator, single-instance deployment. It becomes a problem when:
+- A creator wants to iterate on their agent's personality without downtime
+- The platform needs to force-disable a tool or downgrade a model during an incident
+- New agent capabilities need gradual rollout across creators
 
-Claudy has a multi-source configuration system with live updates:
+## Current State of the Codebase
 
-### Configuration Sources (priority order)
-1. CLI flags (highest priority)
-2. Environment variables
-3. `~/.claude/config.json` — user settings, **watched for changes**
-4. Remote Managed Settings — org policies via MDM/SAML
-5. Feature Gates — Statsig feature flags, cached and refreshed per query
+### Config loading (`src/config/loader.ts`)
+- `loadConfig()` reads YAML from disk, interpolates env vars, validates via Zod, returns `AgentConfig`
+- Called exactly once in `src/index.ts` at startup
+- The resulting `AgentConfig` is passed by reference to `Agent`, `SessionManager`, `TurnExecutor`, route handlers
 
-### Hot-Reload
-- File watchers on `~/.claude/config.json` — changes apply without restart
-- Skill directory watchers — new skills discovered automatically
-- Settings sync via `onChangeAppState` callback
+### Config is captured at construction, never refreshed
+- `SessionManager` derives `runtimeConfig` (fork limits, hook timeouts, session memory) in its constructor — all sessions share this snapshot
+- `TurnExecutor` builds `contextDeps` (TokenBudget, ToolResultPersistence, Microcompact) in its constructor — never rebuilt
+- `ModelClientFactory` creates one `ModelClient` singleton on first call — provider and API key frozen
+- `ToolRegistry` registers tools at startup based on `config.soul.tools` — no add/remove after init
+- `SystemPromptBuilder` caches "stable" prompt sections globally — `clearCache()` exists but is never called
 
-### Feature Gates (`services/analytics/growthbook.ts`)
-- `getDynamicConfig_BLOCKS_ON_INIT()` — load feature flags during startup
-- `checkStatsigFeatureGate_CACHED_MAY_BE_STALE()` — check before each new turn
-- Feature branching: model selection, tool availability, behavior toggles
-- Cached with staleness tolerance
+### Protocol carries no config
+- `/v1/task` request body: `{ request_id, conversation_id, message, history }` — no config fields
+- `TurnSubmission` internal type: same four fields plus optional `promptHistory` and `signal`
+- No config version in health endpoint response
 
-### Settings Validation
-- Schema validation of config entries
-- Permission rule parsing
-- MDM/policy enforcement
-- Deprecation warnings
+### What can't change without restart
+| Component | Frozen at | Would need |
+|-----------|-----------|------------|
+| Soul (personality, tone, boundaries) | `SessionManager` constructor | Prompt cache clear + rebuild |
+| Model (provider, name, API key) | `ModelClientFactory.createClient()` | New client instance |
+| Tools (allow_web_search) | `createToolRegistry()` | Registry mutation or replacement |
+| Limits (max_turns, max_concurrent) | Various constructors | Field-level update |
+| Context (session memory, compaction) | `TurnExecutor` constructor | Rebuild contextDeps |
+| Auth (api_key, signing_secret) | HMAC middleware closure | Re-read from config |
 
-### Key Pattern
-Config is not a one-time read. It's a reactive stream that flows through the runtime. Changes to config produce state changes, and state changes trigger side effects through the observer pattern (track 06).
+## What Claudy Does (and What We Borrow)
 
-## Current DigitalMe Agent Situation
+Claudy treats config as a reactive stream — file watchers detect changes, caches are invalidated, and state changes propagate through an observer pattern to React components. We borrow three concepts:
 
-- Creator config is Zod-validated YAML loaded at session creation
-- No hot-reload — config changes require new session or restart
-- No feature gates for gradual rollout
-- No config versioning — can't track which config version produced which behavior
-- No platform-level config overrides
-- No config change events
+1. **Config is versioned** — every config carries a content hash so the runtime knows when it changed
+2. **Changes are diffed, not blindly reloaded** — detect which fields changed, apply only the relevant side effects
+3. **Priority chain** — multiple config sources merged in a defined order
 
-If a creator updates their agent personality or boundaries, the change only takes effect for new sessions. Active sessions continue with stale config.
+We do NOT borrow:
+- File system watchers (our config comes from the platform request, not local files)
+- CLI flag overrides (no CLI interface)
+- MDM/SAML policy enforcement (platform concern)
+- Statsig/GrowthBook integration (too heavy; simple gates suffice)
+- Zustand-like store or React reactivity (we're a server, not a desktop app)
 
-## What To Borrow
+## Design
 
-### 1. Creator Config Versioning
+### Config Reloadability Classification
 
-Every config should carry a version so the runtime knows when it changed:
+Not all config fields should be hot-reloadable. Some (like `server.port` or `auth.signing_secret`) are wired into infrastructure that can't safely change at runtime.
+
+**Hot-reloadable** (change takes effect on next turn):
+- `soul.*` — personality, tone, boundaries, knowledge, system_prompt_override/append
+- `soul.tools.*` — tool enable/disable
+- `limits.max_turns` — per-turn limit
+- `limits.max_message_length`, `limits.max_history_messages` — request validation
+- `context.session_memory.*` — memory extraction settings
+- `model.name` — model name (same provider)
+- `model.max_output_tokens` — output token limit
+- `fallback_model.*` — fallback model config
+
+**Restart-required** (ignored in hot-reload, logged as warning):
+- `server.*` — port, bind address
+- `auth.*` — API key, signing secret
+- `model.provider` — switching provider requires new client class
+- `model.api_key` — credential rotation requires new client
+- `context.tool_result_persistence.storage_dir` — filesystem path
+- `security.*` — HMAC tolerance
+
+The agent logs a warning when the platform sends a config change for a restart-required field and includes the field name in the response so the platform knows the change was deferred.
+
+### Protocol Extension: `/v1/task` Request
+
+The platform sends creator config (or a version identifier) with each task request. The request body gains three optional fields:
 
 ```typescript
-interface VersionedCreatorConfig {
-  /** Content hash of the config */
-  version: string;
-  /** When this version was loaded */
-  loadedAt: number;
-  /** The actual config */
-  config: CreatorConfig;
-}
+// Extension to turnRequestSchema
+const turnRequestSchema = z.object({
+  request_id: z.string().min(1),
+  conversation_id: z.string().min(1),
+  message: z.string().min(1),
+  history: z.array(historyMessageSchema),
+
+  // --- New fields (all optional for backward compat) ---
+
+  /** SHA-256 hash of the creator's current config. */
+  config_version: z.string().optional(),
+
+  /** Full creator config, sent when agent reports a version mismatch
+   *  or on first request. Omitted when version matches. */
+  creator_config: creatorConfigSchema.optional(),
+
+  /** Platform-level overrides that take precedence over creator config. */
+  platform_overrides: platformOverridesSchema.optional(),
+});
 ```
 
-On each new turn request:
-- Platform sends current config version (or the full config) with the request
-- Agent compares against cached version
-- If different: reload config, update session prompt, log config change event
+**Flow:**
+
+1. Platform always sends `config_version` (a SHA-256 of the creator's config).
+2. On first request (no cached config) or version mismatch, platform also sends `creator_config` with the full config body.
+3. Agent caches the config keyed by version hash. On subsequent requests with the same version, the cached config is used.
+4. `platform_overrides` are sent whenever active (incident response, compliance) and merged on top.
+5. If none of the new fields are present (old platform), agent uses its startup `config.yaml` — full backward compatibility.
+
+**Why full config in the request, not a fetch-from-platform approach:**
+- No additional round-trip or new endpoint needed
+- Config arrives atomically with the request that needs it
+- No partial-fetch failure modes
+- Platform already knows the config — just include it
+
+### Creator Config Schema
+
+This is the subset of `AgentConfig` that a creator controls and the platform can send per-request. It maps to the hot-reloadable fields:
 
 ```typescript
-function shouldReloadConfig(
-  cached: VersionedCreatorConfig,
-  incoming: { version: string },
-): boolean {
-  return cached.version !== incoming.version;
-}
+const creatorConfigSchema = z.object({
+  soul: z.object({
+    name: z.string().min(1),
+    description: z.string().min(1),
+    tone: z.string().optional().nullable(),
+    boundaries: z.string().optional().nullable(),
+    knowledge: z.string().optional().nullable(),
+    others: z.string().optional().nullable(),
+    system_prompt_override: z.string().optional().nullable(),
+    system_prompt_append: z.string().optional().nullable(),
+    tools: z.object({
+      allow_web_search: z.boolean().default(false),
+    }).default({ allow_web_search: false }),
+  }),
+  model: z.object({
+    name: z.string().min(1),
+    max_output_tokens: z.number().int().positive().optional(),
+  }).optional(),
+  fallback_model: modelSchema.optional(),
+  limits: z.object({
+    max_turns: z.number().int().positive().optional(),
+    max_message_length: z.number().int().positive().optional(),
+    max_history_messages: z.number().int().positive().optional(),
+  }).optional(),
+  context: z.object({
+    session_memory: z.object({
+      enabled: z.boolean().optional(),
+      tokens_between_updates: z.number().int().positive().optional(),
+      tool_calls_between_updates: z.number().int().positive().optional(),
+    }).optional(),
+  }).optional(),
+});
+
+export type CreatorConfig = z.infer<typeof creatorConfigSchema>;
 ```
 
-### 2. Config Hot-Reload for Active Sessions
+Note: `model.provider`, `model.api_key`, `auth.*`, `server.*` are intentionally excluded — those are infrastructure concerns that require restart.
 
-When config changes mid-conversation:
-
-```typescript
-interface ConfigChangeEffect {
-  /** Fields that changed */
-  changedFields: string[];
-  /** Whether system prompt needs rebuild */
-  requiresPromptRebuild: boolean;
-  /** Whether guardrails need re-evaluation */
-  requiresGuardrailReload: boolean;
-  /** Whether model routing needs update */
-  requiresModelRouteUpdate: boolean;
-}
-
-function applyConfigChange(
-  session: SessionRuntime,
-  oldConfig: CreatorConfig,
-  newConfig: CreatorConfig,
-): ConfigChangeEffect {
-  const changes = diffConfig(oldConfig, newConfig);
-
-  if (changes.includes('personality') || changes.includes('system_prompt')) {
-    session.rebuildSystemPrompt(newConfig);
-  }
-  if (changes.includes('guardrails')) {
-    session.reloadGuardrails(newConfig.guardrails);
-  }
-  if (changes.includes('models')) {
-    session.updateModelRouting(newConfig.models);
-  }
-
-  return { changedFields: changes, ... };
-}
-```
-
-### 3. Platform-Level Config Overrides
-
-The platform should be able to inject runtime overrides that take precedence over creator config:
+### Platform Overrides Schema
 
 ```typescript
-interface PlatformOverrides {
+const platformOverridesSchema = z.object({
   /** Force-disable specific tools across all creators */
-  disabledTools?: string[];
-  /** Force model downgrade (e.g., during incident) */
-  forceModel?: string;
-  /** Force rate limit (e.g., during capacity crunch) */
-  maxTurnsPerMinute?: number;
-  /** Force guardrails (e.g., regulatory compliance) */
-  requiredGuardrails?: GuardrailRule[];
+  disabled_tools: z.array(z.string()).optional(),
+  /** Force model name (e.g., downgrade during incident) */
+  force_model: z.string().optional(),
+  /** Force max turns per task */
+  force_max_turns: z.number().int().positive().optional(),
+  /** Append to agent boundaries (e.g., regulatory compliance) */
+  appended_boundaries: z.string().optional(),
+});
+
+export type PlatformOverrides = z.infer<typeof platformOverridesSchema>;
+```
+
+Platform overrides are deliberately narrow — they restrict or constrain, never expand. A platform override can disable a tool but not enable one the creator didn't configure. It can cap max_turns but not raise it beyond the creator's limit.
+
+### Versioned Config
+
+```typescript
+interface VersionedConfig {
+  /** SHA-256 of the serialized creator config */
+  version: string;
+  /** When this version was first seen */
+  loadedAt: number;
+  /** The validated config */
+  config: CreatorConfig;
+  /** Platform overrides active at load time */
+  overrides?: PlatformOverrides;
+  /** The merged effective config (creator + overrides) */
+  effective: EffectiveConfig;
 }
 ```
 
-Priority: Platform overrides > Creator config > Defaults
+The version hash is computed by the platform (it owns the config). The agent trusts the hash and uses it for comparison only — it does not recompute the hash.
 
-### 4. Feature Gates for Gradual Rollout
+### Config Differ
 
-Simple feature gate system for rolling out new agent capabilities:
-
-```typescript
-interface FeatureGate {
-  name: string;
-  enabled: boolean;
-  /** Percentage of creators this is enabled for (0-100) */
-  rolloutPercent?: number;
-  /** Specific creator IDs to enable for */
-  allowlist?: string[];
-}
-
-// Usage in code:
-if (featureGates.isEnabled('session_memory_v2', creatorId)) {
-  // Use new memory extraction
-} else {
-  // Use existing behavior
-}
-```
-
-Implementation options:
-- **Simple**: JSON file of gates, checked at startup and per-request
-- **Medium**: Platform sends gates with each request
-- **Advanced**: Remote config service (not needed yet)
-
-### 5. Config Validation Lifecycle
-
-Validate config at multiple points:
+Detects which fields changed between two configs and maps them to required actions:
 
 ```typescript
-// At load time: full schema validation
-const validated = creatorConfigSchema.safeParse(raw);
-
-// At runtime: warn on deprecated fields
-function checkDeprecations(config: CreatorConfig): Deprecation[] {
-  // e.g., 'model' field deprecated in favor of 'models.primary'
+interface ConfigDiff {
+  changedFields: string[];  // dot-path: 'soul.tone', 'model.name', etc.
+  actions: ConfigChangeAction[];
 }
 
-// At change time: validate the diff is safe
-function validateConfigChange(
+type ConfigChangeAction =
+  | { type: 'rebuild_prompt' }        // soul.* changed
+  | { type: 'update_tool_registry' }  // soul.tools.* changed
+  | { type: 'update_model' }          // model.name or max_output_tokens changed
+  | { type: 'update_limits' }         // limits.* changed
+  | { type: 'update_session_memory' } // context.session_memory.* changed
+  | { type: 'restart_required'; fields: string[] }; // non-reloadable field changed
+
+function diffConfig(
   oldConfig: CreatorConfig,
   newConfig: CreatorConfig,
-): ValidationResult {
-  // Check for dangerous transitions:
-  // - Model downgrade that might break conversation
-  // - Guardrail removal mid-conversation
-  // - Boundary change that contradicts recent responses
+): ConfigDiff {
+  // Deep comparison of each top-level section
+  // Returns only the actions needed for the specific fields that changed
 }
 ```
 
-### 6. Config Change Audit Trail
+### Config Reloader
 
-Record config changes for debugging and compliance:
+Applies a `ConfigDiff` to the running agent. This is where the architectural blockers are addressed:
 
 ```typescript
-interface ConfigChangeEvent {
+class ConfigReloader {
+  constructor(
+    private readonly promptBuilder: SystemPromptBuilder,
+    private readonly sessionManager: SessionManager,
+    private readonly modelClientFactory: ModelClientFactory,
+    private readonly toolRegistry: ToolRegistry,
+  ) {}
+
+  apply(diff: ConfigDiff, newConfig: EffectiveConfig): ConfigReloadResult {
+    const applied: string[] = [];
+    const deferred: string[] = [];
+
+    for (const action of diff.actions) {
+      switch (action.type) {
+        case 'rebuild_prompt':
+          // SystemPromptBuilder already has clearCache() — call it,
+          // then update the PromptContext source so next build()
+          // uses the new soul values.
+          this.promptBuilder.clearCache();
+          applied.push('prompt');
+          break;
+
+        case 'update_tool_registry':
+          // ToolRegistry needs a reload() method (new):
+          // - Compare current tools vs. new config
+          // - Register/unregister as needed
+          // - In-flight turns keep their existing registry snapshot
+          this.toolRegistry.reload(newConfig);
+          applied.push('tools');
+          break;
+
+        case 'update_model':
+          // ModelClientFactory needs a replaceClient() method (new):
+          // - Create new client from updated model config
+          // - Swap the singleton reference
+          // - Old client is not closed — in-flight requests complete naturally
+          //   (HTTP clients are stateless, no connection to drain)
+          this.modelClientFactory.replaceClient(newConfig.model);
+          applied.push('model');
+          break;
+
+        case 'update_limits':
+          // Limits are read from config on each request (validateTurnLimits),
+          // so updating the config reference is sufficient.
+          applied.push('limits');
+          break;
+
+        case 'update_session_memory':
+          // Session memory config is captured in SessionRuntimeConfig.
+          // SessionManager needs an updateRuntimeConfig() method (new).
+          // Existing sessions keep old config; new sessions get new config.
+          this.sessionManager.updateRuntimeConfig(newConfig);
+          applied.push('session_memory');
+          break;
+
+        case 'restart_required':
+          // Log warning, include in response
+          deferred.push(...action.fields);
+          break;
+      }
+    }
+
+    return { applied, deferred };
+  }
+}
+```
+
+### Architectural Blocker Resolutions
+
+**1. SystemPromptBuilder cache**
+
+The builder already has `clearCache()` — it's just never called. On config change affecting `soul.*`:
+- Call `clearCache()` to drop cached "stable" sections
+- Update the `PromptContext` source (the config reference) so next `build()` uses new values
+- In-flight turns that already built their prompt are unaffected — they have the prompt string already
+- Next turn builds a fresh prompt from the new config
+
+No structural change to `SystemPromptBuilder` needed.
+
+**2. ModelClientFactory singleton**
+
+Add a `replaceClient(modelConfig)` method:
+
+```typescript
+replaceClient(modelConfig: ModelConfig): void {
+  // Only if provider hasn't changed (provider change = restart required)
+  this.client = createClientFromModelConfig(modelConfig);
+}
+```
+
+The old client reference is not closed or drained. HTTP model clients are stateless — each `complete()` call is an independent HTTP request. In-flight requests hold their own reference to the old client and complete normally. The next `createClient()` call returns the new instance.
+
+If `model.provider` changed, `diffConfig` emits `restart_required` instead of `update_model`.
+
+**3. ToolRegistry static registration**
+
+Add a `reload(config)` method to `ToolRegistry`:
+
+```typescript
+reload(config: EffectiveConfig): void {
+  const desired = new Set<string>();
+  if (config.soul.tools.allow_web_search) desired.add('web_search');
+  // Future: add other tools here
+
+  // Remove tools no longer desired
+  for (const name of this.tools.keys()) {
+    if (!desired.has(name)) this.tools.delete(name);
+  }
+
+  // Add newly desired tools
+  if (desired.has('web_search') && !this.tools.has('web_search')) {
+    this.tools.set('web_search', new WebSearchTool());
+  }
+}
+```
+
+In-flight turns already captured `toolRegistry.listDefinitions()` at the start of their ReAct loop — they keep the old set. Next turn picks up the new registry.
+
+**4. SessionManager config snapshot**
+
+Add `updateRuntimeConfig(config)`:
+
+```typescript
+updateRuntimeConfig(config: EffectiveConfig): void {
+  this.runtimeConfig = deriveRuntimeConfig(config);
+  // Existing sessions keep their old runtimeConfig
+  // New sessions (getOrCreateRuntime) pick up the updated one
+}
+```
+
+Existing sessions are not disrupted. The new config applies to sessions created after the change. This is intentional — changing session memory settings mid-conversation could corrupt extraction state.
+
+### In-Flight Turn Handling
+
+Config changes apply on the **next turn**, not the current one. This is a deliberate design choice:
+
+- A turn in progress has already built its prompt, selected its model client, and is mid-ReAct-loop
+- Interrupting it would require cancellation + retry, adding complexity for no user benefit
+- The platform sends config with each `/v1/task` request, so the next request naturally picks up the change
+
+The flow:
+
+```
+Request N arrives with config_version "abc123"
+  → Agent has no cached config (first request)
+  → Reads creator_config from request body
+  → Caches as version "abc123"
+  → Executes turn with this config
+
+[Creator updates their config on the platform]
+
+Request N+1 arrives with config_version "def456"
+  → Agent compares "def456" != cached "abc123"
+  → Reads creator_config from request body
+  → Diffs old vs new → produces ConfigDiff
+  → Applies ConfigDiff (clear prompt cache, swap model, etc.)
+  → Caches as version "def456"
+  → Executes turn with new config
+```
+
+If two requests arrive concurrently and one carries a config update, the first request to be processed applies the change. The second sees the already-updated cache and proceeds normally. No lock needed — config version comparison and swap is synchronous in the single-threaded event loop.
+
+### Config Merge: Priority Chain
+
+When both `creator_config` and `platform_overrides` are present, they merge:
+
+```typescript
+function mergeEffectiveConfig(
+  base: AgentConfig,          // startup config.yaml (infrastructure defaults)
+  creator: CreatorConfig,     // from request
+  overrides?: PlatformOverrides, // from request
+): EffectiveConfig {
+  // Start with startup config for non-reloadable fields
+  const effective = { ...base };
+
+  // Layer creator config on top (hot-reloadable fields only)
+  effective.soul = creator.soul;
+  if (creator.model) {
+    effective.model = { ...base.model, ...creator.model };
+  }
+  if (creator.limits) {
+    effective.limits = { ...base.limits, ...creator.limits };
+  }
+  // ... etc
+
+  // Apply platform overrides (highest priority, restrictive only)
+  if (overrides?.disabled_tools?.length) {
+    // Remove disabled tools from effective config
+  }
+  if (overrides?.force_model) {
+    effective.model.name = overrides.force_model;
+  }
+  if (overrides?.force_max_turns) {
+    effective.limits.max_turns = Math.min(
+      effective.limits.max_turns,
+      overrides.force_max_turns,
+    );
+  }
+  if (overrides?.appended_boundaries) {
+    effective.soul.boundaries =
+      (effective.soul.boundaries ?? '') + '\n' + overrides.appended_boundaries;
+  }
+
+  return effective;
+}
+```
+
+Priority: **platform overrides > creator config > startup config.yaml**
+
+### Feature Gates
+
+Simple, request-header-driven feature gates for gradual rollout of new agent capabilities:
+
+```typescript
+interface FeatureGates {
+  [gateName: string]: boolean;
+}
+```
+
+Delivered via a request header (not the body — gates are platform infrastructure, not creator config):
+
+```
+X-DigitalMe-Feature-Gates: {"session_memory_v2":true,"effort_routing":false}
+```
+
+Usage in code:
+
+```typescript
+function isGateEnabled(gates: FeatureGates | undefined, name: string): boolean {
+  return gates?.[name] === true;
+}
+
+// In TurnExecutor:
+if (isGateEnabled(gates, 'session_memory_v2')) {
+  // Use new memory extraction
+}
+```
+
+Gate evaluation happens on the platform side (percentage rollout, allowlists, etc.). The agent just receives the resolved boolean decisions. This keeps the agent simple — no rollout logic, no creator ID hashing, no gate storage.
+
+### Error Handling
+
+**Invalid creator config in request:**
+- Zod validation fails → agent returns 422 with validation errors
+- Agent continues using the previously cached config (or startup config if no cache)
+- Does not crash or reject the turn — the fan's message still gets processed
+
+**Config reload partially fails:**
+- Each `ConfigChangeAction` is applied independently
+- If `update_model` fails (e.g., invalid model name), the error is logged and that action is skipped
+- Other actions (prompt rebuild, limit update) still apply
+- The `ConfigReloadResult` reports which actions succeeded and which failed
+- The partially-updated config is NOT cached — next request retries the full reload
+
+**No creator config and no startup config:**
+- Impossible — `loadConfig()` at startup throws if config.yaml is missing or invalid
+- The agent always has a valid startup config as the baseline
+
+### Backward Compatibility
+
+All new request fields are optional:
+
+| Platform version | What it sends | Agent behavior |
+|-----------------|---------------|----------------|
+| Old (no config fields) | `{ request_id, conversation_id, message, history }` | Uses startup `config.yaml` — identical to today |
+| New (version only) | `+ config_version` | Compares version, uses cached or startup config |
+| New (full) | `+ config_version, creator_config` | Caches and applies creator config |
+| New (with overrides) | `+ config_version, creator_config, platform_overrides` | Merges with overrides |
+
+The agent never breaks if the platform doesn't send config fields. The feature is purely additive.
+
+### Health Endpoint Extension
+
+Add config version to health response:
+
+```typescript
+{
+  "status": "ok",
+  "config_version": "sha256:abc123...",  // or "startup" if no request-driven config
+  "config_loaded_at": 1712956800000,
+  // ... existing fields
+}
+```
+
+### Config Change Audit Trail
+
+Every config change emits a structured log entry:
+
+```typescript
+interface ConfigChangeRecord {
   timestamp: number;
-  conversationId: string;
-  creatorId: string;
   previousVersion: string;
   newVersion: string;
   changedFields: string[];
-  source: 'creator_update' | 'platform_override' | 'feature_gate';
+  actions: string[];        // which ConfigChangeActions were applied
+  deferred: string[];       // restart-required fields that were skipped
+  source: 'creator_update' | 'platform_override';
+  conversationId: string;   // which request triggered the change
+  requestId: string;
 }
 ```
 
-Integrates with track 05 (Transcripts) and track 07 (Internal Events).
-
-## What NOT To Borrow
-
-- **File system watchers** — agent loads config from platform, not local files
-- **CLI flag overrides** — no CLI interface for the agent service
-- **MDM/SAML policy enforcement** — platform concern, not agent concern
-- **Statsig/GrowthBook integration** — too heavy; simple gate file or request-header gates are sufficient
-- **Skill directory watchers** — no local skill discovery needed
-
-## Implementation
-
-### Step 1: Versioned Config
-
-- Add version field (content hash) to `CreatorConfig`
-- Platform sends config version with each `/v1/task` request
-- Agent compares and reloads when version changes
-
-Files:
-- `src/config/versioning.ts` — version computation, comparison
-- `src/config/schema.ts` — extend schema
-
-### Step 2: Config Diff and Hot-Reload
-
-- Add `src/config/ConfigDiffer.ts` — detect which fields changed
-- Add `src/config/ConfigReloader.ts` — apply changes to active session
-- Integrate into `SessionRuntime.ts` — check config version on each turn
-
-### Step 3: Platform Overrides
-
-- Add `src/config/PlatformOverrides.ts` — merge platform overrides with creator config
-- Accept overrides in `/v1/task` request body
-- Override priority chain: platform > creator > defaults
-
-### Step 4: Feature Gates
-
-- Add `src/config/FeatureGates.ts` — simple gate evaluation
-- Gate definitions from config file or request headers
-- Creator-specific gate evaluation (allowlist + percentage rollout)
-
-### Step 5: Config Audit Trail
-
-- Emit config change events to track 07 internal event bus
-- Record in track 05 transcript
-- Include config version in every turn record
-
-## Config Schema Extension
-
-```yaml
-# These fields are managed by the platform, not creator-facing
-_platform:
-  config_version: "sha256:abc123..."
-  overrides:
-    disabled_tools: []
-    force_model: null
-  feature_gates:
-    session_memory_v2: true
-    effort_routing: false
-```
+This is emitted via `console.log` (structured JSON) immediately. Integration with Track 07 (internal event bus) and Track 05 (transcript recording) will be added when those tracks are ready — the audit record format is designed to be compatible but does not depend on them existing.
 
 ## Dependencies
 
-- Track 07 (Events) — config change events
-- Track 05 (Transcripts) — config version in turn records
-- Track 09 (Model Routing) — model changes from config
-- Track 10 (Guardrails) — guardrail changes from config
+### Hard dependencies (must exist before implementation)
+- None. This track can be implemented independently.
+
+### Soft dependencies (integration points, added later)
+- **Track 05 (Transcripts)** — add config version to turn transcript entries. TranscriptRecorder exists but inline recording isn't wired yet. When it is, add `configVersion` field to transcript entries.
+- **Track 07 (Events)** — emit `config_change` as an `AgentEvent`. Currently only `text_delta`, `tool_start`, `tool_end`, `done`, `error`, `recovery` exist. Add when event bus is expanded.
+- **Track 09 (Model Routing)** — `update_model` action in ConfigReloader aligns with model routing. When Track 09 adds background model support, ConfigReloader gains an `update_background_model` action.
+- **Track 10 (Guardrails)** — when guardrails are implemented, ConfigReloader gains an `update_guardrails` action. Until then, guardrail-related config changes are no-ops.
+- **Track 14 (Creator Skills)** — ConfigReloader provides the `reload()` hook that SkillRegistry wires into.
+
+## Implementation Steps
+
+### Step 1: Versioned Config and Protocol Extension
+
+Add the protocol extension and config caching. No reload logic yet — just detect that config changed.
+
+Files to modify:
+- `src/protocol/schemas.ts` — add `config_version`, `creator_config`, `platform_overrides` to `turnRequestSchema`
+- `src/config/schema.ts` — add `creatorConfigSchema`, `platformOverridesSchema`, `VersionedConfig` type
+- `src/config/versioning.ts` (new) — `VersionedConfig` type, cache, version comparison
+
+Files to modify for wiring:
+- `src/routes/turns.ts` — extract new fields from parsed request, pass to agent
+- `src/agent/types.ts` — add config fields to `TurnSubmission`
+
+### Step 2: Config Differ
+
+Diff two `CreatorConfig` instances and produce a list of required actions.
+
+Files:
+- `src/config/ConfigDiffer.ts` (new) — `diffConfig()` function, `ConfigDiff` and `ConfigChangeAction` types
+
+### Step 3: Config Reloader
+
+Apply config diffs to the running agent. This step adds the new methods to existing components.
+
+Files:
+- `src/config/ConfigReloader.ts` (new) — `ConfigReloader` class
+- `src/models/ModelClientFactory.ts` — add `replaceClient()` method
+- `src/tools/registry.ts` — add `reload()` method
+- `src/agent/SessionManager.ts` — add `updateRuntimeConfig()` method
+
+### Step 4: Config Merge and Override Application
+
+Merge creator config with startup config and platform overrides.
+
+Files:
+- `src/config/merge.ts` (new) — `mergeEffectiveConfig()` function, `EffectiveConfig` type
+
+### Step 5: End-to-End Wiring
+
+Connect everything: request → version check → diff → reload → execute.
+
+Files:
+- `src/agent/Agent.ts` — orchestrate config check/reload before submitting turn
+- `src/routes/health.ts` — add config version to health response
+
+### Step 6: Feature Gates
+
+Add request-header-driven feature gates.
+
+Files:
+- `src/config/FeatureGates.ts` (new) — `FeatureGates` type, `isGateEnabled()` helper
+- `src/routes/turns.ts` — parse `X-DigitalMe-Feature-Gates` header
+- `src/agent/types.ts` — add `featureGates` to `TurnSubmission`
+
+### Step 7: Audit Trail and Observability
+
+Structured logging for config changes, health endpoint extension.
+
+Files:
+- `src/config/ConfigReloader.ts` — emit `ConfigChangeRecord` on every reload
+- `src/routes/health.ts` — include config version in response
 
 ## Success Criteria
 
-- Creator config changes take effect within the next turn (not requiring new session)
-- Config version is tracked and auditable
+- Creator config changes take effect on the next turn (not requiring restart or new session)
+- Config version is tracked — health endpoint reports current version
 - Platform can override creator config for safety/operational reasons
-- Feature gates enable gradual rollout of new capabilities
-- Config changes are logged in internal events
-- No config change causes a crash — validation catches invalid transitions
+- Old platforms (no config fields in request) work identically to today
+- In-flight turns are never interrupted by config changes
+- Restart-required fields are detected and logged, not silently ignored
+- Feature gates enable gradual rollout of new capabilities via request headers
+- Config changes are logged with before/after versions, changed fields, and applied actions
+- No config change causes a crash — validation catches invalid configs, partial failures are handled gracefully
