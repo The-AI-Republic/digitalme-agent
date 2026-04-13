@@ -10,7 +10,6 @@ import type {
   SubagentCompletedEntry,
   SubagentFailedEntry,
   HookExecutedEntry,
-  CompactStartedEntry,
   CompactCompletedEntry,
   HookOutcome,
 } from './types.js';
@@ -46,14 +45,9 @@ test('TranscriptEntry.type union includes hook_executed', () => {
   assert.equal(t, 'hook_executed');
 });
 
-test('TranscriptEntry.type union includes compact types', () => {
-  const types: TranscriptEntry['type'][] = [
-    'compact_started',
-    'compact_completed',
-  ];
-  for (const t of types) {
-    assert.ok(typeof t === 'string', `type ${t} should be a string`);
-  }
+test('TranscriptEntry.type union includes compact_completed', () => {
+  const t: TranscriptEntry['type'] = 'compact_completed';
+  assert.equal(t, 'compact_completed');
 });
 
 test('TranscriptEntry.type union includes original types', () => {
@@ -113,14 +107,16 @@ test('SubagentCompletedEntry includes all required fields', () => {
   assert.equal(entry.completedTurns, 3);
 });
 
-test('CompactStartedEntry has pressureBand field', () => {
-  const entry: CompactStartedEntry = {
-    type: 'compact_started',
+test('CompactCompletedEntry has required fields', () => {
+  const entry: CompactCompletedEntry = {
+    type: 'compact_completed',
     conversationId: 'conv-1',
     timestamp: new Date().toISOString(),
     trigger: 'proactive',
-    pressureBand: 'microcompact',
+    messagesRemoved: 3,
+    tokensSaved: 500,
   };
   assert.equal(entry.trigger, 'proactive');
-  assert.equal(entry.pressureBand, 'microcompact');
+  assert.equal(entry.messagesRemoved, 3);
+  assert.equal(entry.tokensSaved, 500);
 });

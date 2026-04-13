@@ -5,7 +5,7 @@ import {
   metrics,
   type SpanContext,
 } from '@opentelemetry/api';
-import { BasicTracerProvider, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { BasicTracerProvider, BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import {
   MeterProvider,
@@ -44,7 +44,7 @@ export function initTelemetry(config: TelemetryConfig): TelemetryProviders {
 
   tracerProvider = new BasicTracerProvider({
     resource,
-    spanProcessors: [new SimpleSpanProcessor(traceExporter)],
+    spanProcessors: [new BatchSpanProcessor(traceExporter)],
   });
 
   // Meter provider with periodic OTLP exporter

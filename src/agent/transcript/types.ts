@@ -1,7 +1,5 @@
 import type { Message, TokenUsage } from '../../models/ModelClient.js';
 import type { ArtifactRef } from '../context/ToolResultPersistence.js';
-import type { PressureBand } from '../context/types.js';
-
 // ----- Entry types -----
 
 export interface TranscriptEntry {
@@ -19,7 +17,6 @@ export interface TranscriptEntry {
     | 'subagent_completed'
     | 'subagent_failed'
     | 'hook_executed'
-    | 'compact_started'
     | 'compact_completed';
   conversationId: string;
   taskId?: string;
@@ -152,12 +149,6 @@ export interface HookExecutedEntry extends TranscriptEntry {
 }
 
 // ----- Context pressure entries -----
-
-export interface CompactStartedEntry extends TranscriptEntry {
-  type: 'compact_started';
-  trigger: 'reactive' | 'proactive';
-  pressureBand: PressureBand;
-}
 
 export interface CompactCompletedEntry extends TranscriptEntry {
   type: 'compact_completed';

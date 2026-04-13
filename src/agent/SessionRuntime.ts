@@ -154,6 +154,7 @@ export class SessionRuntime {
           conversationId: submission.conversationId,
           lastResult: result,
           transcriptRecorder: this.deps.transcriptRecorder,
+          interactionSpanContext: result.interactionSpanContext,
         }).catch(() => {
           // Swallowed — hook errors never crash the main agent
         });

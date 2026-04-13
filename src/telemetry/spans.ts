@@ -5,8 +5,8 @@ import {
   SpanStatusCode,
   type Span,
   type SpanContext,
-  type AttributeValue,
 } from '@opentelemetry/api';
+import { safeAttributes } from './attributes.js';
 
 const TRACER_NAME = 'digitalme-agent';
 
@@ -81,16 +81,16 @@ export function startHookSpan(hookName: string, interactionCtx: SpanContext): Sp
 
 // ----- End helpers -----
 
-export function endSpan(span: Span, attributes?: Record<string, AttributeValue>): void {
+export function endSpan(span: Span, attributes?: Record<string, unknown>): void {
   if (attributes) {
-    span.setAttributes(attributes);
+    span.setAttributes(safeAttributes(attributes));
   }
   span.end();
 }
 
-export function endSpanWithError(span: Span, error: unknown, attributes?: Record<string, AttributeValue>): void {
+export function endSpanWithError(span: Span, error: unknown, attributes?: Record<string, unknown>): void {
   if (attributes) {
-    span.setAttributes(attributes);
+    span.setAttributes(safeAttributes(attributes));
   }
   span.setStatus({
     code: SpanStatusCode.ERROR,
