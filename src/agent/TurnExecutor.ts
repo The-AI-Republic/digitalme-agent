@@ -209,7 +209,7 @@ export class TurnExecutor {
       // Per-model-step context preparation: persistence, microcompact, pressure assessment
       const prepared = await prepareContextForModelCall(
         context.messages,
-        modelName,
+        resolvedModelName,
         executionState.getTokenUsage(),
         context.conversationId,
         this.contextDeps,
@@ -511,8 +511,12 @@ export class TurnExecutor {
         const latencyMs = Date.now() - startTime;
         const category = categorizeApiError(error);
 
-        // Record failure for health tracking
-        this.modelRouter?.recordFailure(currentProvider, request.model, latencyMs, category);
+        // Only record provider-side failures for health tracking.
+        // Request-local errors (context_overflow, auth_error, unknown) are not
+        // indicative of provider health and should not trip the circuit breaker.
+        if (category === 'overloaded' || category === 'rate_limit' || category === 'server_error') {
+          this.modelRouter?.recordFailure(currentProvider, request.model, latencyMs, category);
+        }
 
         if (category === 'context_overflow') {
           return { result: { type: 'context_overflow' as const }, events };
