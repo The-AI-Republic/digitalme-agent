@@ -10,6 +10,7 @@ import type { ToolExecutionResult, Tool, ToolDefinition, ToolMetadata } from '..
 import type { ISystemPromptBuilder, BuiltPrompt, PromptContext } from '../prompts/types.js';
 import { testConfig as config } from '../test/fixtures.js';
 import type { ModelConfig } from '../config/schema.js';
+import { ConversationUsageTracker } from '../usage/ConversationUsageTracker.js';
 import { z } from 'zod';
 
 class FakeModelClient implements ModelClient {
@@ -588,6 +589,98 @@ test('ExecutionOptions.modelConfig uses the configured provider client', async (
   assert.equal(primaryClient.requests.length, 0);
   assert.equal(fastClient.requests[0]?.model, 'claude-haiku');
   assert.equal(fastClient.requests[0]?.maxOutputTokens, 2048);
+});
+
+test('ExecutionOptions.modelConfig records usage with the resolved provider and model', async () => {
+  const primaryClient = new FakeModelClient([
+    { type: 'final_text', text: 'primary' },
+  ]);
+  const fastClient = new FakeModelClient([
+    {
+      type: 'final_text',
+      text: 'fast',
+      tokenUsage: { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 },
+    },
+  ]);
+  const fastModelConfig: ModelConfig = {
+    provider: 'anthropic',
+    name: 'claude-sonnet-4-6',
+    api_key: 'fast-key',
+    base_url: null,
+    max_output_tokens: 2048,
+  };
+
+  const executor = new TurnExecutor(config, {
+    systemPromptBuilder: makeFakeBuilder(),
+    modelClientFactory: {
+      createClient() { return primaryClient; },
+      createFromConfig(modelConfig) {
+        assert.deepEqual(modelConfig, fastModelConfig);
+        return fastClient;
+      },
+    },
+    toolRegistry: makeToolRegistry(makeFakeTool()),
+  });
+
+  const { events } = await collectEvents(executor.run(
+    { requestId: 'req-mdlcfg-usage', conversationId: 'conv-mdlcfg-usage', userMessage: 'hi', history: [] },
+    { modelConfig: fastModelConfig },
+  ));
+
+  const usageEvent = events.find((event) => event.type === 'usage');
+  assert.ok(usageEvent);
+  assert.equal(usageEvent.record.provider, 'anthropic');
+  assert.equal(usageEvent.record.model, 'claude-sonnet-4-6');
+  assert.equal(usageEvent.record.estimatedCostUsd, 3);
+});
+
+test('Cost-aware downgrade emits no recovery event when no downgrade model is configured', async () => {
+  const client = new FakeModelClient([
+    { type: 'final_text', text: 'ok' },
+  ]);
+  const usageTracker = new ConversationUsageTracker('conv-quota');
+  usageTracker.addRecord({
+    requestId: 'prior',
+    conversationId: 'conv-quota',
+    timestamp: Date.now(),
+    provider: 'openai',
+    model: 'gpt-4o',
+    executionContext: 'main',
+    inputTokens: 0,
+    outputTokens: 0,
+    estimatedCostUsd: 0.8,
+    turnNumber: 0,
+    toolCallCount: 0,
+    isRetry: false,
+    isFallback: false,
+  });
+
+  const executor = new TurnExecutor({
+    ...config,
+    quotas: {
+      enabled: true,
+      max_cost_per_conversation_usd: 1,
+      on_quota_exceeded: 'graceful_refuse',
+      quota_warning_threshold: 0.8,
+    },
+    fast_model: undefined,
+    fallback_model: undefined,
+  }, {
+    systemPromptBuilder: makeFakeBuilder(),
+    modelClientFactory: makeTestFactory(client),
+    toolRegistry: makeToolRegistry(makeFakeTool()),
+  });
+
+  const { events } = await collectEvents(executor.run(
+    { requestId: 'req-no-downgrade', conversationId: 'conv-quota', userMessage: 'hi', history: [] },
+    undefined,
+    undefined,
+    usageTracker,
+  ));
+
+  assert.ok(!events.some(
+    (event) => event.type === 'recovery' && event.reason === 'cost_aware_downgrade',
+  ));
 });
 
 test('ExecutionOptions.model bypasses router resolution when a router is injected', async () => {

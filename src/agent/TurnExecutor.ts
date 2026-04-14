@@ -246,8 +246,8 @@ export class TurnExecutor {
         if (downgradeModel) {
           selectedModelConfig = downgradeModel;
           modelName = downgradeModel.name;
+          yield { type: 'recovery', reason: 'cost_aware_downgrade', detail: { from: this.config.model.name, to: modelName } };
         }
-        yield { type: 'recovery', reason: 'cost_aware_downgrade', detail: { from: this.config.model.name, to: modelName } };
       }
 
       // Signal aggressive compaction when approaching quota limits (per-turn flag, not shared state)
@@ -264,9 +264,12 @@ export class TurnExecutor {
     let resolvedProvider = this.config.model.provider;
     let primaryClient: ModelClient;
     if (selectedModelConfig) {
-      primaryClient = this.modelClientFactory.createFromConfig(selectedModelConfig);
+      primaryClient = this.modelRouter
+        ? this.modelRouter.getOrCreateClient(selectedModelConfig)
+        : this.modelClientFactory.createFromConfig(selectedModelConfig);
       resolvedModelName = selectedModelConfig.name;
       resolvedProvider = selectedModelConfig.provider;
+      modelName = selectedModelConfig.name;
     } else if (options?.model) {
       primaryClient = this.modelClientFactory.createClient();
     } else if (this.modelRouter) {
@@ -559,14 +562,15 @@ export class TurnExecutor {
         usageRecorder.setTurnNumber(executionState.getIterationIndex());
         usageRecorder.setToolCallCount(executionState.snapshot().toolCallCount);
         const usageRecord = usageRecorder.record(result.tokenUsage, {
-          model: modelName,
+          provider: resolvedProvider,
+          model: resolvedModelName,
           isRetry: recovery.lastTransition?.reason === 'api_retry',
           isFallback: recovery.fallbackAttempted,
         });
         if (usageRecord) {
           yield { type: 'usage', record: usageRecord };
         }
-        recordTokens(modelName, result.tokenUsage.inputTokens ?? 0, result.tokenUsage.outputTokens ?? 0);
+        recordTokens(resolvedModelName, result.tokenUsage.inputTokens ?? 0, result.tokenUsage.outputTokens ?? 0);
       }
 
       // --- Handle max output truncation ---
