@@ -8,6 +8,7 @@ export type PromptContext = {
   soulSystemPromptOverride?: string | null;
   soulSystemPromptAppend?: string | null;
   approvedToolNames: string[];
+  skillListing?: string | null;
   modelName: string;
   providerName: string;
 };

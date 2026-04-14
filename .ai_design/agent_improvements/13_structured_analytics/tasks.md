@@ -1,4 +1,4 @@
-# 13 — Structured Analytics and Operational Metrics Tasks
+# 13 — Structured Analytics and Operational Metrics Tasks [deferred]
 
 ## Step 1: Event Types and Logger
 

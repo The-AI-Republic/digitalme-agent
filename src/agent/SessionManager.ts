@@ -10,6 +10,10 @@ import { TurnExecutor } from './TurnExecutor.js';
 import { TranscriptRecorder } from './transcript/TranscriptRecorder.js';
 import type { ITranscriptRecorder } from './transcript/types.js';
 import { UsageAggregator } from '../usage/UsageAggregator.js';
+import { ToolRegistry, createToolRegistry } from '../tools/registry.js';
+import { SkillRegistry } from '../skills/SkillRegistry.js';
+import { buildSkillListingSection } from '../skills/SkillListingBuilder.js';
+import { createCreatorSkillTool } from '../tools/CreatorSkillTool.js';
 
 export interface SessionManagerDeps {
   getState?: () => ProcessRuntimeState;
@@ -25,6 +29,7 @@ export class SessionManager {
   private readonly storageDir: string;
   private readonly getProcessState: () => ProcessRuntimeState;
   readonly usageAggregator: UsageAggregator;
+  private readonly skillRegistry?: SkillRegistry;
 
   constructor(
     private readonly config: AgentConfig,
@@ -33,10 +38,38 @@ export class SessionManager {
     this.getProcessState = deps.getState ?? (() => initialProcessRuntimeState());
     this.transcriptRecorder = deps.transcriptRecorder ?? new TranscriptRecorder();
     this.usageAggregator = new UsageAggregator();
-    this.turnExecutor = deps.turnExecutor ?? new TurnExecutor(config, {
-      transcriptRecorder: this.transcriptRecorder,
-      usageAggregator: this.usageAggregator,
-    });
+    if (deps.turnExecutor) {
+      this.turnExecutor = deps.turnExecutor;
+    } else {
+      const skillRegistry = new SkillRegistry();
+      skillRegistry.load(config.skills.bundled_dir, config.skills.local_dir);
+      this.skillRegistry = skillRegistry;
+      if (skillRegistry.size > 0) {
+        console.log(`Loaded ${skillRegistry.size} skills: ${skillRegistry.list().map((skill) => skill.name).join(', ')}`);
+      }
+
+      const skillListing = buildSkillListingSection(skillRegistry.list());
+      const toolRegistry: ToolRegistry = createToolRegistry(config);
+
+      const turnExecutor = new TurnExecutor(config, {
+        transcriptRecorder: this.transcriptRecorder,
+        toolRegistry,
+        skillListing,
+        usageAggregator: this.usageAggregator,
+      });
+
+      if (skillRegistry.size > 0) {
+        toolRegistry.register(createCreatorSkillTool({
+          skillRegistry,
+          turnExecutor,
+          parentToolRegistry: toolRegistry,
+          defaultModelName: config.model.name,
+          getSessionRuntime: (conversationId) => this.sessions.get(conversationId),
+        }));
+      }
+
+      this.turnExecutor = turnExecutor;
+    }
     this.storageDir = config.context.tool_result_persistence.storage_dir;
     const sm = config.context.session_memory;
     this.runtimeConfig = {

@@ -53,34 +53,62 @@ Claudy has comprehensive cost and quota management:
 Every model call should produce a structured usage record:
 
 ```typescript
+type UsageExecutionContext = 'primary_turn' | 'fallback_turn' | 'background_turn';
+
 interface ModelUsageRecord {
   requestId: string;
   conversationId: string;
-  creatorId: string;
   timestamp: number;
 
   // Model details
   provider: string;
   model: string;
-  executionContext: ExecutionContext;  // from track 09
+  executionContext: UsageExecutionContext;
 
   // Token counts
   inputTokens: number;
   outputTokens: number;
+  totalTokens: number;
+
+  // Optional provider-specific usage extensions
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
-  thinkingTokens?: number;
+  reasoningTokens?: number;
 
   // Cost (computed from token counts + pricing)
   estimatedCostUsd: number;
 
   // Context
+  modelCallIndex: number;
   turnNumber: number;
   toolCallCount: number;
   isRetry: boolean;
   isFallback: boolean;
 }
 ```
+
+Important integration detail:
+- Recording must happen immediately after every `ModelClient.generate()` call returns, before the ReAct loop continues.
+- This is not derived from the final turn result, because one turn may contain multiple model calls from tool loops, retries, max-output recovery, or fallback attempts.
+- `TurnExecutionState.tokenUsage` can remain as a summary field for compatibility, but usage accounting must append per-call `ModelUsageRecord`s instead of overwriting a single value.
+
+To support this, usage extraction needs an explicit provider-normalization layer:
+
+```typescript
+interface ExtendedTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+}
+```
+
+Each model client should map provider-specific response fields into `ExtendedTokenUsage`. For example:
+- Anthropic: include cache read/write token counts when present
+- OpenAI-compatible providers: include reasoning token details when exposed
+- Providers without extended fields still populate the base `input/output/total` fields
 
 ### 2. Conversation-Level Cost Accumulation
 
@@ -89,12 +117,12 @@ Track cumulative cost per conversation:
 ```typescript
 interface ConversationUsage {
   conversationId: string;
-  creatorId: string;
   startedAt: number;
   lastUpdatedAt: number;
 
   totalInputTokens: number;
   totalOutputTokens: number;
+  totalTokens: number;
   totalEstimatedCostUsd: number;
 
   turnCount: number;
@@ -109,6 +137,8 @@ interface ConversationUsage {
   costByModel: Record<string, number>;
 }
 ```
+
+`creatorId` is intentionally omitted from per-request and per-conversation runtime types. Each agent process serves a single creator, so creator identity comes from loaded config and can be attached only when exporting usage to the platform.
 
 ### 3. Creator-Level Quota Enforcement
 
@@ -141,6 +171,12 @@ Enforcement points:
 - **After model call**: Update usage counters, check if limits reached
 - **Before next turn**: Verify conversation hasn't exceeded turn/cost limits
 
+Scope split:
+- The agent is the source of truth for per-conversation quotas (`maxCostPerConversation`, `maxTokensPerConversation`, `maxTurnsPerConversation`)
+- Daily and monthly quotas require durable aggregation across restarts
+- The cleanest long-term split is for the platform to enforce daily/monthly creator budgets, while the agent still emits durable usage data needed for that enforcement
+- If temporary agent-side daily/monthly enforcement is needed before platform support exists, it must use persisted rolling totals rather than in-memory counters
+
 ### 4. Model Pricing Registry
 
 Maintain a pricing table for cost estimation:
@@ -163,6 +199,11 @@ const PRICING: ModelPricing[] = [
 ];
 ```
 
+Pricing should not be hardcoded in business logic. Preferred shape:
+- Store pricing in config or a versioned data file loaded at startup
+- Document that estimates are approximate and intended for quota guidance and billing telemetry, not exact invoice reconciliation
+- Preserve the success criterion that estimates stay within roughly 10% of provider billing
+
 ### 5. Usage Reporting API
 
 Expose usage data for the platform:
@@ -175,11 +216,7 @@ interface UsageReport {
   totalTokens: { input: number; output: number };
   conversationCount: number;
   avgCostPerConversation: number;
-  topCreatorsByUsage: Array<{
-    creatorId: string;
-    totalCostUsd: number;
-    conversationCount: number;
-  }>;
+  creatorId?: string;
 }
 ```
 
@@ -197,6 +234,12 @@ Usage data should influence runtime behavior:
 
 This connects to track 09 (Model Routing): quota pressure becomes a routing signal.
 
+Track 09 dependency note:
+- Step 5 depends on Track 09 runtime pieces that do not exist yet in the current codebase
+- Specifically: `background_model` config support, `ModelClientFactory.createBackgroundClient()`, and model-routing types for execution context
+- Tracks 1-4 in this document should be implementable without Track 09 by using the local `UsageExecutionContext` enum above
+- Step 5 should remain explicitly conditional until Track 09 lands, or Track 11 should pull in the minimal background-model plumbing as a prerequisite
+
 ## What NOT To Borrow
 
 - **Real-time cost display UI** — platform concern, not agent concern
@@ -206,6 +249,12 @@ This connects to track 09 (Model Routing): quota pressure becomes a routing sign
 
 ## Implementation
 
+### Step 0: Provider Usage Extraction
+
+- Extend model usage normalization to support provider-specific token fields
+- Update model clients to populate `ExtendedTokenUsage` from API responses
+- Preserve backward compatibility for callers that only read `input/output/total`
+
 ### Step 1: Usage Record Types
 
 - Add `src/usage/types.ts` — `ModelUsageRecord`, `ConversationUsage`, `CreatorQuota`
@@ -214,16 +263,21 @@ This connects to track 09 (Model Routing): quota pressure becomes a routing sign
 ### Step 2: Request-Level Recording
 
 - Add `src/usage/UsageRecorder.ts`
+- Hook recording directly into every `ModelClient.generate()` call site in `TurnExecutor`
 - Capture token counts from every model API response
 - Compute estimated cost using pricing registry
 - Emit to track 07 internal events
+- Track call metadata: retry, fallback, and execution context
+- Append per-call records; do not derive usage only from the final turn result
 
 ### Step 3: Conversation-Level Accumulation
 
 - Add `src/usage/ConversationUsageTracker.ts`
 - Accumulate usage across turns within `SessionState`
+- Aggregate forked/background usage into the parent conversation usage totals
 - Include in transcript records (track 05)
 - Persist to allow cold-start restoration
+- Transcript persistence should be append-only per usage record, with checkpointed conversation totals for fast restoration after restart
 
 ### Step 4: Quota Enforcement
 
@@ -231,9 +285,12 @@ This connects to track 09 (Model Routing): quota pressure becomes a routing sign
 - Pre-turn quota check integrated into `TurnExecutor.ts`
 - Post-turn usage update
 - Graceful refusal message when quota exceeded
+- Enforce per-conversation limits in-agent
+- Treat daily/monthly budget enforcement as platform-owned unless temporary persisted rolling totals are added locally
 
 ### Step 5: Cost-Aware Routing Integration
 
+- Conditional on Track 09, or pull in its minimal background-model plumbing here
 - Wire quota pressure into track 09 `ModelRouter`
 - When approaching limits: prefer background model, increase compaction aggressiveness
 - When exceeded: refuse with creator-configured message
@@ -265,6 +322,7 @@ quotas:
 ## Success Criteria
 
 - Every model call produces a structured usage record
+- Multi-call turns preserve all model-call usage, not just the final call
 - Conversation-level cost is tracked and available to the runtime
 - Creator quota limits are enforced before model calls
 - Quota exceeded results in graceful degradation, not silent failure

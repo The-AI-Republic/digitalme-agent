@@ -1,6 +1,7 @@
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
 import { generateId, type Message, type ToolCall, type ModelStepResult, type ModelClient } from '../models/ModelClient.js';
+import type { ModelRouter } from '../models/ModelRouter.js';
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
 import { TemplateLoader } from '../prompts/TemplateLoader.js';
 import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
@@ -24,7 +25,21 @@ import {
 } from './types/recovery.js';
 import { categorizeApiError, exponentialBackoff } from './apiRetry.js';
 import { tryReactiveCompact } from './reactiveCompact.js';
-import type { ITranscriptRecorder } from './transcript/types.js';
+import type { ITranscriptRecorder, CompactCompletedEntry } from './transcript/types.js';
+import {
+  startInteractionSpan,
+  startModelCallSpan,
+  endSpan,
+  endSpanWithError,
+} from '../telemetry/spans.js';
+import {
+  recordTurnCompleted,
+  recordModelCall,
+  recordTokens,
+  recordToolCall,
+  recordError,
+} from '../telemetry/metrics.js';
+import type { Span, SpanContext } from '@opentelemetry/api';
 import { UsageRecorder } from '../usage/UsageRecorder.js';
 import { ConversationUsageTracker } from '../usage/ConversationUsageTracker.js';
 import { CostAwareRouter } from '../usage/CostAwareRouter.js';
@@ -47,17 +62,20 @@ class RecoveryError extends Error {
 export interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
+  modelRouter?: ModelRouter;
   toolRegistry?: IToolRegistry;
   toolPolicyChecker?: IToolPolicyChecker;
   toolExecutor?: ToolExecutor;
   contextDeps?: PrepareContextDeps;
   transcriptRecorder?: ITranscriptRecorder;
   usageAggregator?: UsageAggregator;
+  skillListing?: string | null;
 }
 
 export class TurnExecutor {
   private readonly systemPromptBuilder: ISystemPromptBuilder;
   private readonly modelClientFactory: IModelClientFactory;
+  private readonly modelRouter?: ModelRouter;
   private readonly toolRegistry: IToolRegistry;
   private readonly toolExecutor: ToolExecutor;
   private readonly policyChecker: IToolPolicyChecker;
@@ -65,6 +83,7 @@ export class TurnExecutor {
   private readonly transcriptRecorder?: ITranscriptRecorder;
   private readonly costAwareRouter?: CostAwareRouter;
   private readonly usageAggregator?: UsageAggregator;
+  private readonly skillListing: string | null;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
     this.toolRegistry = deps.toolRegistry ?? createToolRegistry(config);
@@ -76,6 +95,12 @@ export class TurnExecutor {
     this.contextDeps = deps.contextDeps ?? this.buildDefaultContextDeps();
     this.transcriptRecorder = deps.transcriptRecorder;
     this.usageAggregator = deps.usageAggregator;
+    this.skillListing = deps.skillListing ?? null;
+    // Only auto-enable router behavior when task-specific routing is configured.
+    // This preserves existing fallback_model semantics for configs that have only
+    // schema-default routing values.
+    this.modelRouter = deps.modelRouter
+      ?? (this.hasTaskSpecificRouting() ? this.modelClientFactory.getRouter?.() : undefined);
 
     // Initialize cost-aware routing if quotas are enabled
     const quotas = config.quotas;
@@ -95,6 +120,11 @@ export class TurnExecutor {
         },
       });
     }
+  }
+
+  private hasTaskSpecificRouting(): boolean {
+    const taskModels = this.config.routing.task_models;
+    return Boolean(taskModels.summary || taskModels.extraction || taskModels.forked);
   }
 
   private buildDefaultContextDeps(): PrepareContextDeps {
@@ -140,6 +170,12 @@ export class TurnExecutor {
     let modelName = options?.model ?? this.config.model.name;
     const toolRegistry = options?.toolRegistry ?? this.toolRegistry;
     const recorder = this.transcriptRecorder;
+
+    // Start interaction span — capture context for background work
+    const interactionSpan: Span = startInteractionSpan(submission.conversationId);
+    const capturedSpanContext: SpanContext = interactionSpan.spanContext();
+    const turnStartTime = Date.now();
+    let spanEnded = false;
 
     const executionState = activeTurn?.executionState ?? new TurnExecutionState();
 
@@ -188,6 +224,21 @@ export class TurnExecutor {
     // Increment turn count
     usageTracker?.incrementTurnCount();
 
+    // Resolve the model before prompt construction so the prompt can reference the resolved model
+    let resolvedModelName = modelName;
+    let resolvedProvider = this.config.model.provider;
+    let primaryClient: ModelClient;
+    if (options?.model) {
+      primaryClient = this.modelClientFactory.createClient();
+    } else if (this.modelRouter) {
+      const { client, decision } = this.modelRouter.resolveClient('primary');
+      primaryClient = client;
+      resolvedModelName = decision.modelConfig.name;
+      resolvedProvider = decision.modelConfig.provider;
+    } else {
+      primaryClient = this.modelClientFactory.createClient();
+    }
+
     const history = submission.promptHistory ?? submission.history.map((item) => ({
       role: item.role as Message['role'],
       content: item.content,
@@ -204,8 +255,9 @@ export class TurnExecutor {
       soulSystemPromptOverride: this.config.soul.system_prompt_override ?? null,
       soulSystemPromptAppend: this.config.soul.system_prompt_append ?? null,
       approvedToolNames: toolRegistry.listNames(),
-      modelName,
-      providerName: this.config.model.provider,
+      skillListing: this.skillListing,
+      modelName: resolvedModelName,
+      providerName: resolvedProvider,
     };
 
     const builtPrompt = this.systemPromptBuilder.build(promptContext);
@@ -222,7 +274,6 @@ export class TurnExecutor {
     ];
 
     const context = new TurnContext(submission, initialMessages);
-    const primaryClient = this.modelClientFactory.createClient();
     const recovery = initialRecoveryState();
     const toolSummaries: ToolSummaryEntry[] = [];
     const resultBudget = new ResultBudget(); // fresh per request
@@ -247,6 +298,7 @@ export class TurnExecutor {
       });
     }
 
+    try {
     while (executionState.getIterationIndex() < maxTurns) {
       this.throwIfAborted(context.signal);
       executionState.incrementIteration();
@@ -255,7 +307,7 @@ export class TurnExecutor {
       // Per-model-step context preparation: persistence, microcompact, pressure assessment
       const prepared = await prepareContextForModelCall(
         context.messages,
-        modelName,
+        resolvedModelName,
         executionState.getTokenUsage(),
         context.conversationId,
         this.contextDeps,
@@ -266,13 +318,40 @@ export class TurnExecutor {
         context.messages.push(...prepared.messages);
       }
 
+      // Record context compaction to transcript
+      if (prepared.compactionType && recorder) {
+        const trigger = prepared.compactionType === 'reactive' ? 'reactive' as const : 'proactive' as const;
+        const completedEntry: CompactCompletedEntry = {
+          type: 'compact_completed',
+          conversationId: submission.conversationId,
+          taskId: submission.requestId,
+          turnId: activeTurn?.turnId,
+          timestamp: new Date().toISOString(),
+          trigger,
+          messagesRemoved: prepared.messagesRemoved,
+          tokensSaved: prepared.tokensSaved,
+        };
+        recorder.recordLifecycleEvent(completedEntry).catch(() => {});
+
+        // Also emit as OTEL span event on the interaction span
+        interactionSpan.addEvent('compact', {
+          'compact.type': prepared.compactionType,
+          'compact.trigger': trigger,
+          'compact.pressure_band': prepared.pressure,
+          'compact.messages_removed': prepared.messagesRemoved,
+          'compact.tokens_saved': prepared.tokensSaved,
+        });
+      }
+
       // --- Call model (with retry/fallback, error capture) ---
       let callResult: { result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] };
       try {
         callResult = await this.callModelWithRecovery(
           primaryClient,
-          { model: modelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
+          { model: resolvedModelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
           recovery,
+          resolvedProvider,
+          interactionSpan,
         );
       } catch (error) {
         // Emit any buffered recovery events before propagating the original error
@@ -280,8 +359,12 @@ export class TurnExecutor {
           for (const event of error.recoveryEvents) {
             yield event;
           }
+          spanEnded = true;
+          endSpanWithError(interactionSpan, error.cause);
           throw error.cause;
         }
+        spanEnded = true;
+        endSpanWithError(interactionSpan, error);
         throw error;
       }
 
@@ -306,12 +389,16 @@ export class TurnExecutor {
         // Recovery exhausted
         const lastText = recovery.accumulatedText || '';
         yield { type: 'done', terminalReason: { reason: 'prompt_too_long' } };
+        recordTurnCompleted(modelName, Date.now() - turnStartTime, false);
+        spanEnded = true;
+        endSpan(interactionSpan, { 'terminal.reason': 'prompt_too_long' });
         return {
           finalText: lastText,
           tokenUsage: executionState.getTokenUsage(),
           completedTurns: executionState.getIterationIndex(),
           toolCallCount: executionState.snapshot().toolCallCount,
           newMessages: context.messages.slice(baselineLength),
+          interactionSpanContext: capturedSpanContext,
         };
       }
 
@@ -329,6 +416,7 @@ export class TurnExecutor {
         if (usageRecord) {
           yield { type: 'usage', record: usageRecord };
         }
+        recordTokens(modelName, result.tokenUsage.inputTokens ?? 0, result.tokenUsage.outputTokens ?? 0);
       }
 
       // --- Handle max output truncation ---
@@ -363,12 +451,16 @@ export class TurnExecutor {
           yield { type: 'text_delta', content: result.text };
         }
         yield { type: 'done', terminalReason: { reason: 'max_output_exhausted' }, tokenUsage: result.tokenUsage };
+        recordTurnCompleted(modelName, Date.now() - turnStartTime, true);
+        spanEnded = true;
+        endSpan(interactionSpan, { 'terminal.reason': 'max_output_exhausted' });
         return {
           finalText: recovery.accumulatedText,
           tokenUsage: result.tokenUsage,
           completedTurns: executionState.getIterationIndex(),
           toolCallCount: executionState.snapshot().toolCallCount,
           newMessages: context.messages.slice(baselineLength),
+          interactionSpanContext: capturedSpanContext,
         };
       }
 
@@ -397,6 +489,13 @@ export class TurnExecutor {
           yield { type: 'text_delta', content: result.text };
         }
         yield { type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage, terminalReason: { reason: 'completed' } };
+        recordTurnCompleted(modelName, Date.now() - turnStartTime, true);
+        spanEnded = true;
+        endSpan(interactionSpan, {
+          'terminal.reason': 'completed',
+          'turns.completed': executionState.getIterationIndex(),
+          'tools.call_count': executionState.snapshot().toolCallCount,
+        });
         return {
           finalText: fullText,
           tokenUsage: result.tokenUsage,
@@ -404,6 +503,7 @@ export class TurnExecutor {
           toolCallCount: executionState.snapshot().toolCallCount,
           toolSummaries,
           newMessages: context.messages.slice(baselineLength),
+          interactionSpanContext: capturedSpanContext,
         };
       }
 
@@ -430,6 +530,7 @@ export class TurnExecutor {
         conversationId: context.conversationId,
         signal: context.signal ?? NEVER_ABORT,
         policyConfig: {},
+        currentModelName: modelName,
       };
 
       const toolEvents = new EventQueue<AgentEvent>();
@@ -474,6 +575,7 @@ export class TurnExecutor {
           durationMs: record.durationMs,
           success: record.result.success,
         });
+        recordToolCall(record.toolName, record.durationMs, record.result.success);
         if (!emittedToolStart.has(record.callId)) {
           yield { type: 'tool_start', name: record.toolName, callId: record.callId };
         }
@@ -530,13 +632,22 @@ export class TurnExecutor {
     // Max turns reached — return gracefully, do not throw.
     const lastText = recovery.accumulatedText || '';
     yield { type: 'done', terminalReason: { reason: 'max_turns' } };
+    recordTurnCompleted(modelName, Date.now() - turnStartTime, true);
+    spanEnded = true;
+    endSpan(interactionSpan, { 'terminal.reason': 'max_turns' });
     return {
       finalText: lastText,
       tokenUsage: executionState.getTokenUsage(),
       completedTurns: executionState.getIterationIndex(),
       toolCallCount: executionState.snapshot().toolCallCount,
       newMessages: context.messages.slice(baselineLength),
+      interactionSpanContext: capturedSpanContext,
     };
+    } finally {
+      if (!spanEnded) {
+        endSpanWithError(interactionSpan, 'generator_abandoned');
+      }
+    }
   }
 
   /**
@@ -549,18 +660,39 @@ export class TurnExecutor {
     primaryClient: ModelClient,
     initialRequest: Parameters<ModelClient['generate']>[0],
     recovery: RecoveryState,
+    provider?: string,
+    parentSpan?: Span,
   ): Promise<{ result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] }> {
     let consecutive529 = 0;
     let client = primaryClient;
     let request = initialRequest;
+    let currentProvider = provider ?? this.config.model.provider;
+    let currentModel = initialRequest.model;
     const events: AgentEvent[] = [];
 
     for (let attempt = 0; attempt <= RECOVERY_LIMITS.MAX_API_RETRIES; attempt++) {
+      const startTime = Date.now();
+      const attemptSpan = parentSpan ? startModelCallSpan(currentModel, parentSpan) : undefined;
       try {
         const result = await client.generate(request);
+        // Record success for health tracking
+        this.modelRouter?.recordSuccess(currentProvider, request.model, Date.now() - startTime);
+        recordModelCall(currentModel, true);
+        if (attemptSpan) endSpan(attemptSpan);
         return { result, events };
       } catch (error) {
+        const latencyMs = Date.now() - startTime;
         const category = categorizeApiError(error);
+
+        // Only record provider-side failures for health tracking.
+        // Request-local errors (context_overflow, auth_error, unknown) are not
+        // indicative of provider health and should not trip the circuit breaker.
+        if (category === 'overloaded' || category === 'rate_limit' || category === 'server_error') {
+          this.modelRouter?.recordFailure(currentProvider, request.model, latencyMs, category);
+        }
+        recordModelCall(currentModel, false);
+        recordError('model_call');
+        if (attemptSpan) endSpanWithError(attemptSpan, error);
 
         if (category === 'context_overflow') {
           return { result: { type: 'context_overflow' as const }, events };
@@ -574,9 +706,15 @@ export class TurnExecutor {
               && this.modelClientFactory.createFromConfig) {
             recovery.fallbackAttempted = true;
             // Create a new client via factory — don't mutate the primary client
-            client = this.modelClientFactory.createFromConfig(this.config.fallback_model);
+            if (this.modelRouter) {
+              client = this.modelRouter.getOrCreateClient(this.config.fallback_model);
+            } else {
+              client = this.modelClientFactory.createFromConfig(this.config.fallback_model);
+            }
+            currentProvider = this.config.fallback_model.provider;
             // Switch to the fallback model name so the client uses it
-            request = { ...request, model: this.config.fallback_model.name };
+            currentModel = this.config.fallback_model.name;
+            request = { ...request, model: currentModel };
             // Reset retry budget so fallback gets a full chance
             // -1 because the for-loop increment runs before the next iteration
             attempt = -1;
@@ -617,6 +755,11 @@ export class TurnExecutor {
     }
 
     throw new RecoveryError(new Error('api_retries_exhausted'), events);
+  }
+
+  /** Returns the ModelRouter if available, for health inspection. */
+  getRouter(): ModelRouter | undefined {
+    return this.modelRouter;
   }
 
   private throwIfAborted(signal?: AbortSignal) {

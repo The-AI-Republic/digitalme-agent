@@ -1,4 +1,4 @@
-# 13 — Structured Analytics and Operational Metrics
+# 13 — Structured Analytics and Operational Metrics [deferred]
 
 ## What This Track Covers
 

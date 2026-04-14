@@ -54,6 +54,10 @@ export const agentConfigSchema = z.object({
     base_url: z.string().url().optional().nullable(),
     heartbeat_interval_seconds: z.number().positive().default(20),
   }).default({}),
+  skills: z.object({
+    bundled_dir: z.string().default('./skills'),
+    local_dir: z.string().default('/app/skills-local'),
+  }).default({}),
   model: modelSchema,
   fallback_model: modelSchema.optional(),
   limits: z.object({
@@ -129,6 +133,26 @@ export const agentConfigSchema = z.object({
     on_quota_exceeded: z.enum(['graceful_refuse', 'downgrade_model', 'silent_stop']).default('graceful_refuse'),
     quota_warning_threshold: z.number().min(0).max(1).default(0.8),
     refusal_message: z.string().optional(),
+  }).default({}),
+  routing: z.object({
+    task_models: z.object({
+      /** Model to use for conversation summarization. Falls back to primary if omitted. */
+      summary: modelSchema.optional(),
+      /** Model to use for session memory extraction. Falls back to primary if omitted. */
+      extraction: modelSchema.optional(),
+      /** Model to use for background forked agent tasks. Falls back to primary if omitted. */
+      forked: modelSchema.optional(),
+    }).default({}),
+    health: z.object({
+      /** Enable provider health tracking and health-aware routing. */
+      enabled: z.boolean().default(true),
+      /** Number of recent events in the sliding window per provider. */
+      window_size: z.number().int().positive().default(20),
+      /** Failure rate (0–1) that trips the circuit breaker. */
+      failure_threshold: z.number().positive().max(1).default(0.5),
+      /** Seconds after circuit opens before allowing a probe request. */
+      recovery_after_seconds: z.number().positive().default(60),
+    }).default({}),
   }).default({}),
   forked_agents: z.object({
     enabled: z.boolean().default(true),

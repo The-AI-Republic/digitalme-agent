@@ -13,7 +13,7 @@
 - [ ] Update `TranscriptEntry.type` union
 - [ ] Thread `ITranscriptRecorder` into `launchForkedAgent()` params
 - [ ] Record `fork_started` after semaphore acquire
-- [ ] Record `fork_completed` / `fork_failed` in promise handler (include `durationMs`, `toolCallCount`, `transcriptPath`)
+- [ ] Record `fork_completed` / `fork_failed` in promise handler (include `durationMs`, `toolCallCount`, `tokenUsage`, `transcriptPath`)
 - [ ] Record `fork_rejected` when `tryAcquire()` or `canFork()` fails
 - [ ] Optionally use `insertMessageChain()` with `isSidechain: true` for forked agent messages
 
@@ -22,7 +22,7 @@
 - [ ] Add `SubagentStartedEntry`, `SubagentCompletedEntry`, `SubagentFailedEntry` to transcript types
 - [ ] Update `TranscriptEntry.type` union
 - [ ] Thread `ITranscriptRecorder` into `SubagentToolDeps`
-- [ ] Record lifecycle events around `consumeGenerator()` call (include `durationMs`, `model`)
+- [ ] Record lifecycle events around `consumeGenerator()` call (include `durationMs`, `model`, `tokenUsage`, `toolCallCount`, `completedTurns`)
 - [ ] Optionally use `insertMessageChain()` with `isSidechain: true` for subagent messages
 
 ## Step 4: Post-Turn Hook Observability

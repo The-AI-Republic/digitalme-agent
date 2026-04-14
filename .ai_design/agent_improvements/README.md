@@ -24,9 +24,9 @@ Detailed implementation-track docs live in:
 - `09_model_routing_and_intelligence/IMPLEMENTATION_PLAN.md` — multi-model selection, fallback chains, cost-aware routing, effort levels
 - `10_creator_guardrails_and_safety/IMPLEMENTATION_PLAN.md` — content safety, creator-defined boundaries, jailbreak detection, input/output screening
 - `11_usage_tracking_and_quotas/IMPLEMENTATION_PLAN.md` — per-creator cost tracking, quota enforcement, usage analytics, billing data
-- `12_configuration_lifecycle/IMPLEMENTATION_PLAN.md` — config hot-reload, versioning, platform overrides, feature gates
-- `13_structured_analytics/IMPLEMENTATION_PLAN.md` — metrics pipeline, performance profiling, error buffer, operational dashboards
-- `14_creator_skills/IMPLEMENTATION_PLAN.md` — creator-defined capabilities the model invokes automatically during fan conversation
+- `12_configuration_lifecycle/IMPLEMENTATION_PLAN.md` — [deferred] config hot-reload, versioning, platform overrides, feature gates
+- `13_structured_analytics/IMPLEMENTATION_PLAN.md` — [deferred] metrics pipeline, performance profiling, error buffer, operational dashboards
+- `14_creator_skills/IMPLEMENTATION_PLAN.md` — file-based skill system (Claude Code compatible SKILL.md format) with bundled + local skill merging from `~/.digitalme/skills/`
 
 The two systems serve different purposes:
 
@@ -772,7 +772,7 @@ These solve “agent operating environment” problems, not “creator-hosted pu
 2. **Creator guardrails and safety** (track 10) — input screening, output validation, jailbreak detection
 3. **Usage tracking and quotas** (track 11) — cost accounting, quota enforcement, billing data
 4. **Configuration lifecycle** (track 12) — hot-reload, versioning, platform overrides, feature gates
-5. **Structured analytics** (track 13) — metrics pipeline, profiling, error buffer, dashboards
+5. **Structured analytics** (track 13) — [deferred] existing observability is sufficient for current stage
 
 ### Phase 3 Priority Within New Tracks
 
@@ -781,9 +781,9 @@ If resources are limited, prioritize in this order:
 1. **Track 10 (Guardrails)** — safety is non-negotiable for a public-facing agent
 2. **Track 09 (Model Routing)** — direct cost savings from background model routing
 3. **Track 11 (Usage Tracking)** — required for sustainable operations and billing
-4. **Track 13 (Analytics)** — needed for debugging and operational awareness
+4. **Track 13 (Analytics)** — [deferred] existing observability (events, transcripts, tool timing, health) is sufficient for now
 5. **Track 14 (Creator Skills)** — highest product impact, turns chatbots into capable agents
-6. **Track 12 (Config Lifecycle)** — quality-of-life, can be deferred longest
+6. **Track 12 (Config Lifecycle)** — [deferred] quality-of-life, not a priority for now
 
 ## Best Three Ideas To Borrow First
 
@@ -799,7 +799,7 @@ After the original three, the next most valuable are:
 
 4. creator guardrails with input screening and output validation (track 10)
 5. cost-aware model routing with background model assignment (track 09)
-6. structured analytics replacing console.log (track 13)
+6. ~~structured analytics replacing console.log (track 13)~~ [deferred]
 7. creator skills turning chatbots into capable agents (track 14)
 
 These provide the most benefit to DigitalMe Agent without importing `claudy`'s product complexity.

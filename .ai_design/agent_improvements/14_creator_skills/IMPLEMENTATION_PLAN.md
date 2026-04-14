@@ -2,26 +2,186 @@
 
 ## What This Track Covers
 
-A skill system where **creators define capabilities** that the agent can invoke automatically during fan conversations. Skills are creator-configured, model-invoked, and invisible to fans — fans experience a more capable agent without knowing skills exist.
+A file-based skill system where **creators define capabilities** that the agent can invoke automatically during fan conversations. Skills are creator-configured, model-invoked, and invisible to fans — fans experience a more capable agent without knowing skills exist.
 
-## The Key Reframing
+## Design Principles
 
-Claudy's skill architecture was previously dismissed because it was viewed as "user installs and types `/skill-name`." That framing is wrong for DigitalMe. The correct framing:
+1. **Skills are files, not config entries** — each skill is a `SKILL.md` file in its own directory, not embedded in `config.yaml`
+2. **Claude Code compatible** — same SKILL.md format (markdown + YAML frontmatter) as Claude Code's skill system
+3. **Two sources, one view** — bundled skills (baked into image) and local skills (`~/.digitalme/skills/`) are merged into a single flat list at runtime
+4. **Model-invoked only** — fans never see or type `/skill-name`; the model decides when to use a skill
+5. **Technical creators for now** — platform-managed skills via web dashboard is a future track
 
-| Claudy | DigitalMe |
-|--------|-----------|
-| User installs skills | **Creator** bakes skills into agent config |
-| User types `/skill-name` | **Model** invokes skills automatically |
-| User sees skill listing | **Fan never knows** skills exist |
-| Skills extend the coding environment | Skills extend the **creator's agent capabilities** |
+## Skill Format (Claude Code Compatible)
 
-This is the single most impactful capability extension for the agent platform. It turns every creator agent from a personality chatbot into a **capable agent with real actions**.
+Each skill is a directory containing a `SKILL.md` file with YAML frontmatter + markdown prompt:
 
-## What Claudy Does (Model-Invoked Skills)
+```
+skills/beat-catalog/
+├── SKILL.md              ← required: frontmatter + prompt
+└── pricing.md            ← optional: supporting context
+```
+
+```markdown
+---
+name: beat-catalog
+description: Search my beat catalog for instrumentals
+when_to_use: When fan asks about beats, instrumentals, pricing, or licensing
+allowed-tools: []
+context: inline
+max-turns: 1
+timeout-seconds: 30
+---
+
+The fan is asking about beats. Search for: $ARGUMENTS
+
+Beat catalog:
+- "Midnight Groove" - Hip-hop, 140 BPM, $29.99 lease / $299 exclusive
+- "Solar Flare" - EDM, 128 BPM, $19.99 lease / $199 exclusive
+- "Ocean Breeze" - Lo-fi, 85 BPM, $14.99 lease / $149 exclusive
+
+Present matching beats with name, genre, BPM, and pricing.
+If they want to buy, direct them to the store link.
+```
+
+### Frontmatter Fields
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `name` | No | directory name | Skill identifier (lowercase, hyphens) |
+| `description` | Yes | — | One-line description for model discovery (max 200 chars) |
+| `when_to_use` | Yes | — | When the model should auto-invoke this skill |
+| `allowed-tools` | No | `[]` | Tools this skill can use (whitelist from platform-allowed tools) |
+| `context` | No | `inline` | Execution mode: `inline` (same context) or `fork` (isolated sub-agent) |
+| `model` | No | `inherit` | Model override, or `inherit` from conversation model |
+| `max-turns` | No | `1` (inline) / `3` (fork) | Max turns the skill can take (safety limit) |
+| `timeout-seconds` | No | `30` | Execution timeout |
+| `argument-hint` | No | — | Hint for what arguments the skill expects |
+
+### What's Compatible vs. DigitalMe-Specific
+
+| Field | Claude Code | DigitalMe | Notes |
+|-------|------------|-----------|-------|
+| `name` | same | same | |
+| `description` | same | same | |
+| `when_to_use` | same | same | |
+| `allowed-tools` | same | same | constrained to platform-approved tools |
+| `context` | `inline`/`fork` | `inline`/`fork` | same two modes |
+| `model` | `sonnet`/`haiku`/`opus` | `inherit`/specific | resolves against creator's model config |
+| `user-invocable` | true/false | **ignored (always false)** | fans never type `/skill-name` |
+| `disable-model-invocation` | true/false | **ignored (always false)** | model always auto-invokes |
+| `max-turns` | N/A | DigitalMe-specific | safety limit |
+| `timeout-seconds` | N/A | DigitalMe-specific | safety limit |
+| `argument-hint` | same | same | |
+| `shell` | bash/powershell | **disabled** | no shell execution in skills for security |
+| `hooks` | supported | **disabled** | no lifecycle hooks in creator skills |
+| `paths` | supported | **ignored** | no filesystem context |
+
+### Arguments
+
+Skills receive arguments via `$ARGUMENTS` (all arguments as one string). This matches Claude Code's argument substitution pattern, but DigitalMe wraps the raw value before substitution so skill bodies never receive fan text as an undelimited blob. The model passes relevant context from the fan's message as the `args` parameter when invoking a skill.
+
+### What's Disabled For Security
+
+Creator skills in a public-facing agent are more restricted than Claude Code skills:
+
+- **No shell execution** — `!`command`` syntax in skill body is not executed
+- **No lifecycle hooks** — skill `hooks:` field is ignored
+- **No arbitrary tool access** — `allowed-tools` is constrained to platform-approved tools only
+- **No user invocation** — fans can't type `/skill-name`
+
+## Skill Sources and Merging
+
+### Config-Resolved Directories
+
+Skill directories are configurable, not hardcoded. Add a `skills` section to `src/config/schema.ts`:
+
+```typescript
+skills: z.object({
+  bundled_dir: z.string().default('./skills'),
+  local_dir: z.string().default('/app/skills-local'),
+}).default({})
+```
+
+- `bundled_dir` defaults to the repo-local `./skills` so `npm run dev` works outside Docker
+- `local_dir` defaults to `/app/skills-local` because that is what `docker-compose.yml` mounts today
+- Docker can still override `bundled_dir` to `/app/skills` if needed, but the design should not require container-only paths
+- The registry resolves both paths once at startup from config
+
+### Two Directories
+
+```
+Container filesystem:
+  /app/skills/            ← bundled: baked into Docker image at build time
+  /app/skills-local/      ← local: mounted from ~/.digitalme/skills/ on host
+```
+
+### Merge Strategy
+
+Both directories are scanned for `*/SKILL.md` files and merged into one flat list:
+
+```typescript
+const bundled = scanSkillDir(config.skills.bundled_dir); // S1, S2
+const local   = scanSkillDir(config.skills.local_dir);   // S3, S4
+
+// Local overrides bundled on name collision
+const merged = new Map<string, LoadedSkill>();
+for (const s of bundled) merged.set(s.name, s);
+for (const s of local)   merged.set(s.name, s);  // overwrites same name
+
+return [...merged.values()];  // [S1, S2, S3, S4]
+```
+
+**Priority**: local > bundled (same-name local skill replaces bundled)
+
+If a local skill overrides a bundled skill, log a startup warning with both source paths so accidental shadowing is visible.
+
+**From the agent's perspective**: one flat list of skills. No source distinction leaks into the rest of the system.
+
+### Repo Structure
+
+```
+digitalme-agent/
+├── Dockerfile              ← COPY skills ./skills
+├── docker-compose.yml      ← mounts ~/.digitalme/skills:/app/skills-local:ro
+├── skills/                 ← bundled skills (baked into image)
+│   ├── faq-lookup/
+│   │   └── SKILL.md
+│   ├── contact-info/
+│   │   └── SKILL.md
+│   └── off-topic-redirect/
+│       └── SKILL.md
+```
+
+### Host Structure (Creator's Machine)
+
+```
+~/.digitalme/
+└── skills/                 ← creator's custom skills (mounted read-only)
+    ├── beat-catalog/
+    │   └── SKILL.md
+    └── collab-request/
+        ├── SKILL.md
+        └── pricing.md
+```
+
+### Docker Configuration
+
+```yaml
+# docker-compose.yml
+volumes:
+  - ./config.yaml:/app/config.yaml:ro
+  - ~/.digitalme/skills:/app/skills-local:ro   # creator skills
+  - rollouts:/app/.digital_me_agent/rollouts
+```
+
+If `~/.digitalme/skills/` doesn't exist or is empty, the agent works fine with just bundled skills.
+
+## What Claudy Does (Reference)
 
 ### Skill Definition
 
-YAML frontmatter + Markdown prompt:
+YAML frontmatter + Markdown prompt in `SKILL.md` files:
 
 ```yaml
 ---
@@ -31,35 +191,44 @@ when_to_use: "When the user asks about X, Y, Z"
 allowed-tools: [Bash, Read, Write]
 context: inline | fork
 model: claude-sonnet
-disable-model-invocation: false  # model CAN invoke
-user-invocable: true             # independent flag
+disable-model-invocation: false
+user-invocable: true
 ---
 
 Detailed prompt instructions for the skill...
 ```
 
+### Skill Discovery
+
+Skills loaded from multiple directories with priority:
+1. Enterprise (managed settings)
+2. Personal (`~/.claude/skills/`)
+3. Project (`.claude/skills/`)
+4. Plugin skills
+5. MCP skills
+6. Bundled skills
+
 ### Model Discovery
 
-Skills are listed in `<system-reminder>` blocks injected into each turn. The model sees:
+Skills listed in `<system-reminder>` blocks injected each turn. The model sees:
 
 ```
 Available skills:
-- product_search: Search product catalog - When fan asks about products, pricing, stock
-- schedule_meeting: Book a call - When fan wants to schedule or meet
+- product_search: Search product catalog - When fan asks about products, pricing
+- schedule_meeting: Book a call - When fan wants to schedule
 ```
 
-The model calls `SkillTool({ skill: "product_search", args: "blue widget" })` when it decides to.
+The model calls `Skill({ skill: "product_search", args: "blue widget" })` when it decides to.
 
 ### Two Execution Modes
 
-1. **Inline** — skill prompt expands into the current conversation. Model uses the same context and tools. Good for quick lookups.
-2. **Forked** — skill runs in an isolated sub-agent with separate token budget and restricted tool set. Results flow back as text. Good for complex workflows.
+1. **Inline** — skill prompt expands into the current conversation. Model continues in same context.
+2. **Forked** — skill runs in isolated sub-agent with separate token budget. Results flow back as text.
 
 ### Key Design Decisions
 
 - `when_to_use` guides model on **when** to auto-invoke (truncated to 250 chars in listing)
 - `allowed-tools` restricts which tools the skill can use (whitelist)
-- `disable-model-invocation` / `user-invocable` are independent flags
 - Forked skills get isolated context so they can't corrupt the main conversation
 - Skill listing budget is ~1% of context window to avoid prompt bloat
 
@@ -82,215 +251,212 @@ The model calls `SkillTool({ skill: "product_search", args: "blue widget" })` wh
 
 | Component | Status | What's Needed |
 |-----------|--------|---------------|
-| Skill definition schema | Missing | YAML schema in creator config |
-| Skill registry | Missing | Load, validate, and register creator skills |
+| SKILL.md parser | Missing | Parse frontmatter + markdown body from SKILL.md files |
+| Skill directory scanner | Missing | Scan configured bundled/local skill directories for `*/SKILL.md` |
+| Skill merge logic | Missing | Merge bundled + local, dedup by name (local wins) |
+| Skill registry | Missing | Hold merged skill list, expose to system prompt and tool |
 | Model-facing skill listing | Missing | Inject available skills into system prompt |
 | CreatorSkillTool | Missing | Tool the model calls to invoke skills |
-| Skill prompt templates | Missing | Template expansion with arguments |
-| Skill lifecycle hooks | Missing | Pre/post skill execution callbacks |
+| Argument substitution | Missing | `$ARGUMENTS` expansion in skill prompt |
 | Skill execution tracking | Missing | Usage, cost, success rate per skill |
 
 ## Design
 
-### 1. Skill Definition Schema
-
-Creator defines skills in their agent config YAML:
-
-```yaml
-skills:
-  - name: product_search
-    description: "Search the creator's product catalog"
-    when_to_use: "When fan asks about products, pricing, availability, or stock"
-    context: inline
-    prompt: |
-      Search the product catalog for: $QUERY
-
-      Return results in this format:
-      - Product name
-      - Price
-      - Availability (in stock / out of stock)
-      - Link to product page
-
-      If no products match, say so clearly.
-    allowed_tools: [web_search]
-    model: inherit
-    max_turns: 3
-    timeout_seconds: 30
-
-  - name: schedule_meeting
-    description: "Help fan schedule a meeting with the creator"
-    when_to_use: "When fan wants to schedule, book, or arrange a meeting or call"
-    context: fork
-    prompt: |
-      Help the fan schedule a meeting with $CREATOR_NAME.
-
-      Available time slots:
-      $CREATOR_SCHEDULE
-
-      Confirm the selected time and provide a calendar link.
-    allowed_tools: [web_search]
-    model: inherit
-    max_turns: 5
-    timeout_seconds: 60
-
-  - name: faq_lookup
-    description: "Answer common questions from the creator's FAQ"
-    when_to_use: "When fan asks a question that likely has a standard answer"
-    context: inline
-    prompt: |
-      Answer the fan's question using this FAQ:
-
-      $CREATOR_FAQ
-
-      If the question isn't covered, say you don't have that information
-      and offer to help with something else.
-    allowed_tools: []
-    model: inherit
-    max_turns: 1
-```
-
-### 2. Skill Config Types
+### 1. Loaded Skill Type
 
 ```typescript
-interface CreatorSkillConfig {
+interface LoadedSkill {
+  /** Parsed from SKILL.md frontmatter or directory name */
   name: string;
   description: string;
   when_to_use: string;
-
-  /** Skill execution context */
+  allowed_tools: string[];
   context: 'inline' | 'fork';
+  model: 'inherit' | string;
+  max_turns: number;
+  timeout_seconds: number;
+  argument_hint?: string;
 
-  /** Prompt template with $VARIABLE placeholders */
+  /** The full markdown prompt body (below frontmatter) */
   prompt: string;
 
-  /** Tools the skill is allowed to use (whitelist) */
-  allowed_tools: string[];
+  /** Supporting files content (other .md files in skill directory) */
+  supporting_context: string[];
 
-  /** Model to use: 'inherit' uses the conversation model */
-  model: 'inherit' | string;
+  /** Absolute path to the skill directory for logging/debugging. */
+  source_dir: string;
 
-  /** Max turns the skill can take */
-  max_turns: number;
-
-  /** Timeout in seconds */
-  timeout_seconds: number;
-
-  /** Whether the model can invoke this skill (default: true) */
-  enabled: boolean;
-}
-
-interface ResolvedSkill {
-  config: CreatorSkillConfig;
-  /** Resolved model spec (after 'inherit' resolution) */
-  resolvedModel: string;
-  /** Resolved tool registry (after whitelist filtering) */
-  toolRegistry: IToolRegistry;
-  /** Compiled prompt template */
-  compiledPrompt: CompiledPromptTemplate;
+  /** Whether this skill came from bundled or local storage. */
+  source: 'bundled' | 'local';
 }
 ```
 
-### 3. Skill Registry
+### 2. SKILL.md Parser
+
+```typescript
+interface ParsedSkillFile {
+  frontmatter: Record<string, unknown>;
+  body: string;
+}
+
+function parseSkillFile(content: string): ParsedSkillFile {
+  // Split on --- markers
+  // Parse YAML frontmatter
+  // Return frontmatter + markdown body
+}
+
+function toLoadedSkill(
+  parsed: ParsedSkillFile,
+  dirName: string,
+): LoadedSkill {
+  // Validate required fields (description, when_to_use)
+  // Apply defaults (context: inline, max_turns: 3, etc.)
+  // Name falls back to directory name if not in frontmatter
+  // Return LoadedSkill
+}
+```
+
+### 3. Skill Directory Scanner
+
+```typescript
+function scanSkillDir(dirPath: string): LoadedSkill[] {
+  // If directory doesn't exist, return []
+  // List subdirectories
+  // For each subdir, look for SKILL.md
+  // Parse SKILL.md → LoadedSkill
+  // Also read any other .md files as supporting context
+  // Enforce supporting-file limits before loading:
+  //   - max 5 supporting markdown files
+  //   - max 50 KB per supporting file
+  // Skip invalid skills with warning log
+  // Return LoadedSkill[]
+}
+```
+
+### 4. Skill Registry
 
 ```typescript
 class SkillRegistry {
-  private skills: Map<string, ResolvedSkill> = new Map();
+  private skills: Map<string, LoadedSkill> = new Map();
 
-  /**
-   * Load skills from creator config.
-   * Validates schemas, resolves models, builds tool registries.
-   */
-  loadFromConfig(
-    skillConfigs: CreatorSkillConfig[],
-    parentToolRegistry: IToolRegistry,
-    modelRoles: ModelRoles,
-  ): void {
-    for (const config of skillConfigs) {
-      const resolved = this.resolveSkill(config, parentToolRegistry, modelRoles);
-      this.skills.set(config.name, resolved);
-    }
+  /** Load and merge skills from bundled + local directories */
+  load(bundledDir: string, localDir: string): void {
+    const bundled = scanSkillDir(bundledDir);
+    const local = scanSkillDir(localDir);
+
+    // Bundled first, local overwrites on name collision
+    for (const s of bundled) this.skills.set(s.name, s);
+    for (const s of local) this.skills.set(s.name, s);
   }
 
-  /** Get all skills the model should know about */
-  listForModel(): SkillListing[] {
-    return [...this.skills.values()]
-      .filter(s => s.config.enabled)
-      .map(s => ({
-        name: s.config.name,
-        description: s.config.description,
-        when_to_use: s.config.when_to_use,
-      }));
+  /** Get all skills for model-facing listing */
+  list(): LoadedSkill[] {
+    return [...this.skills.values()];
   }
 
   /** Get a skill by name for execution */
-  get(name: string): ResolvedSkill | undefined {
+  get(name: string): LoadedSkill | undefined {
     return this.skills.get(name);
   }
 
-  /** Reload skills on config change (track 12) */
-  reload(
-    skillConfigs: CreatorSkillConfig[],
-    parentToolRegistry: IToolRegistry,
-    modelRoles: ModelRoles,
-  ): void {
-    this.skills.clear();
-    this.loadFromConfig(skillConfigs, parentToolRegistry, modelRoles);
+  /** Number of loaded skills */
+  get size(): number {
+    return this.skills.size;
   }
 }
 ```
 
-### 4. Model-Facing Skill Listing
+### 5. Model-Facing Skill Listing
 
 Skills are injected into the system prompt so the model knows they exist:
 
 ```typescript
-function buildSkillListingSection(skills: SkillListing[]): string {
+function buildSkillListingSection(skills: LoadedSkill[]): string {
   if (skills.length === 0) return '';
 
   const MAX_DESC_LENGTH = 200;
+  const MAX_LISTING_BUDGET = 1500;
 
-  const lines = skills.map(s => {
+  const lines: string[] = [];
+  let used = 0;
+
+  for (const s of skills) {
     const desc = s.when_to_use
       ? `${s.description} - ${s.when_to_use}`
       : s.description;
     const truncated = desc.length > MAX_DESC_LENGTH
       ? desc.slice(0, MAX_DESC_LENGTH - 1) + '...'
       : desc;
-    return `- ${s.name}: ${truncated}`;
-  });
+    const line = `- ${s.name}: ${truncated}`;
+
+    if ((used + line.length + 1) > MAX_LISTING_BUDGET) {
+      break;
+    }
+
+    lines.push(line);
+    used += line.length + 1;
+  }
 
   return [
     'Available skills:',
     ...lines,
     '',
     'Use the CreatorSkill tool to invoke a skill when appropriate.',
-    'Pass the skill name and any relevant arguments from the fan\'s message.',
+    'Pass the skill name and any relevant context from the fan\'s message as args.',
   ].join('\n');
 }
 ```
 
-This section is added to the system prompt via `SystemPromptBuilder` (track 01, already done).
+If not all skills fit, append a final line such as `- ... additional skills omitted due to prompt budget` if budget allows.
 
-### 5. CreatorSkillTool
+**Known v1 limitation**: At typical line lengths (~230 chars each), the 1500-char budget fits ~6-7 skills. Creators with more skills should order them by priority in their directory (alphabetical by directory name), since the first N skills that fit are listed. A future enhancement could introduce skill categories, dynamic budget scaling, or a two-tier listing (short names for overflow skills).
+
+This section is added to the system prompt via `SystemPromptBuilder`, which requires:
+
+- `PromptContext.skillListing?: string | null`
+- a new prompt section in `PROMPT_SECTIONS`
+- `enabledWhen: (ctx) => Boolean(ctx.skillListing)`
+
+### 6. CreatorSkillTool
 
 A new tool that the model calls to invoke creator-defined skills:
 
 ```typescript
-const CreatorSkillTool: ToolDefinition = {
-  name: 'CreatorSkill',
-  description: 'Invoke a creator-defined skill to handle a specific task',
-  inputSchema: z.object({
-    skill: z.string().describe('Name of the skill to invoke'),
-    args: z.string().optional().describe('Arguments from the fan message relevant to this skill'),
-  }),
-  metadata: {
-    category: 'action',
-    timeoutMs: 60_000,
-    maxResultChars: 20_000,
-    isConcurrencySafe: false,
-  },
-};
+export function createCreatorSkillTool(deps: CreatorSkillToolDeps): Tool<CreatorSkillInput> {
+  const definition: ToolDefinition = {
+    type: 'function',
+    function: {
+      name: 'CreatorSkill',
+      description: 'Invoke a creator-defined skill to handle a specific task.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill: { type: 'string', description: 'Name of the skill to invoke.' },
+          args: { type: 'string', description: 'Relevant context from the fan message.' },
+        },
+        required: ['skill'],
+      },
+    },
+  };
+
+  return {
+    name: 'CreatorSkill',
+    definition,
+    metadata: {
+      ...DEFAULT_TOOL_METADATA,
+      timeoutMs: 60_000,
+      policyCategory: 'action',
+    },
+    inputSchema: creatorSkillInputSchema,
+    isConcurrencySafe: () => false,
+    async execute(args, context) {
+      // implementation
+    },
+  };
+}
 ```
+
+This should follow the `createSubagentTool(...)` factory pattern rather than inventing a parallel tool shape.
 
 **Execution flow:**
 
@@ -302,88 +468,101 @@ async execute(
   // 1. Look up skill in registry
   const skill = this.skillRegistry.get(input.skill);
   if (!skill) {
-    return { success: false, data: `Unknown skill: ${input.skill}` };
+    const msg = `Unknown skill: ${input.skill}`;
+    return { success: false, data: msg, renderForModel: () => msg };
   }
 
-  // 2. Expand prompt template
-  const expandedPrompt = this.expandTemplate(skill.compiledPrompt, {
-    QUERY: input.args ?? '',
-    CREATOR_NAME: context.creatorConfig.name,
-    CREATOR_FAQ: context.creatorConfig.faq ?? '',
-    CREATOR_SCHEDULE: context.creatorConfig.schedule ?? '',
-    // ... other creator variables
-  });
+  // 2. Expand $ARGUMENTS in prompt
+  const expandedPrompt = expandArguments(skill.prompt, input.args ?? '');
 
-  // 3. Route to inline or forked execution
-  if (skill.config.context === 'fork') {
-    return this.executeForked(skill, expandedPrompt, context);
+  // 3. Append supporting context if any
+  const fullPrompt = skill.supporting_context.length > 0
+    ? expandedPrompt + '\n\n' + skill.supporting_context.join('\n\n')
+    : expandedPrompt;
+
+  // 4. Route to inline or forked execution
+  if (skill.context === 'fork') {
+    return this.executeForked(skill, fullPrompt, context);
   } else {
-    return this.executeInline(skill, expandedPrompt, context);
+    return this.executeInline(skill, fullPrompt, context);
   }
 }
 ```
 
-**Inline execution** — builds a submission and runs through TurnExecutor with the skill's restricted tool registry:
+**Inline execution** — returns expanded skill instructions as tool result text for the model to read and continue in the same parent turn:
 
 ```typescript
 private async executeInline(
-  skill: ResolvedSkill,
+  skill: LoadedSkill,
   prompt: string,
   context: ToolContext,
 ): Promise<ToolResult> {
-  const options: ExecutionOptions = {
-    maxTurns: skill.config.max_turns,
-    model: skill.resolvedModel,
-    toolRegistry: skill.toolRegistry,
-  };
-
-  const submission = buildSkillSubmission(prompt, skill);
-  const result = await consumeGenerator(
-    this.turnExecutor.run(submission, options),
-    (_event) => { /* discard intermediate events */ },
-  );
-
   return {
     success: true,
-    data: result.finalText,
-    renderForModel: () => result.finalText,
+    data: { prompt },
+    renderForModel: () => [
+      `Skill instructions for ${skill.name}:`,
+      prompt,
+      '',
+      'Follow these instructions now in the current conversation.',
+    ].join('\n'),
   };
 }
 ```
+
+This is intentionally different from the current subagent path. If we call `TurnExecutor.run(...)` here, we are creating a fresh nested turn, not a true inline skill expansion.
+
+Because inline execution stays inside the parent turn loop:
+
+- default `max-turns` for inline skills should be `1`
+- inline skills must use the parent conversation's model; model override is fork-only in v1
+- inline skills do not need timeout handling beyond the normal tool timeout
 
 **Forked execution** — uses the existing ForkedAgent infrastructure:
 
 ```typescript
 private async executeForked(
-  skill: ResolvedSkill,
+  skill: LoadedSkill,
   prompt: string,
   context: ToolContext,
 ): Promise<ToolResult> {
-  const handle = await launchForkedAgent({
-    sessionRuntime: context.sessionRuntime,
+  // buildForkedSkillSubmission returns a full TurnSubmission matching the
+  // pattern used by SubagentTool (see src/agent/subagent/SubagentTool.ts):
+  const submission = buildForkedSkillSubmission({
+    requestId: `skill-${skill.name}-${Date.now()}`,
+    conversationId: context.conversationId,
+    userMessage: prompt,
+    history: [],
+    promptHistory: [],
+    signal: context.signal,
+    skillName: skill.name,
+  });
+
+  const handle = launchForkedAgent({
+    sessionRuntime: deps.sessionRuntime,
+    forkSemaphore: deps.forkSemaphore,
     turnExecutor: this.turnExecutor,
-    submission: buildSkillSubmission(prompt, skill),
+    submission,
     options: {
-      maxTurns: skill.config.max_turns,
-      model: skill.resolvedModel,
-      toolRegistry: skill.toolRegistry,
+      maxTurns: skill.max_turns,
+      model: skill.model === 'inherit' ? undefined : skill.model,
+      toolRegistry: buildForkedSkillToolRegistry(skill.allowed_tools),
+      // guardrailScope: 'internal',  // uncomment when Track 10 adds this field to ExecutionOptions
     },
-    forkLabel: `skill:${skill.config.name}`,
-    abortSignal: context.abortSignal,
+    config: {
+      forkLabel: `skill:${skill.name}`,
+      skipTranscript: false,
+    },
   });
 
   if (!handle) {
-    return {
-      success: false,
-      data: 'Skill execution unavailable (concurrency limit reached)',
-    };
+    const msg = 'Skill execution unavailable (concurrency limit reached)';
+    return { success: false, data: msg, renderForModel: () => msg };
   }
 
-  // For forked skills invoked by model, we await the result
-  // (unlike fire-and-forget background forks)
-  const result = await withTimeout(
+  const result = await awaitWithTimeout(
     handle.promise,
-    skill.config.timeout_seconds * 1000,
+    skill.timeout_seconds * 1000,
   );
 
   return {
@@ -394,58 +573,70 @@ private async executeForked(
 }
 ```
 
-### 6. Prompt Template Expansion
+Required helper behavior:
 
-Support `$VARIABLE` and `${VARIABLE}` placeholders in skill prompts:
+- `buildForkedSkillToolRegistry(...)` should reuse the `resolveSubagentTools(...)` pattern rather than inventing a new registry API
+- `CreatorSkill` must be excluded from the forked registry to prevent recursive self-invocation
+- the forked path should inherit Track 10's `guardrailScope: 'internal'` so fan-facing input/output rules do not screen internal skill prompts. Note: `guardrailScope` does not exist on `ExecutionOptions` yet — omit it until Track 10 adds the field, then wire it in
+- `awaitWithTimeout(...)` must be implemented in this track — `timeout-seconds` is a required frontmatter field with validated bounds (max 120s), so the helper is not optional
+
+### 7. Argument Expansion
 
 ```typescript
-interface CompiledPromptTemplate {
-  /** Original template string */
-  source: string;
-  /** Variable names found in template */
-  variables: string[];
-}
+function expandArguments(prompt: string, args: string): string {
+  const hasPlaceholder = /\$ARGUMENTS/.test(prompt);
 
-function compileTemplate(source: string): CompiledPromptTemplate {
-  const variablePattern = /\$\{?([A-Z_][A-Z0-9_]*)\}?/g;
-  const variables: string[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = variablePattern.exec(source)) !== null) {
-    variables.push(match[1]);
-  }
-  return { source, variables: [...new Set(variables)] };
-}
-
-function expandTemplate(
-  template: CompiledPromptTemplate,
-  values: Record<string, string>,
-): string {
-  let result = template.source;
-  for (const varName of template.variables) {
-    const value = values[varName] ?? '';
-    result = result.replace(
-      new RegExp(`\\$\\{?${varName}\\}?`, 'g'),
-      value,
+  if (hasPlaceholder) {
+    return prompt.replace(
+      /\$ARGUMENTS/g,
+      `<skill-arguments>\n${args}\n</skill-arguments>`,
     );
   }
-  return result;
+
+  // If the skill prompt does not use $ARGUMENTS but the model passed args,
+  // append the fan's context so the skill still has access to it.
+  if (args) {
+    return prompt + `\n\n<skill-arguments>\n${args}\n</skill-arguments>`;
+  }
+
+  return prompt;
 }
 ```
 
-Built-in variables available to all skill templates:
+Simple substitution only. No shell execution, no environment variable expansion. Wrapping the arguments in delimiters prevents the fan-provided text from blending invisibly into the skill author’s instructions.
 
-| Variable | Source |
-|----------|--------|
-| `$QUERY` | Fan's message or extracted argument |
-| `$CREATOR_NAME` | Creator config name field |
-| `$CREATOR_FAQ` | Creator FAQ content |
-| `$CREATOR_SCHEDULE` | Creator schedule data |
-| `$CONVERSATION_SUMMARY` | Current session memory summary |
-| `$FAN_NAME` | Fan display name if available |
+### 8. Skill Validation
 
-Creators can reference any field from their config. Unknown variables expand to empty string.
+Validate skills at load time:
 
-### 7. Skill Execution Tracking
+```typescript
+function validateSkill(skill: LoadedSkill): ValidationResult {
+  const errors: string[] = [];
+
+  if (!/^[a-z][a-z0-9-]*$/.test(skill.name)) {
+    errors.push(`Invalid skill name: ${skill.name} (lowercase alphanumeric with hyphens)`);
+  }
+  if (!skill.description || skill.description.length > 200) {
+    errors.push('description required, max 200 chars');
+  }
+  if (!skill.when_to_use || skill.when_to_use.length < 10) {
+    errors.push('when_to_use required (min 10 chars)');
+  }
+  if (!skill.prompt || skill.prompt.length < 20) {
+    errors.push('prompt required (min 20 chars)');
+  }
+  if (skill.max_turns > 10) {
+    errors.push('max-turns cannot exceed 10');
+  }
+  if (skill.timeout_seconds > 120) {
+    errors.push('timeout-seconds cannot exceed 120');
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+```
+
+### 9. Skill Execution Tracking
 
 Every skill invocation produces a tracking record:
 
@@ -453,39 +644,30 @@ Every skill invocation produces a tracking record:
 interface SkillExecutionRecord {
   skillName: string;
   conversationId: string;
-  creatorId: string;
   timestamp: number;
-
-  /** How the skill was triggered */
-  trigger: 'model_invoked';
-
-  /** Execution mode */
   context: 'inline' | 'fork';
-
-  /** Outcome */
   success: boolean;
   errorReason?: string;
-
-  /** Performance */
   latencyMs: number;
   turnsUsed: number;
   inputTokens: number;
   outputTokens: number;
-  estimatedCostUsd: number;
-
-  /** Tool usage within the skill */
-  toolCallCount: number;
   toolsUsed: string[];
 }
 ```
+
+This should align with existing observability types rather than introducing a disconnected parallel record. Prefer:
+
+- transcript lifecycle/message entries for persistent history
+- existing `ToolExecutionRecord` / `ToolSummaryEntry` style fields where possible
+- a thin skill-specific event payload only for fields that do not already exist elsewhere
 
 This integrates with:
 - Track 05 (Transcripts) — recorded in turn transcript
 - Track 07 (Events) — emitted as internal event
 - Track 11 (Usage) — counted toward creator usage/quota
-- Track 13 (Analytics) — aggregated for skill performance metrics
 
-### 8. Guardrail Integration
+### 10. Guardrail Integration
 
 Skills must pass through the guardrail system (track 10):
 
@@ -508,66 +690,25 @@ if (!outputCheck.safe) {
 }
 ```
 
-### 9. Skill Validation at Config Load
+Track 10 already defines `guardrailScope?: 'public' | 'internal'` on `ExecutionOptions`. Skill design must align with that split:
 
-Validate skill definitions when creator config is loaded:
+- top-level fan conversations remain `guardrailScope: 'public'`
+- forked skill execution uses `guardrailScope: 'internal'`
+- inline skills do not launch a new turn, so they rely on the parent turn's normal fan-facing output validation
+- if Track 10 is not yet implemented, this track should depend on the documented interfaces and treat them as optional injected deps
 
-```typescript
-function validateSkillConfig(skill: CreatorSkillConfig): ValidationResult {
-  const errors: string[] = [];
-
-  // Name validation
-  if (!/^[a-z][a-z0-9_]*$/.test(skill.name)) {
-    errors.push(`Invalid skill name: ${skill.name} (must be lowercase alphanumeric with underscores)`);
-  }
-
-  // Description length
-  if (skill.description.length > 200) {
-    errors.push(`Description too long: ${skill.description.length} chars (max 200)`);
-  }
-
-  // when_to_use required
-  if (!skill.when_to_use || skill.when_to_use.length < 10) {
-    errors.push('when_to_use is required and must be descriptive (min 10 chars)');
-  }
-
-  // Prompt required
-  if (!skill.prompt || skill.prompt.length < 20) {
-    errors.push('prompt is required (min 20 chars)');
-  }
-
-  // Tool whitelist validation
-  if (skill.allowed_tools.length > 0) {
-    const validTools = ['web_search'];  // extend as tools grow
-    for (const tool of skill.allowed_tools) {
-      if (!validTools.includes(tool)) {
-        errors.push(`Unknown tool in allowed_tools: ${tool}`);
-      }
-    }
-  }
-
-  // Limits
-  if (skill.max_turns > 10) {
-    errors.push('max_turns cannot exceed 10');
-  }
-  if (skill.timeout_seconds > 120) {
-    errors.push('timeout_seconds cannot exceed 120');
-  }
-
-  return { valid: errors.length === 0, errors };
-}
-```
-
-### 10. Max Skills Per Creator
-
-Enforce limits to prevent prompt bloat and cost runaway:
+### 11. Limits
 
 ```typescript
 const SKILL_LIMITS = {
-  /** Max skills per creator agent */
-  maxSkillsPerCreator: 10,
-  /** Max prompt template size per skill */
-  maxPromptLength: 2000,
+  /** Max skills per agent (bundled + local combined) */
+  maxSkillsTotal: 20,
+  /** Max prompt size per skill (chars, after supporting context appended) */
+  maxPromptLength: 5000,
+  /** Max number of supporting markdown files loaded per skill */
+  maxSupportingFiles: 5,
+  /** Max size of an individual supporting markdown file */
+  maxSupportingFileBytes: 50_000,
   /** Max total skill listing size in system prompt (chars) */
   maxListingBudget: 1500,
   /** Max concurrent skill executions per conversation */
@@ -575,51 +716,58 @@ const SKILL_LIMITS = {
 };
 ```
 
-## What NOT To Borrow
+## What NOT To Build (Current Scope)
 
+- **Platform-managed skills via web dashboard** — future track for non-technical creators
 - **User-invocable skills** — fans don't type `/skill-name`
-- **Skill marketplace / sharing** — creators define skills, no marketplace
-- **Plugin system** — skills are config-driven, not code-driven
-- **Skill directory scanning** — skills come from config, not filesystem
-- **MCP skill integration** — out of scope for creator-facing agent
-- **Skill hooks with shell commands** — security risk for public agent; skills use prompt + tools only
-- **Conditional activation by file path** — no filesystem context
+- **Skill marketplace / sharing** — out of scope
+- **Shell execution in skills** — security risk for public agent
+- **Skill lifecycle hooks** — disabled for creator skills
+- **MCP skill integration** — out of scope
+- **Skill hot-reload** — requires track 12 (deferred); restart to pick up changes
 
-## Implementation
+## Implementation Steps
 
-### Step 1: Skill Schema and Registry
+### Step 1: SKILL.md Parser and Scanner
 
-- Add `src/skills/types.ts` — `CreatorSkillConfig`, `ResolvedSkill`, `SkillListing`
-- Add `src/skills/SkillRegistry.ts` — load, validate, resolve, list
-- Add `src/skills/SkillValidator.ts` — config validation at load time
-- Extend `src/config/schema.ts` — add `skills` array to creator config
+- Add `src/skills/SkillParser.ts` — parse YAML frontmatter + markdown body
+- Add `src/skills/SkillScanner.ts` — scan directory for `*/SKILL.md` files, load supporting `.md` files
+- Add `src/skills/types.ts` — `LoadedSkill`, `SkillExecutionRecord`
+- Add `src/skills/SkillValidator.ts` — validate at load time
+- Use the existing `yaml` dependency already present in `package.json`
 
-### Step 2: Prompt Template Engine
+### Step 2: Skill Registry
 
-- Add `src/skills/PromptTemplate.ts` — compile, expand, built-in variables
-- Define variable resolution from creator config fields
-- Handle unknown variables gracefully (empty string, no crash)
+- Add `src/skills/SkillRegistry.ts` — load from two dirs, merge, dedup, expose list/get
+- Wire into agent startup — load skills once at init
+- Log loaded skill count and names
+- Log explicit warnings when a local skill overrides a bundled skill
 
 ### Step 3: CreatorSkillTool
 
 - Add `src/tools/CreatorSkillTool.ts` — tool definition + execution logic
-- Implement inline execution path (via TurnExecutor)
+- Implement `$ARGUMENTS` expansion
+- Implement inline execution path as tool-result prompt expansion in the parent turn
 - Implement forked execution path (via ForkedAgent)
-- Register in tool registry alongside existing tools
+- Reuse `resolveSubagentTools(...)`-style registry filtering
+- Exclude `CreatorSkill` from child registries to prevent recursion
+- Register in tool registry when skills exist
 
 ### Step 4: Model-Facing Skill Listing
 
 - Add `src/skills/SkillListingBuilder.ts` — build system prompt section
 - Integrate with `SystemPromptBuilder` (track 01)
-- Respect listing budget (max chars for skill descriptions)
-- Truncate `when_to_use` to keep prompt size bounded
+- Respect listing budget (1500 chars max)
+- Define deterministic truncation/omission strategy when budget is exceeded
+- Omit section entirely when no skills loaded
 
 ### Step 5: Guardrail Integration
 
 - Wire input screening on expanded skill prompt
 - Wire output validation on skill result
 - Ensure tool policy enforcement within skill execution
-- Skill args count as fan input for guardrail purposes
+- Skill args treated as fan input for guardrail purposes
+- Align with Track 10 `guardrailScope` semantics (`public` for top-level, `internal` for forks)
 
 ### Step 6: Execution Tracking
 
@@ -628,65 +776,59 @@ const SKILL_LIMITS = {
 - Record in track 05 transcript
 - Count toward track 11 usage/quota
 
-### Step 7: Config Reload Support
+### Step 7: Tests
 
-- Wire skill registry reload into track 12 config lifecycle
-- On creator config change: diff skills, reload registry
-- Active skill executions complete with old config; next invocation uses new
+- Unit tests for parser, validator, scanner, and listing builder
+- Unit tests for argument expansion and supporting-file limits
+- Integration test for inline skill invocation returning tool-result prompt text
+- Integration test for forked skill invocation with timeout handling
+- Integration test that child registries exclude `CreatorSkill`
+- Integration test for local-overrides-bundled warning path
 
 ## Example: Creator Agent With Skills
 
-A music producer creator configures their agent:
+A music producer creates `~/.digitalme/skills/` on their host:
 
-```yaml
-name: "DJ Nova"
-personality: "Energetic music producer who loves helping fans"
+```
+~/.digitalme/skills/
+├── beat-catalog/
+│   └── SKILL.md
+└── collab-request/
+    ├── SKILL.md
+    └── pricing.md
+```
 
-skills:
-  - name: beat_catalog
-    description: "Search my beat catalog"
-    when_to_use: "When fan asks about beats, instrumentals, pricing, or licensing"
-    context: inline
-    prompt: |
-      The fan is asking about beats. Search for: $QUERY
+`beat-catalog/SKILL.md`:
 
-      Beat catalog:
-      - "Midnight Groove" - Hip-hop, 140 BPM, $29.99 lease / $299 exclusive
-      - "Solar Flare" - EDM, 128 BPM, $19.99 lease / $199 exclusive
-      - "Ocean Breeze" - Lo-fi, 85 BPM, $14.99 lease / $149 exclusive
-      ...
+```markdown
+---
+name: beat-catalog
+description: Search my beat catalog for instrumentals
+when_to_use: When fan asks about beats, instrumentals, pricing, or licensing
+allowed-tools: []
+context: inline
+max-turns: 1
+---
 
-      Present matching beats with name, genre, BPM, and pricing.
-      If they want to buy, direct them to the store link.
-    allowed_tools: []
-    max_turns: 1
+The fan is asking about beats. Search for: $ARGUMENTS
 
-  - name: collab_request
-    description: "Handle collaboration requests"
-    when_to_use: "When fan asks to collaborate, work together, or feature on a track"
-    context: fork
-    prompt: |
-      A fan wants to collaborate with $CREATOR_NAME.
+Beat catalog:
+- "Midnight Groove" - Hip-hop, 140 BPM, $29.99 lease / $299 exclusive
+- "Solar Flare" - EDM, 128 BPM, $19.99 lease / $199 exclusive
+- "Ocean Breeze" - Lo-fi, 85 BPM, $14.99 lease / $149 exclusive
 
-      Gather this information:
-      1. What type of collaboration (feature, production, remix)?
-      2. Their artist name and links to their work
-      3. Their budget range
-      4. Timeline
-
-      Be encouraging but professional. After gathering info,
-      let them know the request will be reviewed.
-    allowed_tools: []
-    max_turns: 5
-    timeout_seconds: 60
+Present matching beats with name, genre, BPM, and pricing.
+If they want to buy, direct them to the store link.
 ```
 
 Fan conversation:
 > **Fan:** "Hey do you have any lo-fi beats around 80-90 BPM?"
 >
-> _Agent internally calls: `CreatorSkill({ skill: "beat_catalog", args: "lo-fi beats 80-90 BPM" })`_
+> _Agent internally calls: `CreatorSkill({ skill: "beat-catalog", args: "lo-fi beats 80-90 BPM" })`_
 >
 > **Agent:** "Yeah! Check out 'Ocean Breeze' — it's a lo-fi track at 85 BPM. $14.99 for a lease, $149 for exclusive rights. Want to hear a preview?"
+
+The fan never knows a skill was invoked. They just get a better answer.
 
 ## Dependencies
 
@@ -697,18 +839,17 @@ Fan conversation:
 | 08 (Forked Agents) | Forked skill execution uses ForkedAgent infrastructure |
 | 10 (Guardrails) | Skill input/output passes guardrail checks |
 | 11 (Usage) | Skill token usage counted toward creator quota |
-| 12 (Config) | Skill registry reloads on config change |
-| 13 (Analytics) | Skill execution metrics tracked |
 
 ## Success Criteria
 
-- Creator can define skills in YAML config without writing code
+- Creator can define skills as SKILL.md files without writing code
+- Same SKILL.md format as Claude Code (compatible frontmatter fields)
 - Model automatically discovers and invokes skills during fan conversation
 - Fans experience enhanced capabilities without knowing skills exist
+- Bundled skills work out of the box with zero creator configuration
+- Creator's local skills override bundled skills of the same name
+- If `~/.digitalme/skills/` is empty or unmounted, agent works fine
 - Inline skills add <2s latency to the turn
 - Forked skills complete within their timeout
-- Skill execution respects tool whitelist — skills can't access tools not in `allowed_tools`
 - Skill output passes the same guardrails as regular agent output
 - Skill usage is tracked and counted toward creator quota
-- Adding a new skill requires only a config change, no code deployment
-- Max 10 skills per creator, enforced at config validation

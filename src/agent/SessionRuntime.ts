@@ -60,7 +60,7 @@ export class SessionRuntime {
     this.forkedAgentsEnabled = runtimeConfig?.forkedAgentsEnabled ?? true;
     this.hooksEnabled = runtimeConfig?.hooksEnabled ?? true;
     this.forkSemaphore = new ForkSemaphore(runtimeConfig?.maxConcurrentForks ?? 2);
-    this.hookRegistry = new PostTurnHookRegistry(runtimeConfig?.hookTimeoutMs ?? 30_000);
+    this.hookRegistry = new PostTurnHookRegistry(runtimeConfig?.hookTimeoutMs ?? 30_000, deps.transcriptRecorder);
     this.usageTracker = new ConversationUsageTracker(state.conversationId);
     this.usageAggregator = usageAggregator;
 
@@ -76,7 +76,7 @@ export class SessionRuntime {
         maxSectionTokens: smConfig.maxSectionTokens,
         storagePath: path.join(smConfig.storageDir, state.conversationId, 'session-memory.md'),
       });
-      this.hookRegistry.register(createSessionMemoryHook(this.sessionMemory));
+      this.hookRegistry.register(createSessionMemoryHook(this.sessionMemory), 'session_memory');
     }
   }
 
@@ -161,6 +161,8 @@ export class SessionRuntime {
           turnExecutor: this.deps.turnExecutor,
           conversationId: submission.conversationId,
           lastResult: result,
+          transcriptRecorder: this.deps.transcriptRecorder,
+          interactionSpanContext: result.interactionSpanContext,
         }).catch(() => {
           // Swallowed — hook errors never crash the main agent
         });
