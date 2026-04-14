@@ -31,6 +31,7 @@ export const testConfig: AgentConfig = {
     base_url: null,
     max_output_tokens: 8192,
   },
+  fast_model: undefined,
   limits: {
     max_message_length: 4000,
     max_history_messages: 100,
@@ -63,7 +64,6 @@ export const testConfig: AgentConfig = {
     },
     session_memory: {
       enabled: false,
-      extraction_model: null,
       tokens_between_updates: 5000,
       tool_calls_between_updates: 3,
       minimum_tokens_to_init: 10000,
@@ -72,7 +72,6 @@ export const testConfig: AgentConfig = {
     },
     summary: {
       enabled: true,
-      model: null,
       max_summary_tokens: 2000,
       preserve_recent_messages: 10,
     },
@@ -96,7 +95,6 @@ export const testConfig: AgentConfig = {
     quota_warning_threshold: 0.8,
   },
   routing: {
-    task_models: {},
     health: {
       enabled: true,
       window_size: 20,

@@ -54,3 +54,51 @@ security:
     fs.rmSync(path.dirname(filePath), { recursive: true, force: true });
   }
 });
+
+test('loadConfig rejects removed legacy config fields with a clear error', () => {
+  const filePath = writeTempConfig(`
+soul:
+  name: Test Agent
+  description: A test agent.
+auth:
+  api_key: key
+  signing_secret: secret
+platform:
+  base_url:
+  heartbeat_interval_seconds: 20
+model:
+  provider: openai
+  name: gpt-4o
+  api_key: model-key
+limits:
+  max_message_length: 4000
+  max_history_messages: 100
+  max_turns: 10
+  max_concurrent: 50
+  max_pending: 1000
+  max_active_sessions: 1000
+  session_ttl_seconds: 1800
+security:
+  hmac_tolerance_seconds: 300
+routing:
+  task_models:
+    summary:
+      provider: openai
+      name: gpt-4o-mini
+      api_key: model-key
+context:
+  summary:
+    model: gpt-4o-mini
+  session_memory:
+    extraction_model: gpt-4o-mini
+`);
+
+  try {
+    assert.throws(
+      () => loadConfig(filePath),
+      /Config contains removed fields: routing\.task_models, context\.summary\.model, context\.session_memory\.extraction_model/,
+    );
+  } finally {
+    fs.rmSync(path.dirname(filePath), { recursive: true, force: true });
+  }
+});

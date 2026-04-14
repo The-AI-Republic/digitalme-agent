@@ -6,8 +6,6 @@ import { ModelClient, type CompletionRequest, type ModelStepResult } from './Mod
 import { ModelRouter } from './ModelRouter.js';
 import type { IModelClientFactory } from './ModelClientFactory.js';
 
-// --- Stub client ---
-
 class StubClient extends ModelClient {
   constructor(readonly label: string) { super(); }
   async generate(_request: CompletionRequest): Promise<ModelStepResult> {
@@ -15,16 +13,12 @@ class StubClient extends ModelClient {
   }
 }
 
-// --- Stub factory ---
-
 function makeFactory(primary: StubClient): IModelClientFactory {
   return {
     createClient: () => primary,
     createFromConfig: (config: ModelConfig) => new StubClient(`${config.provider}/${config.name}`),
   };
 }
-
-// --- Config builders ---
 
 const primaryModel: ModelConfig = {
   provider: 'openai',
@@ -42,7 +36,7 @@ const fallbackModel: ModelConfig = {
   max_output_tokens: 8192,
 };
 
-const summaryModel: ModelConfig = {
+const fastModel: ModelConfig = {
   provider: 'openai',
   name: 'gpt-4o-mini',
   api_key: 'key',
@@ -56,7 +50,9 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     server: { port: 8088, bind: '0.0.0.0' },
     auth: { api_key: 'key', signing_secret: 'secret' },
     platform: { base_url: null, heartbeat_interval_seconds: 20 },
+    skills: { bundled_dir: './skills', local_dir: '/app/skills-local' },
     model: primaryModel,
+    fast_model: undefined,
     limits: { max_message_length: 4000, max_history_messages: 100, max_turns: 10, max_concurrent: 50, max_pending: 1000, max_active_sessions: 1000, session_ttl_seconds: 1800 },
     security: { hmac_tolerance_seconds: 300 },
     context: {
@@ -65,15 +61,14 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
       default_max_output_tokens: 4096,
       microcompact: { enabled: true, gap_threshold_minutes: 60, keep_recent_results: 5 },
       tool_result_persistence: { enabled: true, default_max_result_chars: 10000, per_message_budget_chars: 30000, preview_size_bytes: 2000, storage_dir: '/tmp/test' },
-      session_memory: { enabled: false, extraction_model: null, tokens_between_updates: 5000, tool_calls_between_updates: 3, minimum_tokens_to_init: 10000, max_total_tokens: 8000, max_section_tokens: 1500 },
-      summary: { enabled: true, model: null, max_summary_tokens: 2000, preserve_recent_messages: 10 },
+      session_memory: { enabled: false, tokens_between_updates: 5000, tool_calls_between_updates: 3, minimum_tokens_to_init: 10000, max_total_tokens: 8000, max_section_tokens: 1500 },
+      summary: { enabled: true, max_summary_tokens: 2000, preserve_recent_messages: 10 },
       thresholds: { microcompact_ratio: 0.5, projection_ratio: 0.7, overflow_ratio: 0.9, safety_margin: 1.33 },
       reactive_compact: { max_retries: 1, aggressive_preserve_messages: 3 },
       max_output_recovery: { max_retries: 2 },
     },
-    skills: { bundled_dir: './skills', local_dir: '/app/skills-local' },
     quotas: { enabled: false, on_quota_exceeded: 'graceful_refuse', quota_warning_threshold: 0.8 },
-    routing: { task_models: {}, health: { enabled: true, window_size: 20, failure_threshold: 0.5, recovery_after_seconds: 60 } },
+    routing: { health: { enabled: true, window_size: 20, failure_threshold: 0.5, recovery_after_seconds: 60 } },
     forked_agents: { enabled: true, max_concurrent: 2 },
     subagents: { enabled: false, max_concurrent: 2 },
     hooks: { post_turn: { enabled: true, timeout_ms: 30000 } },
@@ -92,8 +87,6 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   };
 }
 
-// --- resolve() tests ---
-
 test('ModelRouter: resolves primary model for primary task', () => {
   const factory = makeFactory(new StubClient('primary'));
   const router = new ModelRouter(makeConfig(), factory);
@@ -106,8 +99,7 @@ test('ModelRouter: resolves primary model for primary task', () => {
 
 test('ModelRouter: resolves fallback model for fallback task', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({ fallback_model: fallbackModel });
-  const router = new ModelRouter(config, factory);
+  const router = new ModelRouter(makeConfig({ fallback_model: fallbackModel }), factory);
 
   const decision = router.resolve('fallback');
   assert.equal(decision.modelConfig.name, 'claude-sonnet');
@@ -115,50 +107,24 @@ test('ModelRouter: resolves fallback model for fallback task', () => {
   assert.equal(decision.task, 'fallback');
 });
 
-test('ModelRouter: falls back to primary when no task-specific model configured', () => {
+test('ModelRouter: fast task falls back to primary when no fast model configured', () => {
   const factory = makeFactory(new StubClient('primary'));
   const router = new ModelRouter(makeConfig(), factory);
 
-  const decision = router.resolve('summary');
+  const decision = router.resolve('fast');
   assert.equal(decision.modelConfig.name, 'gpt-4o');
   assert.equal(decision.reason, 'fallback_not_configured');
-  assert.equal(decision.task, 'summary');
+  assert.equal(decision.task, 'fast');
 });
 
-test('ModelRouter: resolves task-specific model from routing config', () => {
+test('ModelRouter: resolves fast model from config', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({
-    routing: {
-      task_models: { summary: summaryModel },
-      health: { enabled: true, window_size: 20, failure_threshold: 0.5, recovery_after_seconds: 60 },
-    },
-  } as Partial<AgentConfig>);
-  const router = new ModelRouter(config, factory);
+  const router = new ModelRouter(makeConfig({ fast_model: fastModel }), factory);
 
-  const decision = router.resolve('summary');
+  const decision = router.resolve('fast');
   assert.equal(decision.modelConfig.name, 'gpt-4o-mini');
   assert.equal(decision.reason, 'config_task_specific');
 });
-
-test('ModelRouter: extraction task falls back to primary when not configured', () => {
-  const factory = makeFactory(new StubClient('primary'));
-  const router = new ModelRouter(makeConfig(), factory);
-
-  const decision = router.resolve('extraction');
-  assert.equal(decision.modelConfig.name, 'gpt-4o');
-  assert.equal(decision.reason, 'fallback_not_configured');
-});
-
-test('ModelRouter: forked task falls back to primary when not configured', () => {
-  const factory = makeFactory(new StubClient('primary'));
-  const router = new ModelRouter(makeConfig(), factory);
-
-  const decision = router.resolve('forked');
-  assert.equal(decision.modelConfig.name, 'gpt-4o');
-  assert.equal(decision.reason, 'fallback_not_configured');
-});
-
-// --- resolveClient() tests ---
 
 test('ModelRouter: resolveClient returns a client and decision', () => {
   const primary = new StubClient('primary');
@@ -176,36 +142,25 @@ test('ModelRouter: resolveClient caches clients by config key', () => {
 
   const { client: client1 } = router.resolveClient('primary');
   const { client: client2 } = router.resolveClient('primary');
-  assert.equal(client1, client2); // Same instance
+  assert.equal(client1, client2);
 });
 
 test('ModelRouter: different configs get different cached clients', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({
-    fallback_model: fallbackModel,
-    routing: {
-      task_models: { summary: summaryModel },
-      health: { enabled: true, window_size: 20, failure_threshold: 0.5, recovery_after_seconds: 60 },
-    },
-  } as Partial<AgentConfig>);
-  const router = new ModelRouter(config, factory);
+  const router = new ModelRouter(makeConfig({ fallback_model: fallbackModel, fast_model: fastModel }), factory);
 
   const { client: primaryClient } = router.resolveClient('primary');
-  const { client: summaryClient } = router.resolveClient('summary');
-  assert.notEqual(primaryClient, summaryClient);
+  const { client: fastClient } = router.resolveClient('fast');
+  assert.notEqual(primaryClient, fastClient);
 });
-
-// --- Health-aware routing ---
 
 test('ModelRouter: routes to fallback when primary provider is unhealthy', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({
+  const router = new ModelRouter(makeConfig({
     fallback_model: fallbackModel,
-    routing: { task_models: {}, health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
-  });
-  const router = new ModelRouter(config, factory);
+    routing: { health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
+  }), factory);
 
-  // Make openai unhealthy
   for (let i = 0; i < 4; i++) {
     router.recordFailure('openai', 'gpt-4o', 100, 'overloaded');
   }
@@ -217,46 +172,37 @@ test('ModelRouter: routes to fallback when primary provider is unhealthy', () =>
 
 test('ModelRouter: uses primary when all providers unhealthy', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({
+  const router = new ModelRouter(makeConfig({
     fallback_model: fallbackModel,
-    routing: { task_models: {}, health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
-  });
-  const router = new ModelRouter(config, factory);
+    routing: { health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
+  }), factory);
 
-  // Make both providers unhealthy
   for (let i = 0; i < 4; i++) {
     router.recordFailure('openai', 'gpt-4o', 100, 'overloaded');
     router.recordFailure('anthropic', 'claude-sonnet', 100, 'overloaded');
   }
 
   const decision = router.resolve('primary');
-  assert.equal(decision.modelConfig.name, 'gpt-4o'); // Falls back to primary
+  assert.equal(decision.modelConfig.name, 'gpt-4o');
   assert.equal(decision.reason, 'config_primary');
 });
 
-test('ModelRouter: health-aware routing for task-specific models', () => {
+test('ModelRouter: health-aware routing for fast model', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({
+  const router = new ModelRouter(makeConfig({
     fallback_model: fallbackModel,
-    routing: {
-      task_models: { summary: summaryModel },
-      health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 },
-    },
-  } as Partial<AgentConfig>);
-  const router = new ModelRouter(config, factory);
+    fast_model: fastModel,
+    routing: { health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
+  }), factory);
 
-  // Make the summary model's provider (openai) unhealthy
   for (let i = 0; i < 4; i++) {
     router.recordFailure('openai', 'gpt-4o-mini', 100, 'overloaded');
   }
 
-  // Should route to fallback since openai is unhealthy
-  const decision = router.resolve('summary');
+  const decision = router.resolve('fast');
   assert.equal(decision.modelConfig.name, 'claude-sonnet');
   assert.equal(decision.reason, 'fallback_health');
 });
-
-// --- Health recording ---
 
 test('ModelRouter: recordSuccess updates health tracker', () => {
   const factory = makeFactory(new StubClient('primary'));
@@ -292,10 +238,9 @@ test('ModelRouter: getAllProviderHealth returns all provider snapshots', () => {
 
 test('ModelRouter: isProviderHealthy delegates to health tracker', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({
-    routing: { task_models: {}, health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
-  });
-  const router = new ModelRouter(config, factory);
+  const router = new ModelRouter(makeConfig({
+    routing: { health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
+  }), factory);
 
   assert.ok(router.isProviderHealthy('openai'));
 
@@ -306,24 +251,19 @@ test('ModelRouter: isProviderHealthy delegates to health tracker', () => {
   assert.ok(!router.isProviderHealthy('openai'));
 });
 
-// --- Reset ---
-
 test('ModelRouter: reset clears health data and client cache', () => {
   const factory = makeFactory(new StubClient('primary'));
   const router = new ModelRouter(makeConfig(), factory);
 
   router.recordSuccess('openai', 'gpt-4o', 100);
-  router.resolveClient('primary'); // Populate client cache
+  router.resolveClient('primary');
 
   router.reset();
 
   assert.equal(router.getAllProviderHealth().length, 0);
-  // After reset, resolveClient should create a fresh client
   const { client } = router.resolveClient('primary');
   assert.ok(client instanceof StubClient);
 });
-
-// --- getOrCreateClient ---
 
 test('ModelRouter: getOrCreateClient caches by provider+name+base_url+api_key', () => {
   const factory = makeFactory(new StubClient('primary'));
@@ -349,14 +289,11 @@ test('ModelRouter: getOrCreateClient differentiates by base_url', () => {
   assert.notEqual(client1, client2);
 });
 
-// --- No fallback configured ---
-
 test('ModelRouter: without fallback, unhealthy primary still returns primary', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({
-    routing: { task_models: {}, health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
-  }); // No fallback_model
-  const router = new ModelRouter(config, factory);
+  const router = new ModelRouter(makeConfig({
+    routing: { health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
+  }), factory);
 
   for (let i = 0; i < 4; i++) {
     router.recordFailure('openai', 'gpt-4o', 100);
@@ -367,27 +304,21 @@ test('ModelRouter: without fallback, unhealthy primary still returns primary', (
   assert.equal(decision.reason, 'config_primary');
 });
 
-// --- Recovery from unhealthy state ---
-
 test('ModelRouter: provider recovers after success', () => {
   const factory = makeFactory(new StubClient('primary'));
-  const config = makeConfig({
+  const router = new ModelRouter(makeConfig({
     fallback_model: fallbackModel,
-    routing: { task_models: {}, health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
-  });
-  const router = new ModelRouter(config, factory);
+    routing: { health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 } },
+  }), factory);
 
-  // Make openai unhealthy
   for (let i = 0; i < 4; i++) {
     router.recordFailure('openai', 'gpt-4o', 100);
   }
   assert.ok(!router.isProviderHealthy('openai'));
 
-  // Record a success
   router.recordSuccess('openai', 'gpt-4o', 100);
   assert.ok(router.isProviderHealthy('openai'));
 
-  // Should route back to primary
   const decision = router.resolve('primary');
   assert.equal(decision.modelConfig.name, 'gpt-4o');
 });

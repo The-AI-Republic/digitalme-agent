@@ -2,7 +2,16 @@
 
 ## Goal
 
-Add a dedicated `fast_model` config for cheap/fast background tasks, separate from `fallback_model` (which is a same-tier alternative provider for health failures). Wire it into all internal tasks that don't need the primary model's full quality.
+Add a dedicated `fast_model` config for cheap/fast helper tasks, separate from `fallback_model`:
+
+- `fallback_model` remains a same-tier alternative for provider health failures
+- `fast_model` is an optional lower-cost model for explicitly chosen lightweight internal helpers
+
+The design should follow Claudy's current pattern:
+
+- clearly distinguish "small fast model" from "main / parent model"
+- use the cheap fast model only for some helper tasks
+- keep the main / parent model for quality-sensitive or cache-sharing work
 
 ## Problem
 
@@ -10,57 +19,71 @@ The current design conflates two distinct concepts into `fallback_model`:
 
 | Concept | Purpose | Example model |
 |---------|---------|---------------|
-| **Fallback** | Same-tier alternative when primary provider is down | claude-sonnet-4 (when primary is gpt-5.4) |
-| **Fast/cheap** | Low-cost model for background tasks that don't face the user | gpt-5.4-mini, haiku-4.5 |
+| **Fallback** | Same-tier alternative when the primary provider is unhealthy | `claude-sonnet-4` when primary is `gpt-5.4` |
+| **Fast/cheap** | Lower-cost helper model for bounded internal tasks | `gpt-5.4-mini`, `haiku-4.5` |
 
-Today, `CostAwareRouter` signals `useFallbackModel: true` under quota pressure, which switches to `fallback_model` — but a fallback model is typically equally expensive (it's from a different provider, not a cheaper tier). The cost-aware downgrade should use a cheap model, not the health fallback.
+Today, `CostAwareRouter` signals `useFallbackModel: true` under quota pressure, and `TurnExecutor` switches only the model name to `fallback_model`. That is the wrong intent: quota pressure should prefer a cheaper model, not a same-tier failover model.
 
-Additionally, several internal tasks (summarization, session memory extraction) always use the primary model, wasting tokens on work the user never sees.
+Separately, the current codebase has some unused task-specific routing config that should either be wired honestly or removed.
 
-## Reference: How Claudy Does It
+## Claudy Reference
 
-Claudy (`/home/irichard/dev/study/claudy/src`) uses a simple `getSmallFastModel()` function:
+Claudy (`/home/irichard/dev/study/claudy/src`) does have a clear cheap-fast concept:
 
-- Returns `process.env.ANTHROPIC_SMALL_FAST_MODEL` or defaults to Haiku 4.5
-- Used for: away summaries, token estimation, hooks/skills, web search fast path
-- Compaction and memory extraction use the **parent's primary model** (quality matters there)
-- No config file entry — it's a code-level default with env var override
+- `getSmallFastModel()` returns `process.env.ANTHROPIC_SMALL_FAST_MODEL` or the default Haiku model
+- it is used for lightweight helper tasks such as away summaries, prompt hooks, title generation, helper parsing/classification, and token-estimation helpers
+- subagents default to inheriting the parent model
+- session memory extraction and compaction-style work run via forked-agent paths that preserve the parent's model / cache-safe request shape
 
-Key insight: Claudy keeps it simple. One function, one default, one override mechanism.
+Key implication:
 
-## Current State
+> Claudy does **not** use the cheap fast model for all background work.
+
+It uses it for helper-style tasks, while keeping the primary / parent model for work where quality, continuity, or prompt-cache sharing matters.
+
+## Current State In DigitalMe Agent
 
 ### What exists and works
 
-- `config.model` — primary model, used for user-facing conversations ✅
-- `config.fallback_model` — alternative provider for health failures ✅
-- `ModelRouter.resolve('primary')` — health-aware primary routing ✅
-- `callModelWithRecovery()` — retries + fallback on consecutive 529s ✅
-- `CostAwareRouter` — quota evaluation with `useFallbackModel` signal ✅
+- `config.model` is the primary model for user-facing turns
+- `config.fallback_model` is used for health failure recovery
+- `ModelRouter.resolve('primary')` exists for health-aware main-turn routing
+- `callModelWithRecovery()` retries and falls back on repeated provider overload
+- `CostAwareRouter` can signal downgrade intent with `useFallbackModel`
 
-### What exists but is NOT wired
+### What exists but is misleading or not wired
 
-- `routing.task_models.summary` — defined in schema and ModelRouter, but `ConversationSummaryBuilder` never uses it
-- `routing.task_models.extraction` — defined in schema and ModelRouter, but `SessionMemoryHook` launches forked agent without passing a model
-- `routing.task_models.forked` — defined in schema and ModelRouter, but `ForkedAgent` doesn't query by task type
-- `context.summary.model` — string field in schema, never read
-- `context.session_memory.extraction_model` — string field in schema, never read
+- `routing.task_models.summary` exists in schema and router, but no active turn path uses `ConversationSummaryBuilder`
+- `routing.task_models.extraction` exists, but `SessionMemoryHook` does not resolve a task-specific client
+- `routing.task_models.forked` exists, but `ForkedAgent` does not route through task type
+- `context.summary.model` exists in schema and is not read
+- `context.session_memory.extraction_model` exists in schema and is not read
 
-### Internal tasks using primary model (wasteful)
+### Important architectural constraint
 
-| Task | File | Current model | Should use |
-|------|------|---------------|------------|
-| Conversation summary (reactive compact) | `ConversationSummaryBuilder.ts` | Primary | Fast model |
-| Session memory extraction | `SessionMemoryHook.ts` → `ForkedAgent` | Primary | Fast model |
-| Cost-aware downgrade | `TurnExecutor.ts:245-249` | `fallback_model` | Fast model |
+Today, `ExecutionOptions.model` is only a string model name. It does **not** carry provider credentials or a full `ModelConfig`.
 
-### Internal tasks that don't call a model (no change needed)
+That means:
 
-| Task | File | Reason |
-|------|------|--------|
-| Microcompact | `Microcompact.ts` | Deterministic, no model call |
-| Session memory compact | `SessionMemoryCompact.ts` | Reads from disk, no model call |
-| Prompt projection | `prepareContextForModelCall.ts` | Token math, no model call |
+- passing `model: "gpt-5.4-mini"` to a fork only works safely if the primary client/provider can actually serve that model
+- it is **not** a correct way to select a different provider config
+- cost-aware downgrade already has this weakness today
+
+So any fast-model rollout must first support selecting a full model config, not just a model name string.
+
+## Design Principles
+
+1. **Match Claudy's split**
+   `fast_model` is for lightweight helper tasks only; primary model remains the default for quality-sensitive internal work.
+
+2. **Keep fallback semantics clean**
+   `fallback_model` is only for provider health failures, not cost optimization.
+
+3. **Only expose config that is real**
+   Remove dead per-task model knobs that are not actually honored.
+
+4. **Do the prerequisite refactor first**
+   Background execution must be able to select a full `ModelConfig`, not only a model name.
 
 ## Target Design
 
@@ -73,14 +96,12 @@ model:
   api_key: ${MODEL_API_KEY}
   max_output_tokens: 8192
 
-# Same-tier alternative for when primary provider is down
 fallback_model:
   provider: anthropic
   name: claude-sonnet-4-20250514
   api_key: ${FALLBACK_API_KEY}
   max_output_tokens: 8192
 
-# Cheap/fast model for background tasks (summaries, extraction, cost downgrade)
 fast_model:
   provider: openai
   name: gpt-5.4-mini
@@ -88,131 +109,196 @@ fast_model:
   max_output_tokens: 4096
 ```
 
+### Model classes
+
+#### Primary model
+
+Use `config.model` for:
+
+- main user-facing turns
+- session memory extraction
+- compaction / continuity-sensitive summarization
+- general forked-agent work unless a specific helper path says otherwise
+
+#### Fast model
+
+Use `config.fast_model` only for explicitly enumerated helper tasks, for example:
+
+- short helper summaries / recaps
+- title / label generation
+- hook evaluation
+- lightweight parsing / classification helpers
+- token-estimation or similar bounded internal inference
+
+If no `fast_model` is configured, those helper tasks fall back to `config.model`.
+
 ### Resolution order
 
-```
-User-facing turn:
-  1. config.model (primary)
-  2. If primary unhealthy → config.fallback_model
-  3. If all unhealthy → config.model anyway
+#### Main user-facing turn
 
-Background task (summary, extraction):
-  1. config.fast_model (if configured)
-  2. config.model (fallback if no fast_model)
+1. `config.model`
+2. if primary provider unhealthy -> `config.fallback_model`
+3. if all unhealthy -> `config.model`
 
-Cost-aware downgrade (quota pressure):
-  1. config.fast_model (if configured)
-  2. config.fallback_model (legacy behavior if no fast_model)
-  3. config.model (if neither configured)
-```
+#### Helper task using fast model class
 
-### Changes to ModelRouter
+1. `config.fast_model` if configured
+2. otherwise `config.model`
 
-Add a new task type `'fast'` and update resolution:
+Health fallback for helper tasks is optional implementation detail, but the first release should prefer correctness and simplicity over broad routing behavior.
+
+#### Cost-aware downgrade
+
+1. `config.fast_model` if configured
+2. otherwise preserve current legacy behavior with `config.fallback_model`
+3. otherwise remain on `config.model`
+
+This keeps current installs working while separating the concepts cleanly.
+
+## Scope For This Track
+
+### In scope
+
+1. Add `fast_model` to config and example config
+2. Fix cost-aware downgrade so it can use `fast_model`
+3. Add a safe mechanism for background/helper paths to choose a full `ModelConfig`
+4. Remove dead config fields that are not wired
+
+### Not in scope
+
+1. Converting all forked/background work to `fast_model`
+2. Moving session memory extraction to `fast_model`
+3. Moving compaction / reactive compaction to `fast_model`
+4. Re-activating unused summary-based compaction paths
+
+Those would be separate design decisions, and for Claudy-alignment the default answer should stay "use the primary model."
+
+## Required Prerequisite Refactor
+
+Before wiring any helper task to `fast_model`, add a way for internal executions to select a full model configuration.
+
+Acceptable options:
+
+- add `ExecutionOptions.modelConfig?: ModelConfig`
+- or add `ExecutionOptions.modelTask?: 'primary' | 'fallback' | 'fast'`
+
+Requirements:
+
+- cross-provider fast models must work correctly
+- internal forks must not rely on string model names alone
+- the chosen provider/model must be reflected in the instantiated client, not just in telemetry text
+
+## Changes To ModelRouter
+
+Simplify routing terminology:
 
 ```typescript
-// New in ModelTask
 type ModelTask = 'primary' | 'fallback' | 'fast';
-
-// New resolution in getTaskModel()
-case 'fast':
-  return this.config.fast_model;
 ```
 
-Remove `'summary'`, `'extraction'`, `'forked'` from `ModelTask` — they were never wired and the distinction is unnecessary. All background tasks use the fast model.
+`fast` means "helper-model class", not "all forked work".
 
-### Changes to TurnExecutor
+`ModelRouter` may expose:
 
-**Cost-aware downgrade** — use fast_model instead of fallback_model:
+- `resolve('primary')`
+- `resolve('fallback')`
+- `resolve('fast')`
 
-```typescript
-// Before (wrong — fallback is same-tier, not cheap)
-if (decision.useFallbackModel && this.config.fallback_model) {
-  modelName = this.config.fallback_model.name;
-}
+But it should no longer imply that summary, extraction, and generic forks are all routed independently. Those task names do not reflect the real code paths today.
 
-// After
-if (decision.useFallbackModel) {
-  const fastConfig = this.config.fast_model ?? this.config.fallback_model;
-  if (fastConfig) {
-    modelName = fastConfig.name;
-  }
-}
-```
+## Changes To TurnExecutor
 
-### Changes to ConversationSummaryBuilder
+### Cost-aware downgrade
 
-Resolve the fast model client at construction time:
+Change the downgrade preference from:
 
-```typescript
-// In TurnExecutor constructor or where SummaryBuilder is created
-const summaryClient = this.config.fast_model
-  ? this.modelClientFactory.createFromConfig(this.config.fast_model)
-  : this.modelClientFactory.createClient();
+- current: `fallback_model`
 
-this.summaryBuilder = new ConversationSummaryBuilder(summaryClient, ...);
-```
+to:
 
-### Changes to SessionMemoryHook
+- `fast_model`
+- else `fallback_model`
+- else no downgrade
 
-Pass explicit model when launching forked agent:
+This is the concrete place where the fallback-vs-fast distinction matters immediately.
 
-```typescript
-// In SessionMemoryHook
-const extractionModel = this.config.fast_model?.name;
-launchForkedAgent({
-  ...existingOptions,
-  model: extractionModel,  // Will fall back to primary if undefined
-});
-```
+### Execution option support
 
-### Config schema changes
+Teach the execution path to honor a full model selection for internal/helper work.
 
-```typescript
-// In agentConfigSchema
-model: modelSchema,
-fallback_model: modelSchema.optional(),
-fast_model: modelSchema.optional(),  // NEW
-```
+The implementation must ensure that:
 
-### Cleanup: remove dead routing config
+- a fast-model helper call creates the correct client for the selected provider
+- forks and helper calls do not accidentally use the primary provider with only a swapped model name
 
-Remove from schema (never wired, replaced by fast_model):
-- `routing.task_models` (summary, extraction, forked)
+## Changes To SessionMemoryHook
+
+No routing change in this track.
+
+Keep session memory extraction on the primary model for now to stay aligned with Claudy's pattern:
+
+- session memory is continuity-sensitive
+- forked execution currently inherits the main execution path
+- moving it to `fast_model` would be a deliberate product tradeoff, not a Claudy-aligned default
+
+The only acceptable change here would be future support for an explicit full-config override, but this track should not switch extraction to the fast model.
+
+## Changes To Conversation Summary / Compaction
+
+No routing change in this track.
+
+Reason:
+
+- `ConversationSummaryBuilder` exists, but the active `TurnExecutor` reactive-overflow path currently uses deterministic `tryReactiveCompact()` instead
+- the summary-builder path is not currently a live integration point for turn execution
+
+So this track should not claim summary routing benefits that are not actually reachable.
+
+## Config Cleanup
+
+Remove the dead config fields that are not truly honored:
+
+- `routing.task_models`
 - `context.summary.model`
 - `context.session_memory.extraction_model`
 
 Keep:
-- `routing.health` — actively used for provider health tracking
 
-## Design Principles
+- `routing.health`
 
-1. **Simple** — One `fast_model` config, not per-task model configs that nobody uses
-2. **Optional** — Everything works without `fast_model`; falls back to primary
-3. **Honest** — Don't expose config that isn't wired
-4. **Correct** — Fallback is for health; fast is for cost. Don't conflate them.
+Important note:
 
-## Files Changed
+Removing `routing.task_models` changes how `TurnExecutor` decides whether to auto-enable router behavior. The implementation and tests must account for that explicitly.
 
-### Modified
-- `src/config/schema.ts` — Add `fast_model`, remove `routing.task_models`, remove `context.summary.model`, remove `context.session_memory.extraction_model`
-- `src/models/types.ts` — Simplify `ModelTask` to `'primary' | 'fallback' | 'fast'`
-- `src/models/ModelRouter.ts` — Add `'fast'` task resolution, remove summary/extraction/forked
-- `src/agent/TurnExecutor.ts` — Cost-aware downgrade uses `fast_model`
-- `src/agent/context/ConversationSummaryBuilder.ts` — Accept fast model client
-- `src/agent/context/SessionMemoryHook.ts` — Pass fast model to forked agent
-- `config.example.yaml` — Add `fast_model` section
-- Test files for all of the above
+## Files Expected To Change
 
-### No new files
+- `src/config/schema.ts`
+  add `fast_model`, remove dead task-model config, remove dead summary/extraction model fields
 
-The existing `ModelRouter` and `ModelClientFactory` handle everything. No new abstractions needed.
+- `src/models/types.ts`
+  simplify `ModelTask` to `primary | fallback | fast`
+
+- `src/models/ModelRouter.ts`
+  replace summary/extraction/forked task routing with `fast`
+
+- `src/agent/types.ts`
+  add a safe internal execution override that can carry a full model selection
+
+- `src/agent/TurnExecutor.ts`
+  fix cost-aware downgrade and honor the new full-config override path
+
+- `config.example.yaml`
+  document `fast_model`
+
+- tests for the above
 
 ## Success Criteria
 
-1. `fast_model` config is respected for summarization and extraction
-2. Cost-aware downgrade uses `fast_model`, not `fallback_model`
-3. `fallback_model` is only used for provider health failures
-4. Without `fast_model` configured, all behavior is identical to before
-5. Dead config fields (`routing.task_models`, `context.summary.model`, `context.session_memory.extraction_model`) are removed
-6. All existing tests pass; new tests cover fast model routing
+1. `fast_model` exists as a separate config concept from `fallback_model`
+2. Cost-aware downgrade prefers `fast_model` instead of abusing `fallback_model`
+3. Internal helper execution can select a full model config safely across providers
+4. Session memory extraction remains on the primary model in this track
+5. Compaction / summary routing claims match the actual live code paths
+6. Dead config fields are removed
+7. Existing behavior is unchanged when `fast_model` is not configured
+8. Tests cover downgrade and model-selection correctness

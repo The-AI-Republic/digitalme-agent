@@ -18,7 +18,7 @@ test('complete sets status to completed', () => {
   const snap = turn.snapshot();
   assert.equal(snap.status, 'completed');
   assert.ok(snap.completedAt);
-  assert.deepEqual(snap.turnState.tokenUsage, { inputTokens: 10, outputTokens: 20, totalTokens: 30 });
+  assert.deepEqual(snap.executionState.tokenUsage, { inputTokens: 10, outputTokens: 20, totalTokens: 30 });
 });
 
 test('complete without token usage', () => {
@@ -26,7 +26,7 @@ test('complete without token usage', () => {
   turn.complete();
   const snap = turn.snapshot();
   assert.equal(snap.status, 'completed');
-  assert.equal(snap.turnState.tokenUsage, undefined);
+  assert.equal(snap.executionState.tokenUsage, undefined);
 });
 
 test('fail sets status and error message from Error', () => {

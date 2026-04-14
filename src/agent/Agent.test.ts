@@ -5,6 +5,16 @@ import { EventQueue } from './EventQueue.js';
 import { testConfig } from '../test/fixtures.js';
 import type { TurnSubmission, AgentEvent } from './types.js';
 
+function makeSessionStats() {
+  return {
+    activeSessions: 0,
+    activeTurns: 0,
+    sessionTtlSeconds: 1800,
+    maxActiveSessions: 1000,
+    usage: { totalCostUsd: 0, dailyCostUsd: 0, monthlyCostUsd: 0 },
+  };
+}
+
 function makeSubmission(overrides: Partial<TurnSubmission> = {}): TurnSubmission {
   return {
     requestId: 'req-1',
@@ -18,12 +28,14 @@ function makeSubmission(overrides: Partial<TurnSubmission> = {}): TurnSubmission
 test('submit dispatches through executor and returns events', async () => {
   const executorCalls: string[] = [];
   const agent = new Agent(testConfig, {
-    executor: {
+    sessionManager: {
       execute: async (submission: TurnSubmission, events: EventQueue<AgentEvent>) => {
         executorCalls.push(submission.requestId);
         events.push({ type: 'text_delta', content: 'hi' });
         events.push({ type: 'done' });
       },
+      getStats: () => makeSessionStats(),
+      beginDrain: () => {},
     },
   });
 
@@ -44,8 +56,10 @@ test('submit rejects duplicate request ids', async () => {
   const blockingPromise = new Promise<void>((resolve) => { resolveFirst = resolve; });
 
   const agent = new Agent(testConfig, {
-    executor: {
+    sessionManager: {
       execute: async () => { await blockingPromise; },
+      getStats: () => makeSessionStats(),
+      beginDrain: () => {},
     },
   });
 
@@ -65,8 +79,10 @@ test('submit rejects duplicate request ids', async () => {
 
 test('submit rejects when draining', () => {
   const agent = new Agent(testConfig, {
-    executor: {
+    sessionManager: {
       execute: async () => {},
+      getStats: () => makeSessionStats(),
+      beginDrain: () => {},
     },
   });
 
@@ -80,10 +96,12 @@ test('submit rejects when draining', () => {
 
 test('getHealth returns stats', async () => {
   const agent = new Agent(testConfig, {
-    executor: {
+    sessionManager: {
       execute: async (_s: TurnSubmission, events: EventQueue<AgentEvent>) => {
         events.push({ type: 'done' });
       },
+      getStats: () => makeSessionStats(),
+      beginDrain: () => {},
     },
   });
 
@@ -100,10 +118,12 @@ test('getHealth returns stats', async () => {
 
 test('failed execution increments failed_requests counter', async () => {
   const agent = new Agent(testConfig, {
-    executor: {
+    sessionManager: {
       execute: async () => {
         throw new Error('model_error');
       },
+      getStats: () => makeSessionStats(),
+      beginDrain: () => {},
     },
   });
 
@@ -121,8 +141,10 @@ test('failed execution increments failed_requests counter', async () => {
 
 test('beginDrain sets draining and propagates to executor', () => {
   const agent = new Agent(testConfig, {
-    executor: {
+    sessionManager: {
       execute: async () => {},
+      getStats: () => makeSessionStats(),
+      beginDrain: () => {},
     },
   });
 

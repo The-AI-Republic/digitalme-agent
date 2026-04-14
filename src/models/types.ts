@@ -5,9 +5,7 @@ import type { ModelConfig } from '../config/schema.js';
 export type ModelTask =
   | 'primary'      // Main conversation model
   | 'fallback'     // Fallback on consecutive failures
-  | 'summary'      // Conversation summarization
-  | 'extraction'   // Session memory extraction
-  | 'forked';      // Background forked agent tasks
+  | 'fast';        // Lightweight helper task model
 
 // --- Provider health tracking ---
 

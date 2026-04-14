@@ -48,6 +48,18 @@ test('UsageRecorder.record uses model override from context', () => {
   assert.equal(record.model, 'gpt-4o-mini');
 });
 
+test('UsageRecorder.record uses provider override from context', () => {
+  const recorder = makeRecorder();
+  const record = recorder.record(
+    { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 },
+    { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+  );
+  assert.ok(record);
+  assert.equal(record.provider, 'anthropic');
+  assert.equal(record.model, 'claude-sonnet-4-6');
+  assert.equal(record.estimatedCostUsd, 3);
+});
+
 test('UsageRecorder.record sets retry and fallback flags', () => {
   const recorder = makeRecorder();
   const record = recorder.record(

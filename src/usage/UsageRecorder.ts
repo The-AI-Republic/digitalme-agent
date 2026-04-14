@@ -60,6 +60,7 @@ export class UsageRecorder {
   record(
     tokenUsage: TokenUsage | undefined,
     context?: {
+      provider?: string;
       model?: string;
       isRetry?: boolean;
       isFallback?: boolean;
@@ -67,9 +68,10 @@ export class UsageRecorder {
   ): ModelUsageRecord | undefined {
     if (!tokenUsage) return undefined;
 
+    const provider = context?.provider ?? this.options.provider;
     const model = context?.model ?? this.options.model;
     const estimatedCostUsd = getCostEstimate(
-      this.options.provider,
+      provider,
       model,
       tokenUsage.inputTokens,
       tokenUsage.outputTokens,
@@ -82,7 +84,7 @@ export class UsageRecorder {
       conversationId: this.options.conversationId,
       creatorId: this.options.creatorId,
       timestamp: Date.now(),
-      provider: this.options.provider,
+      provider,
       model,
       executionContext: this.options.executionContext ?? 'main',
       inputTokens: tokenUsage.inputTokens,

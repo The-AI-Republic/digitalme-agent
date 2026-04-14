@@ -60,6 +60,7 @@ export const agentConfigSchema = z.object({
   }).default({}),
   model: modelSchema,
   fallback_model: modelSchema.optional(),
+  fast_model: modelSchema.optional(),
   limits: z.object({
     max_message_length: z.number().int().positive().default(4000),
     max_history_messages: z.number().int().positive().default(100),
@@ -96,7 +97,6 @@ export const agentConfigSchema = z.object({
     }).default({}),
     session_memory: z.object({
       enabled: z.boolean().default(false),
-      extraction_model: z.string().optional().nullable(),
       tokens_between_updates: z.number().int().positive().default(5000),
       tool_calls_between_updates: z.number().int().positive().default(3),
       minimum_tokens_to_init: z.number().int().positive().default(10000),
@@ -105,7 +105,6 @@ export const agentConfigSchema = z.object({
     }).default({}),
     summary: z.object({
       enabled: z.boolean().default(true),
-      model: z.string().optional().nullable(),
       max_summary_tokens: z.number().int().positive().default(2000),
       preserve_recent_messages: z.number().int().positive().default(10),
     }).default({}),
@@ -135,14 +134,6 @@ export const agentConfigSchema = z.object({
     refusal_message: z.string().optional(),
   }).default({}),
   routing: z.object({
-    task_models: z.object({
-      /** Model to use for conversation summarization. Falls back to primary if omitted. */
-      summary: modelSchema.optional(),
-      /** Model to use for session memory extraction. Falls back to primary if omitted. */
-      extraction: modelSchema.optional(),
-      /** Model to use for background forked agent tasks. Falls back to primary if omitted. */
-      forked: modelSchema.optional(),
-    }).default({}),
     health: z.object({
       /** Enable provider health tracking and health-aware routing. */
       enabled: z.boolean().default(true),

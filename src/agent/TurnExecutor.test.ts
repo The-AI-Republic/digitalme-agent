@@ -9,6 +9,8 @@ import { consumeGenerator } from './types.js';
 import type { ToolExecutionResult, Tool, ToolDefinition, ToolMetadata } from '../tools/types.js';
 import type { ISystemPromptBuilder, BuiltPrompt, PromptContext } from '../prompts/types.js';
 import { testConfig as config } from '../test/fixtures.js';
+import type { ModelConfig } from '../config/schema.js';
+import { ConversationUsageTracker } from '../usage/ConversationUsageTracker.js';
 import { z } from 'zod';
 
 class FakeModelClient implements ModelClient {
@@ -552,24 +554,169 @@ test('ExecutionOptions.model overrides config default', async () => {
   assert.equal(client.requests[0]?.model, 'gpt-4o-mini');
 });
 
+test('ExecutionOptions.modelConfig uses the configured provider client', async () => {
+  const primaryClient = new FakeModelClient([
+    { type: 'final_text', text: 'primary' },
+  ]);
+  const fastClient = new FakeModelClient([
+    { type: 'final_text', text: 'fast' },
+  ]);
+  const fastModelConfig: ModelConfig = {
+    provider: 'anthropic',
+    name: 'claude-haiku',
+    api_key: 'fast-key',
+    base_url: null,
+    max_output_tokens: 2048,
+  };
+
+  const executor = new TurnExecutor(config, {
+    systemPromptBuilder: makeFakeBuilder(),
+    modelClientFactory: {
+      createClient() { return primaryClient; },
+      createFromConfig(modelConfig) {
+        assert.deepEqual(modelConfig, fastModelConfig);
+        return fastClient;
+      },
+    },
+    toolRegistry: makeToolRegistry(makeFakeTool()),
+  });
+
+  await collectEvents(executor.run(
+    { requestId: 'req-mdlcfg', conversationId: 'conv-mdlcfg', userMessage: 'hi', history: [] },
+    { modelConfig: fastModelConfig },
+  ));
+
+  assert.equal(primaryClient.requests.length, 0);
+  assert.equal(fastClient.requests[0]?.model, 'claude-haiku');
+  assert.equal(fastClient.requests[0]?.maxOutputTokens, 2048);
+});
+
+test('ExecutionOptions.modelConfig records usage with the resolved provider and model', async () => {
+  const primaryClient = new FakeModelClient([
+    { type: 'final_text', text: 'primary' },
+  ]);
+  const fastClient = new FakeModelClient([
+    {
+      type: 'final_text',
+      text: 'fast',
+      tokenUsage: { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 },
+    },
+  ]);
+  const fastModelConfig: ModelConfig = {
+    provider: 'anthropic',
+    name: 'claude-sonnet-4-6',
+    api_key: 'fast-key',
+    base_url: null,
+    max_output_tokens: 2048,
+  };
+
+  const executor = new TurnExecutor(config, {
+    systemPromptBuilder: makeFakeBuilder(),
+    modelClientFactory: {
+      createClient() { return primaryClient; },
+      createFromConfig(modelConfig) {
+        assert.deepEqual(modelConfig, fastModelConfig);
+        return fastClient;
+      },
+    },
+    toolRegistry: makeToolRegistry(makeFakeTool()),
+  });
+
+  const { events } = await collectEvents(executor.run(
+    { requestId: 'req-mdlcfg-usage', conversationId: 'conv-mdlcfg-usage', userMessage: 'hi', history: [] },
+    { modelConfig: fastModelConfig },
+  ));
+
+  const usageEvent = events.find((event) => event.type === 'usage');
+  assert.ok(usageEvent);
+  assert.equal(usageEvent.record.provider, 'anthropic');
+  assert.equal(usageEvent.record.model, 'claude-sonnet-4-6');
+  assert.equal(usageEvent.record.executionContext, 'background');
+  assert.equal(usageEvent.record.estimatedCostUsd, 3);
+});
+
+test('ExecutionOptions rejects simultaneous model and modelConfig overrides', async () => {
+  const { executor } = makeExecutorWithClient([
+    { type: 'final_text', text: 'ok' },
+  ]);
+  const fastModelConfig: ModelConfig = {
+    provider: 'anthropic',
+    name: 'claude-haiku',
+    api_key: 'fast-key',
+    base_url: null,
+    max_output_tokens: 2048,
+  };
+
+  await assert.rejects(
+    collectEvents(executor.run(
+      { requestId: 'req-model-conflict', conversationId: 'conv-model-conflict', userMessage: 'hi', history: [] },
+      { model: 'gpt-4o-mini', modelConfig: fastModelConfig },
+    )),
+    /ExecutionOptions\.model and modelConfig are mutually exclusive/,
+  );
+});
+
+test('Cost-aware downgrade emits no recovery event when no downgrade model is configured', async () => {
+  const client = new FakeModelClient([
+    { type: 'final_text', text: 'ok' },
+  ]);
+  const usageTracker = new ConversationUsageTracker('conv-quota');
+  usageTracker.addRecord({
+    requestId: 'prior',
+    conversationId: 'conv-quota',
+    timestamp: Date.now(),
+    provider: 'openai',
+    model: 'gpt-4o',
+    executionContext: 'main',
+    inputTokens: 0,
+    outputTokens: 0,
+    estimatedCostUsd: 0.8,
+    turnNumber: 0,
+    toolCallCount: 0,
+    isRetry: false,
+    isFallback: false,
+  });
+
+  const executor = new TurnExecutor({
+    ...config,
+    quotas: {
+      enabled: true,
+      max_cost_per_conversation_usd: 1,
+      on_quota_exceeded: 'graceful_refuse',
+      quota_warning_threshold: 0.8,
+    },
+    fast_model: undefined,
+    fallback_model: undefined,
+  }, {
+    systemPromptBuilder: makeFakeBuilder(),
+    modelClientFactory: makeTestFactory(client),
+    toolRegistry: makeToolRegistry(makeFakeTool()),
+  });
+
+  const { events } = await collectEvents(executor.run(
+    { requestId: 'req-no-downgrade', conversationId: 'conv-quota', userMessage: 'hi', history: [] },
+    undefined,
+    undefined,
+    usageTracker,
+  ));
+
+  assert.ok(!events.some(
+    (event) => event.type === 'recovery' && event.reason === 'cost_aware_downgrade',
+  ));
+});
+
 test('ExecutionOptions.model bypasses router resolution when a router is injected', async () => {
   const client = new FakeModelClient([
     { type: 'final_text', text: 'ok' },
   ]);
   const router = new ModelRouter({
     ...config,
-    routing: {
-      ...config.routing,
-      task_models: {
-        ...config.routing.task_models,
-        summary: {
-          provider: 'openai',
-          name: 'gpt-4o-mini',
-          api_key: 'summary-key',
-          base_url: null,
-          max_output_tokens: 4096,
-        },
-      },
+    fast_model: {
+      provider: 'openai',
+      name: 'gpt-4o-mini',
+      api_key: 'summary-key',
+      base_url: null,
+      max_output_tokens: 4096,
     },
   }, {
     createClient() {

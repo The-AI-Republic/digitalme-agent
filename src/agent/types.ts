@@ -1,5 +1,6 @@
 import type { HistoryMessage } from '../protocol/types.js';
 import type { Message, TokenUsage } from '../models/ModelClient.js';
+import type { ModelConfig } from '../config/schema.js';
 import type { IToolRegistry } from '../tools/registry.js';
 import type { TurnExecutor } from './TurnExecutor.js';
 import type { TerminalReason } from './types/recovery.js';
@@ -55,6 +56,8 @@ export interface ExecutionOptions {
   maxOutputTokens?: number;
   /** Override model name (default: config.model.name) */
   model?: string;
+  /** Override the full model config for internal/helper work. */
+  modelConfig?: ModelConfig;
   /** Override tool registry (default: constructor-injected registry) */
   toolRegistry?: IToolRegistry;
   /** Optional guardrail scope for future fan-facing vs internal policy separation. */
