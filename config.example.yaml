@@ -37,36 +37,36 @@ platform:
 model:
   # Supported: openai | anthropic | xai | groq | google-ai-studio | fireworks | together
   provider: openai
-  name: gpt-4o
+  name: gpt-5.4
   api_key: ${MODEL_API_KEY}
   base_url:
   max_output_tokens: 8192
 
-# --- Fallback model: used when the primary provider is unhealthy ---
-# fallback_model:
-#   provider: anthropic
-#   name: claude-sonnet-4-20250514
-#   api_key: ${FALLBACK_API_KEY}
-#   max_output_tokens: 8192
+# --- Fallback model (optional): used when the primary provider is unhealthy ---
+fallback_model:
+  provider: anthropic
+  name: claude-sonnet-4-20250514
+  api_key: ${FALLBACK_API_KEY}
+  max_output_tokens: 8192
 
-# --- Routing: task-specific models and provider health tracking ---
-# routing:
-#   task_models:
-#     summary:          # Cheaper model for conversation summarization
-#       provider: openai
-#       name: gpt-4o-mini
-#       api_key: ${MODEL_API_KEY}
-#       max_output_tokens: 4096
-#     extraction:       # Model for session memory extraction
-#       provider: openai
-#       name: gpt-4o-mini
-#       api_key: ${MODEL_API_KEY}
-#       max_output_tokens: 4096
-#   health:
-#     enabled: true
-#     window_size: 20               # Recent calls in the sliding window
-#     failure_threshold: 0.5        # Failure rate (0–1) that triggers fallback
-#     recovery_after_seconds: 60    # Cooldown before retrying an unhealthy provider
+# --- Routing (optional): task-specific models and provider health tracking ---
+routing:
+  task_models:
+    summary:          # Cheaper model for conversation summarization
+      provider: openai
+      name: gpt-5.4-mini
+      api_key: ${MODEL_API_KEY}
+      max_output_tokens: 4096
+    extraction:       # Model for session memory extraction
+      provider: openai
+      name: gpt-5.4-mini
+      api_key: ${MODEL_API_KEY}
+      max_output_tokens: 4096
+  health:
+    enabled: true
+    window_size: 20               # Recent calls in the sliding window
+    failure_threshold: 0.5        # Failure rate (0–1) that triggers fallback
+    recovery_after_seconds: 60    # Cooldown before retrying an unhealthy provider
 
 # --- Limits: request and session constraints ---
 limits:
@@ -79,10 +79,10 @@ limits:
 # --- Context: context window management and compaction ---
 context:
   model_metadata:
-    gpt-4o:
+    gpt-5.4:
       context_window_size: 128000
       max_output_tokens: 16384
-    gpt-4o-mini:
+    gpt-5.4-mini:
       context_window_size: 128000
       max_output_tokens: 16384
   default_context_window_size: 128000
