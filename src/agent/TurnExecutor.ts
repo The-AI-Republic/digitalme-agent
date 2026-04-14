@@ -8,8 +8,10 @@ import { EventQueue } from './EventQueue.js';
 import { TurnContext } from './TurnContext.js';
 import type { AgentEvent, TurnExecutionResult, TurnSubmission } from './types.js';
 import type { ActiveTurn } from './ActiveTurn.js';
+import { screenInput } from '../guardrails/InputScreener.js';
+import { validateOutput } from '../guardrails/OutputValidator.js';
 
-interface TurnExecutorDeps {
+export interface TurnExecutorDeps {
   promptComposer?: IPromptComposer;
   modelClientFactory?: IModelClientFactory;
   toolRegistry?: IToolRegistry;
@@ -44,6 +46,33 @@ export class TurnExecutor {
     const client = this.modelClientFactory.createClient();
     let toolCallCount = 0;
 
+    // --- Input guardrail: screen fan message before model call ---
+    const guardrailConfig = this.config.guardrails;
+    let inputScreenResult;
+    try {
+      inputScreenResult = screenInput(submission.userMessage, guardrailConfig);
+    } catch {
+      // Fail-closed: if screener throws, block the message
+      inputScreenResult = { safe: false, category: 'error' as const, action: 'block' as const, matchedRule: 'screener_error' };
+    }
+
+    if (!inputScreenResult.safe) {
+      events.push({
+        type: 'guardrail_block',
+        phase: 'input',
+        category: inputScreenResult.category ?? 'unknown',
+        rule: inputScreenResult.matchedRule ?? 'unknown',
+      });
+      events.push({ type: 'text_delta', content: guardrailConfig.messages.input_blocked });
+      events.push({ type: 'done' });
+      return {
+        finalText: guardrailConfig.messages.input_blocked,
+        completedTurns: 0,
+        toolCallCount: 0,
+        promptMessages: [],
+      };
+    }
+
     while (context.turnCount < this.config.limits.max_turns) {
       this.throwIfAborted(context.signal);
       context.turnCount += 1;
@@ -62,9 +91,42 @@ export class TurnExecutor {
       }
 
       if (result.type === 'final_text') {
-        const finalText = result.text ?? '';
-        if (result.text) {
-          events.push({ type: 'text_delta', content: result.text });
+        let finalText = result.text ?? '';
+
+        // --- Output guardrail: validate response before delivery ---
+        let outputResult;
+        try {
+          outputResult = validateOutput(finalText, guardrailConfig);
+        } catch {
+          // Fail-closed: if validator throws, block the response
+          outputResult = {
+            violations: [{ rule: 'validator_error', severity: 'critical' as const, category: 'error' as const }],
+            action: 'block' as const,
+            replacementResponse: guardrailConfig.messages.output_blocked,
+          };
+        }
+
+        if (outputResult.action === 'block') {
+          events.push({
+            type: 'guardrail_block',
+            phase: 'output',
+            category: outputResult.violations[0]?.category ?? 'unknown',
+            rule: outputResult.violations[0]?.rule ?? 'unknown',
+          });
+          finalText = outputResult.replacementResponse ?? guardrailConfig.messages.output_blocked;
+        } else if (outputResult.action === 'modify' && outputResult.modifiedText !== undefined) {
+          for (const violation of outputResult.violations) {
+            events.push({
+              type: 'guardrail_modify',
+              category: violation.category,
+              rule: violation.rule,
+            });
+          }
+          finalText = outputResult.modifiedText;
+        }
+
+        if (finalText) {
+          events.push({ type: 'text_delta', content: finalText });
         }
         events.push({ type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage });
         return {
