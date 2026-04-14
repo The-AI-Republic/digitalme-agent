@@ -90,6 +90,15 @@ export const testConfig: AgentConfig = {
       max_retries: 2,
     },
   },
+  routing: {
+    task_models: {},
+    health: {
+      enabled: true,
+      window_size: 20,
+      failure_threshold: 0.5,
+      recovery_after_seconds: 60,
+    },
+  },
   forked_agents: {
     enabled: true,
     max_concurrent: 2,

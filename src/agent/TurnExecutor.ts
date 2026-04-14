@@ -1,6 +1,7 @@
 import type { AgentConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
 import { generateId, type Message, type ToolCall, type ModelStepResult, type ModelClient } from '../models/ModelClient.js';
+import type { ModelRouter } from '../models/ModelRouter.js';
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
 import { TemplateLoader } from '../prompts/TemplateLoader.js';
 import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
@@ -57,6 +58,7 @@ class RecoveryError extends Error {
 export interface TurnExecutorDeps {
   systemPromptBuilder?: ISystemPromptBuilder;
   modelClientFactory?: IModelClientFactory;
+  modelRouter?: ModelRouter;
   toolRegistry?: IToolRegistry;
   toolPolicyChecker?: IToolPolicyChecker;
   toolExecutor?: ToolExecutor;
@@ -68,6 +70,7 @@ export interface TurnExecutorDeps {
 export class TurnExecutor {
   private readonly systemPromptBuilder: ISystemPromptBuilder;
   private readonly modelClientFactory: IModelClientFactory;
+  private readonly modelRouter?: ModelRouter;
   private readonly toolRegistry: IToolRegistry;
   private readonly toolExecutor: ToolExecutor;
   private readonly policyChecker: IToolPolicyChecker;
@@ -85,6 +88,16 @@ export class TurnExecutor {
     this.contextDeps = deps.contextDeps ?? this.buildDefaultContextDeps();
     this.transcriptRecorder = deps.transcriptRecorder;
     this.skillListing = deps.skillListing ?? null;
+    // Only auto-enable router behavior when task-specific routing is configured.
+    // This preserves existing fallback_model semantics for configs that have only
+    // schema-default routing values.
+    this.modelRouter = deps.modelRouter
+      ?? (this.hasTaskSpecificRouting() ? this.modelClientFactory.getRouter?.() : undefined);
+  }
+
+  private hasTaskSpecificRouting(): boolean {
+    const taskModels = this.config.routing.task_models;
+    return Boolean(taskModels.summary || taskModels.extraction || taskModels.forked);
   }
 
   private buildDefaultContextDeps(): PrepareContextDeps {
@@ -138,6 +151,21 @@ export class TurnExecutor {
 
     const executionState = activeTurn?.executionState ?? new TurnExecutionState();
 
+    // Resolve the model before prompt construction so the prompt can reference the resolved model
+    let resolvedModelName = modelName;
+    let resolvedProvider = this.config.model.provider;
+    let primaryClient: ModelClient;
+    if (options?.model) {
+      primaryClient = this.modelClientFactory.createClient();
+    } else if (this.modelRouter) {
+      const { client, decision } = this.modelRouter.resolveClient('primary');
+      primaryClient = client;
+      resolvedModelName = decision.modelConfig.name;
+      resolvedProvider = decision.modelConfig.provider;
+    } else {
+      primaryClient = this.modelClientFactory.createClient();
+    }
+
     const history = submission.promptHistory ?? submission.history.map((item) => ({
       role: item.role as Message['role'],
       content: item.content,
@@ -155,8 +183,8 @@ export class TurnExecutor {
       soulSystemPromptAppend: this.config.soul.system_prompt_append ?? null,
       approvedToolNames: toolRegistry.listNames(),
       skillListing: this.skillListing,
-      modelName,
-      providerName: this.config.model.provider,
+      modelName: resolvedModelName,
+      providerName: resolvedProvider,
     };
 
     const builtPrompt = this.systemPromptBuilder.build(promptContext);
@@ -173,7 +201,6 @@ export class TurnExecutor {
     ];
 
     const context = new TurnContext(submission, initialMessages);
-    const primaryClient = this.modelClientFactory.createClient();
     const recovery = initialRecoveryState();
     const toolSummaries: ToolSummaryEntry[] = [];
     const resultBudget = new ResultBudget(); // fresh per request
@@ -207,7 +234,7 @@ export class TurnExecutor {
       // Per-model-step context preparation: persistence, microcompact, pressure assessment
       const prepared = await prepareContextForModelCall(
         context.messages,
-        modelName,
+        resolvedModelName,
         executionState.getTokenUsage(),
         context.conversationId,
         this.contextDeps,
@@ -248,8 +275,9 @@ export class TurnExecutor {
       try {
         callResult = await this.callModelWithRecovery(
           primaryClient,
-          { model: modelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
+          { model: resolvedModelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
           recovery,
+          resolvedProvider,
           interactionSpan,
         );
       } catch (error) {
@@ -547,27 +575,39 @@ export class TurnExecutor {
     primaryClient: ModelClient,
     initialRequest: Parameters<ModelClient['generate']>[0],
     recovery: RecoveryState,
-    parentSpan: Span,
+    provider?: string,
+    parentSpan?: Span,
   ): Promise<{ result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] }> {
     let consecutive529 = 0;
     let client = primaryClient;
     let request = initialRequest;
+    let currentProvider = provider ?? this.config.model.provider;
     let currentModel = initialRequest.model;
     const events: AgentEvent[] = [];
 
     for (let attempt = 0; attempt <= RECOVERY_LIMITS.MAX_API_RETRIES; attempt++) {
-      const attemptSpan = startModelCallSpan(currentModel, parentSpan);
+      const startTime = Date.now();
+      const attemptSpan = parentSpan ? startModelCallSpan(currentModel, parentSpan) : undefined;
       try {
         const result = await client.generate(request);
+        // Record success for health tracking
+        this.modelRouter?.recordSuccess(currentProvider, request.model, Date.now() - startTime);
         recordModelCall(currentModel, true);
-        endSpan(attemptSpan);
+        if (attemptSpan) endSpan(attemptSpan);
         return { result, events };
       } catch (error) {
+        const latencyMs = Date.now() - startTime;
         const category = categorizeApiError(error);
 
+        // Only record provider-side failures for health tracking.
+        // Request-local errors (context_overflow, auth_error, unknown) are not
+        // indicative of provider health and should not trip the circuit breaker.
+        if (category === 'overloaded' || category === 'rate_limit' || category === 'server_error') {
+          this.modelRouter?.recordFailure(currentProvider, request.model, latencyMs, category);
+        }
         recordModelCall(currentModel, false);
         recordError('model_call');
-        endSpanWithError(attemptSpan, error);
+        if (attemptSpan) endSpanWithError(attemptSpan, error);
 
         if (category === 'context_overflow') {
           return { result: { type: 'context_overflow' as const }, events };
@@ -581,7 +621,12 @@ export class TurnExecutor {
               && this.modelClientFactory.createFromConfig) {
             recovery.fallbackAttempted = true;
             // Create a new client via factory — don't mutate the primary client
-            client = this.modelClientFactory.createFromConfig(this.config.fallback_model);
+            if (this.modelRouter) {
+              client = this.modelRouter.getOrCreateClient(this.config.fallback_model);
+            } else {
+              client = this.modelClientFactory.createFromConfig(this.config.fallback_model);
+            }
+            currentProvider = this.config.fallback_model.provider;
             // Switch to the fallback model name so the client uses it
             currentModel = this.config.fallback_model.name;
             request = { ...request, model: currentModel };
@@ -625,6 +670,11 @@ export class TurnExecutor {
     }
 
     throw new RecoveryError(new Error('api_retries_exhausted'), events);
+  }
+
+  /** Returns the ModelRouter if available, for health inspection. */
+  getRouter(): ModelRouter | undefined {
+    return this.modelRouter;
   }
 
   private throwIfAborted(signal?: AbortSignal) {
