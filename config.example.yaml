@@ -27,6 +27,32 @@ model:
   base_url:
   max_output_tokens: 8192
 
+# Optional fallback model for recovery on consecutive provider failures
+# fallback_model:
+#   provider: anthropic
+#   name: claude-sonnet-4-20250514
+#   api_key: ${FALLBACK_API_KEY}
+#   max_output_tokens: 8192
+
+# Model routing: task-specific models and provider health tracking
+# routing:
+#   task_models:
+#     summary:
+#       provider: openai
+#       name: gpt-4o-mini
+#       api_key: ${MODEL_API_KEY}
+#       max_output_tokens: 4096
+#     extraction:
+#       provider: openai
+#       name: gpt-4o-mini
+#       api_key: ${MODEL_API_KEY}
+#       max_output_tokens: 4096
+#   health:
+#     enabled: true
+#     window_size: 20
+#     failure_threshold: 0.5
+#     recovery_after_seconds: 60
+
 limits:
   max_message_length: 4000
   max_history_messages: 100
@@ -60,32 +86,6 @@ context:
     microcompact_ratio: 0.5
     projection_ratio: 0.7
     overflow_ratio: 0.9
-
-# Optional fallback model for recovery on consecutive provider failures
-# fallback_model:
-#   provider: anthropic
-#   name: claude-sonnet-4-20250514
-#   api_key: ${FALLBACK_API_KEY}
-#   max_output_tokens: 8192
-
-# Model routing: task-specific models and provider health tracking
-# routing:
-#   task_models:
-#     summary:
-#       provider: openai
-#       name: gpt-4o-mini
-#       api_key: ${MODEL_API_KEY}
-#       max_output_tokens: 4096
-#     extraction:
-#       provider: openai
-#       name: gpt-4o-mini
-#       api_key: ${MODEL_API_KEY}
-#       max_output_tokens: 4096
-#   health:
-#     enabled: true
-#     window_size: 20
-#     failure_threshold: 0.5
-#     recovery_after_seconds: 60
 
 security:
   hmac_tolerance_seconds: 300
