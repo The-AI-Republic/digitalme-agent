@@ -4,9 +4,19 @@ import { createServer } from './server.js';
 import { Agent } from './agent/Agent.js';
 import { testConfig } from './test/fixtures.js';
 
+function makeSessionStats() {
+  return {
+    activeSessions: 0,
+    activeTurns: 0,
+    sessionTtlSeconds: 1800,
+    maxActiveSessions: 1000,
+    usage: { totalCostUsd: 0, dailyCostUsd: 0, monthlyCostUsd: 0 },
+  };
+}
+
 test('createServer returns an express app with expected routes', () => {
   const agent = new Agent(testConfig, {
-    executor: { execute: async () => {} },
+    sessionManager: { execute: async () => {}, getStats: () => makeSessionStats(), beginDrain: () => {} },
   });
   const app = createServer(testConfig, agent);
 
@@ -28,7 +38,7 @@ test('createServer returns an express app with expected routes', () => {
 
 test('createServer sets up JSON body parser with rawBody', async () => {
   const agent = new Agent(testConfig, {
-    executor: { execute: async () => {} },
+    sessionManager: { execute: async () => {}, getStats: () => makeSessionStats(), beginDrain: () => {} },
   });
   const app = createServer(testConfig, agent);
 

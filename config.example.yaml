@@ -49,6 +49,13 @@ fallback_model:
   api_key: ${FALLBACK_API_KEY}
   max_output_tokens: 8192
 
+# --- Fast model (optional): cheap helper-model class for lightweight internal tasks ---
+fast_model:
+  provider: openai
+  name: gpt-5.4-mini
+  api_key: ${MODEL_API_KEY}
+  max_output_tokens: 4096
+
 # --- Routing: provider health tracking ---
 routing:
   health:

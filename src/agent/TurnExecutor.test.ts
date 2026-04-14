@@ -9,6 +9,7 @@ import { consumeGenerator } from './types.js';
 import type { ToolExecutionResult, Tool, ToolDefinition, ToolMetadata } from '../tools/types.js';
 import type { ISystemPromptBuilder, BuiltPrompt, PromptContext } from '../prompts/types.js';
 import { testConfig as config } from '../test/fixtures.js';
+import type { ModelConfig } from '../config/schema.js';
 import { z } from 'zod';
 
 class FakeModelClient implements ModelClient {
@@ -552,24 +553,55 @@ test('ExecutionOptions.model overrides config default', async () => {
   assert.equal(client.requests[0]?.model, 'gpt-4o-mini');
 });
 
+test('ExecutionOptions.modelConfig uses the configured provider client', async () => {
+  const primaryClient = new FakeModelClient([
+    { type: 'final_text', text: 'primary' },
+  ]);
+  const fastClient = new FakeModelClient([
+    { type: 'final_text', text: 'fast' },
+  ]);
+  const fastModelConfig: ModelConfig = {
+    provider: 'anthropic',
+    name: 'claude-haiku',
+    api_key: 'fast-key',
+    base_url: null,
+    max_output_tokens: 2048,
+  };
+
+  const executor = new TurnExecutor(config, {
+    systemPromptBuilder: makeFakeBuilder(),
+    modelClientFactory: {
+      createClient() { return primaryClient; },
+      createFromConfig(modelConfig) {
+        assert.deepEqual(modelConfig, fastModelConfig);
+        return fastClient;
+      },
+    },
+    toolRegistry: makeToolRegistry(makeFakeTool()),
+  });
+
+  await collectEvents(executor.run(
+    { requestId: 'req-mdlcfg', conversationId: 'conv-mdlcfg', userMessage: 'hi', history: [] },
+    { modelConfig: fastModelConfig },
+  ));
+
+  assert.equal(primaryClient.requests.length, 0);
+  assert.equal(fastClient.requests[0]?.model, 'claude-haiku');
+  assert.equal(fastClient.requests[0]?.maxOutputTokens, 2048);
+});
+
 test('ExecutionOptions.model bypasses router resolution when a router is injected', async () => {
   const client = new FakeModelClient([
     { type: 'final_text', text: 'ok' },
   ]);
   const router = new ModelRouter({
     ...config,
-    routing: {
-      ...config.routing,
-      task_models: {
-        ...config.routing.task_models,
-        summary: {
-          provider: 'openai',
-          name: 'gpt-4o-mini',
-          api_key: 'summary-key',
-          base_url: null,
-          max_output_tokens: 4096,
-        },
-      },
+    fast_model: {
+      provider: 'openai',
+      name: 'gpt-4o-mini',
+      api_key: 'summary-key',
+      base_url: null,
+      max_output_tokens: 4096,
     },
   }, {
     createClient() {

@@ -174,7 +174,15 @@ test('TurnExecutor works without router (backwards compatible)', async () => {
     { type: 'final_text', text: 'no-router' },
   ]);
 
-  const executor = new TurnExecutor(testConfig, {
+  const executor = new TurnExecutor({
+    ...testConfig,
+    routing: {
+      health: {
+        ...testConfig.routing.health,
+        enabled: false,
+      },
+    },
+  }, {
     systemPromptBuilder: makeFakeBuilder(),
     modelClientFactory: {
       createClient: () => primaryClient,
@@ -187,7 +195,7 @@ test('TurnExecutor works without router (backwards compatible)', async () => {
   assert.equal(executor.getRouter(), undefined);
 });
 
-test('TurnExecutor does not auto-enable router for fallback_model-only configs', async () => {
+test('TurnExecutor auto-enables router for fallback_model-only configs', async () => {
   const primaryClient = new TrackingModelClient('primary', [
     { type: 'final_text', text: 'still-primary' },
   ]);
@@ -213,7 +221,7 @@ test('TurnExecutor does not auto-enable router for fallback_model-only configs',
 
   const { result } = await collectEvents(executor.run(makeSubmission()));
   assert.equal(result.finalText, 'still-primary');
-  assert.equal(executor.getRouter(), undefined);
+  assert.ok(executor.getRouter());
   assert.equal(primaryClient.calls[0]?.model, 'gpt-4o');
 });
 
@@ -237,7 +245,6 @@ test('ModelRouter health-aware routing with fallback model config', async () => 
     ...testConfig,
     fallback_model: fallbackModel,
     routing: {
-      task_models: {},
       health: { enabled: true, window_size: 4, failure_threshold: 0.5, recovery_after_seconds: 60 },
     },
   };

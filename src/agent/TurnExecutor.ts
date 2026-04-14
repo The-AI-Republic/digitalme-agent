@@ -1,7 +1,7 @@
-import type { AgentConfig } from '../config/schema.js';
+import type { AgentConfig, ModelConfig } from '../config/schema.js';
 import { ModelClientFactory, type IModelClientFactory } from '../models/ModelClientFactory.js';
 import { generateId, type Message, type ToolCall, type ModelStepResult, type ModelClient } from '../models/ModelClient.js';
-import type { ModelRouter } from '../models/ModelRouter.js';
+import { ModelRouter } from '../models/ModelRouter.js';
 import { SystemPromptBuilder } from '../prompts/SystemPromptBuilder.js';
 import { TemplateLoader } from '../prompts/TemplateLoader.js';
 import type { ISystemPromptBuilder, PromptContext } from '../prompts/types.js';
@@ -99,11 +99,10 @@ export class TurnExecutor {
     this.transcriptRecorder = deps.transcriptRecorder;
     this.usageAggregator = deps.usageAggregator;
     this.skillListing = deps.skillListing ?? null;
-    // Only auto-enable router behavior when task-specific routing is configured.
-    // This preserves existing fallback_model semantics for configs that have only
-    // schema-default routing values.
     this.modelRouter = deps.modelRouter
-      ?? (this.hasTaskSpecificRouting() ? this.modelClientFactory.getRouter?.() : undefined);
+      ?? ((config.fallback_model || config.fast_model || config.routing.health.enabled)
+        ? (this.modelClientFactory.getRouter?.() ?? new ModelRouter(config, this.modelClientFactory))
+        : undefined);
 
     // Initialize cost-aware routing if quotas are enabled
     const quotas = config.quotas;
@@ -123,11 +122,6 @@ export class TurnExecutor {
         },
       });
     }
-  }
-
-  private hasTaskSpecificRouting(): boolean {
-    const taskModels = this.config.routing.task_models;
-    return Boolean(taskModels.summary || taskModels.extraction || taskModels.forked);
   }
 
   private buildDefaultContextDeps(): PrepareContextDeps {
@@ -169,8 +163,12 @@ export class TurnExecutor {
     usageTracker?: ConversationUsageTracker,
   ): AsyncGenerator<AgentEvent, TurnExecutionResult> {
     const maxTurns = options?.maxTurns ?? this.config.limits.max_turns;
-    const maxOutputTokens = options?.maxOutputTokens ?? this.config.model.max_output_tokens;
-    let modelName = options?.model ?? this.config.model.name;
+    const explicitModelConfig = options?.modelConfig;
+    const maxOutputTokens = options?.maxOutputTokens
+      ?? explicitModelConfig?.max_output_tokens
+      ?? this.config.model.max_output_tokens;
+    let selectedModelConfig: ModelConfig | undefined = explicitModelConfig;
+    let modelName = options?.model ?? explicitModelConfig?.name ?? this.config.model.name;
     const toolRegistry = options?.toolRegistry ?? this.toolRegistry;
     const recorder = this.transcriptRecorder;
 
@@ -243,8 +241,12 @@ export class TurnExecutor {
       }
 
       // Cost-aware model downgrade
-      if (decision.useFallbackModel && this.config.fallback_model) {
-        modelName = this.config.fallback_model.name;
+      if (decision.useFallbackModel) {
+        const downgradeModel = this.config.fast_model ?? this.config.fallback_model;
+        if (downgradeModel) {
+          selectedModelConfig = downgradeModel;
+          modelName = downgradeModel.name;
+        }
         yield { type: 'recovery', reason: 'cost_aware_downgrade', detail: { from: this.config.model.name, to: modelName } };
       }
 
@@ -261,7 +263,11 @@ export class TurnExecutor {
     let resolvedModelName = modelName;
     let resolvedProvider = this.config.model.provider;
     let primaryClient: ModelClient;
-    if (options?.model) {
+    if (selectedModelConfig) {
+      primaryClient = this.modelClientFactory.createFromConfig(selectedModelConfig);
+      resolvedModelName = selectedModelConfig.name;
+      resolvedProvider = selectedModelConfig.provider;
+    } else if (options?.model) {
       primaryClient = this.modelClientFactory.createClient();
     } else if (this.modelRouter) {
       const { client, decision } = this.modelRouter.resolveClient('primary');
@@ -964,8 +970,13 @@ export class TurnExecutor {
           if (consecutive529 >= RECOVERY_LIMITS.FALLBACK_AFTER_CONSECUTIVE_529
               && this.config.fallback_model
               && !recovery.fallbackAttempted
+              && !this.isSameModelConfig(
+                { provider: currentProvider, name: currentModel },
+                this.config.fallback_model,
+              )
               && this.modelClientFactory.createFromConfig) {
             recovery.fallbackAttempted = true;
+            const fromModel = currentModel;
             // Create a new client via factory — don't mutate the primary client
             if (this.modelRouter) {
               client = this.modelRouter.getOrCreateClient(this.config.fallback_model);
@@ -982,13 +993,13 @@ export class TurnExecutor {
             consecutive529 = 0;
             recovery.lastTransition = {
               reason: 'fallback_model',
-              fromModel: this.config.model.name,
+              fromModel,
               toModel: this.config.fallback_model.name,
             };
             events.push({
               type: 'recovery',
               reason: 'fallback_model',
-              detail: { from: this.config.model.name, to: this.config.fallback_model.name },
+              detail: { from: fromModel, to: this.config.fallback_model.name },
             });
             continue;
           }
@@ -1028,5 +1039,12 @@ export class TurnExecutor {
     if (signal?.aborted) {
       throw new Error('request_aborted');
     }
+  }
+
+  private isSameModelConfig(
+    current: { provider: string; name: string },
+    target: ModelConfig,
+  ): boolean {
+    return current.provider === target.provider && current.name === target.name;
   }
 }

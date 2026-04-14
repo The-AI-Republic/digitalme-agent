@@ -99,16 +99,26 @@ function makeExecutor(
   const tool = makeFakeTool();
   const primaryClient = new FakeModelClient(primarySteps);
   const fallbackClient = fallbackSteps ? new FakeModelClient(fallbackSteps) : undefined;
+  const config = { ...testConfig, ...configOverrides };
 
   const factory: IModelClientFactory = {
     createClient() { return primaryClient; },
-    createFromConfig(_modelConfig: ModelConfig) {
-      if (!fallbackClient) throw new Error('No fallback client configured');
-      return fallbackClient;
+    createFromConfig(modelConfig: ModelConfig) {
+      const fallbackModel = config.fallback_model;
+      if (
+        fallbackClient
+        && fallbackModel
+        && modelConfig.provider === fallbackModel.provider
+        && modelConfig.name === fallbackModel.name
+        && modelConfig.api_key === fallbackModel.api_key
+        && modelConfig.base_url === fallbackModel.base_url
+      ) {
+        return fallbackClient;
+      }
+      return primaryClient;
     },
   };
 
-  const config = { ...testConfig, ...configOverrides };
   const executor = new TurnExecutor(config, {
     systemPromptBuilder: makeFakeBuilder(),
     modelClientFactory: factory,

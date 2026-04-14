@@ -1,76 +1,67 @@
 # Track 15: Fast Model Routing — Tasks
 
-## Step 1: Config Schema Update
+## Step 1: Config and Schema Cleanup
 
 - [ ] Add `fast_model: modelSchema.optional()` to `agentConfigSchema`
-- [ ] Remove `routing.task_models` (summary, extraction, forked) from schema
+- [ ] Remove `routing.task_models` from schema
 - [ ] Remove `context.summary.model` from schema
 - [ ] Remove `context.session_memory.extraction_model` from schema
 - [ ] Keep `routing.health` intact
-- [ ] Update `config.example.yaml` with `fast_model` section
-- [ ] Update test fixtures in `src/test/fixtures.ts`
-- [ ] Update inline test configs across test files
-- [ ] Verify: `npx tsc --noEmit` passes, all existing tests pass
+- [ ] Update `config.example.yaml` with a `fast_model` section and wording that distinguishes:
+  - [ ] `model` = primary
+  - [ ] `fallback_model` = provider health fallback
+  - [ ] `fast_model` = helper-model class
+- [ ] Update test fixtures and inline test configs
 
-## Step 2: Simplify ModelTask and ModelRouter
+## Step 2: Fix The Execution Abstraction
 
-- [ ] Simplify `ModelTask` in `src/models/types.ts` to `'primary' | 'fallback' | 'fast'`
-- [ ] Update `ModelRouter.resolve()` to handle `'fast'` task
-- [ ] Update `ModelRouter.getTaskModel()`: remove summary/extraction/forked cases, add fast
-- [ ] Update `ModelRouter` constructor: remove `task_models` dependency from health tracker init
-- [ ] Update ModelRouter tests: remove summary/extraction/forked test cases, add fast model tests
-- [ ] Verify: all ModelRouter tests pass
+- [ ] Add a safe internal execution override that can carry a full model selection
+- [ ] Do **not** rely on `ExecutionOptions.model` string alone for cross-provider routing
+- [ ] Ensure `TurnExecutor` can instantiate the correct client for an explicitly selected internal model config
+- [ ] Add tests proving a helper task can use a different provider/config correctly
 
-## Step 3: Wire Fast Model into ConversationSummaryBuilder
+## Step 3: Simplify Router Terminology
 
-- [ ] Resolve fast model client where `ConversationSummaryBuilder` is instantiated
-- [ ] If `config.fast_model` exists, create client via `modelClientFactory.createFromConfig(config.fast_model)`
-- [ ] Otherwise fall back to primary client
-- [ ] Add test: summary uses fast model client when configured
-- [ ] Add test: summary uses primary client when fast_model not configured
-- [ ] Verify: reactive compact tests pass
+- [ ] Simplify `ModelTask` to `'primary' | 'fallback' | 'fast'`
+- [ ] Update `ModelRouter.resolve()` to handle `'fast'`
+- [ ] Remove summary/extraction/forked task-specific routing cases
+- [ ] Update tests to reflect the new task model vocabulary
+- [ ] Explicitly verify router auto-enable behavior after removing `routing.task_models`
 
-## Step 4: Wire Fast Model into SessionMemoryHook
+## Step 4: Fix Cost-Aware Downgrade
 
-- [ ] Pass `config.fast_model?.name` as `model` in `ExecutionOptions` when launching forked agent
-- [ ] If fast_model not configured, omit model (preserves current behavior — uses primary)
-- [ ] Add test: session memory extraction uses fast model when configured
-- [ ] Add test: session memory extraction uses primary when fast_model not configured
-- [ ] Verify: session memory tests pass
+- [ ] In `TurnExecutor`, change quota-pressure downgrade preference to:
+  - [ ] `config.fast_model`
+  - [ ] else `config.fallback_model`
+  - [ ] else no downgrade
+- [ ] Make sure the downgrade uses the correct client/provider, not only a swapped model string
+- [ ] Keep health-failure fallback behavior unchanged
+- [ ] Add tests:
+  - [ ] downgrade uses `fast_model` when configured
+  - [ ] downgrade falls back to `fallback_model` when no `fast_model`
+  - [ ] downgrade does nothing when neither is configured
 
-## Step 5: Fix Cost-Aware Downgrade
+## Step 5: Keep Claudy-Aligned Non-Goals Explicit
 
-- [ ] In `TurnExecutor`, change cost-aware downgrade to prefer `fast_model` over `fallback_model`
-- [ ] Resolution: `config.fast_model ?? config.fallback_model`
-- [ ] Update recovery event detail to distinguish `cost_aware_downgrade` (fast) from `fallback_health`
-- [ ] Add test: cost-aware downgrade uses fast_model when configured
-- [ ] Add test: cost-aware downgrade falls back to fallback_model when no fast_model
-- [ ] Add test: cost-aware downgrade does nothing when neither configured
-- [ ] Verify: TurnExecutor recovery tests pass
+- [ ] Do **not** switch session memory extraction to `fast_model` in this track
+- [ ] Do **not** claim summary/compaction routing changes unless a live summary path is wired
+- [ ] Do **not** treat all forked/background work as `fast`
 
-## Step 6: Clean Up Dead Code
+## Step 6: Tests and Verification
 
-- [ ] Remove `hasTaskSpecificRouting()` from TurnExecutor (no longer needed — fast model uses different path)
-- [ ] Remove any references to `routing.task_models` in non-test code
-- [ ] Remove `RoutingReason` values tied to task-specific routing if unused
-- [ ] Verify: `npx tsc --noEmit` passes, full test suite passes
-
-## Step 7: Integration Tests
-
-- [ ] Add integration test: full turn with fast_model configured, verify summary uses fast client
-- [ ] Add integration test: health fallback still uses fallback_model (not fast_model)
-- [ ] Add integration test: cost-aware downgrade uses fast_model
-- [ ] Add integration test: no fast_model configured, everything falls back to primary
-- [ ] Verify: all tests pass, TypeScript compiles cleanly
+- [ ] `npx tsc --noEmit`
+- [ ] Run model-router tests
+- [ ] Run turn-executor recovery / downgrade tests
+- [ ] Run any tests touched by schema fixture changes
+- [ ] Add regression tests for the chosen internal execution override path
 
 ## Done Criteria
 
-- [ ] `fast_model` config field works end-to-end
-- [ ] Summarization uses fast model when configured
-- [ ] Session memory extraction uses fast model when configured
-- [ ] Cost-aware downgrade uses fast model (not fallback)
-- [ ] Fallback model is only used for provider health failures
-- [ ] Dead config fields removed (task_models, summary.model, extraction_model)
-- [ ] All existing tests pass (with updates for schema changes)
-- [ ] New tests cover fast model routing paths
-- [ ] TypeScript compiles cleanly
+- [ ] `fast_model` is introduced as a separate helper-model concept
+- [ ] `fallback_model` is reserved for provider-health fallback semantics
+- [ ] Cost-aware downgrade prefers `fast_model`
+- [ ] Helper-task execution can select a full model config safely
+- [ ] Session memory extraction remains on the primary model in this track
+- [ ] Dead config fields are removed
+- [ ] Docs no longer claim that all background tasks should use the fast model
+- [ ] Tests cover the new routing and downgrade behavior

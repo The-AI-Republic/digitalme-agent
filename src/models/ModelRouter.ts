@@ -13,7 +13,7 @@ import type {
  * Central model routing layer.
  *
  * Resolves which model to use for a given task type by consulting:
- *   1. Task-specific model config (routing.task_models.*)
+ *   1. Task-specific model class (`fallback` / `fast`)
  *   2. Primary model config (config.model)
  *   3. Provider health — if the resolved provider is unhealthy and a
  *      fallback is configured, routes to the fallback instead.
@@ -195,10 +195,8 @@ export class ModelRouter {
         return undefined; // Always falls through to config.model
       case 'fallback':
         return this.config.fallback_model;
-      case 'summary':
-      case 'extraction':
-      case 'forked':
-        return this.config.routing.task_models[task];
+      case 'fast':
+        return this.config.fast_model;
       default:
         return undefined;
     }
