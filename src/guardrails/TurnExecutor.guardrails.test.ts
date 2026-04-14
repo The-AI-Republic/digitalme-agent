@@ -242,6 +242,7 @@ test('TurnExecutor modifies output to strip external links', async () => {
 
   // Should NOT have guardrail_block (modify, not block)
   assert.ok(!collected.some((e) => e.type === 'guardrail_block'));
+  assert.ok(collected.some((e) => e.type === 'guardrail_modify'));
 
   const textDelta = collected.find((e) => e.type === 'text_delta');
   assert.ok(textDelta);

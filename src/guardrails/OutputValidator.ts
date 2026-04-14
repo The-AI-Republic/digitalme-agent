@@ -1,7 +1,8 @@
 import { PII_PATTERNS, EXTERNAL_LINK_PATTERN } from './patterns.js';
+import { matchesBlockedKeyword } from './keywordMatcher.js';
 import type { GuardrailConfig, OutputValidationResult, Violation } from './types.js';
 
-const PASS: OutputValidationResult = { violations: [], action: 'send' };
+const PASS: OutputValidationResult = Object.freeze({ violations: [], action: 'send' });
 
 /**
  * Validates agent output before delivery to the fan.
@@ -13,14 +14,12 @@ export function validateOutput(text: string, config: GuardrailConfig): OutputVal
 
   const violations: Violation[] = [];
 
-  // 1. Blocked keywords — critical (word-boundary match)
+  // 1. Blocked keywords — critical (boundary-aware match)
   if (config.blocked_keywords.length > 0) {
     for (const keyword of config.blocked_keywords) {
-      const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(`\\b${escaped}\\b`, 'i');
-      if (pattern.test(text)) {
+      if (matchesBlockedKeyword(text, keyword)) {
         violations.push({
-          rule: keyword,
+          rule: keyword.trim(),
           severity: 'critical',
           category: 'blocked_keyword',
         });
@@ -78,7 +77,8 @@ export function validateOutput(text: string, config: GuardrailConfig): OutputVal
 
   // Strip external links
   if (violations.some((v) => v.category === 'external_link')) {
-    modified = modified.replace(/https?:\/\/[^\s]+/gi, '[link removed]');
+    const globalPattern = new RegExp(EXTERNAL_LINK_PATTERN.regex.source, 'gi');
+    modified = modified.replace(globalPattern, '[link removed]');
   }
 
   // Truncate if too long

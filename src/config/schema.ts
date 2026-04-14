@@ -52,7 +52,7 @@ export const agentConfigSchema = z.object({
   }),
   guardrails: z.object({
     enabled: z.boolean().default(false),
-    blocked_keywords: z.array(z.string().min(1)).default([]),
+    blocked_keywords: z.array(z.string().trim().min(1)).default([]),
     response_rules: z.object({
       max_response_length: z.number().int().positive().default(2000),
       block_external_links: z.boolean().default(false),

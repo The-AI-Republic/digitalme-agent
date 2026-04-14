@@ -45,6 +45,12 @@ test('validateOutput keyword matching is case-insensitive', () => {
   assert.equal(result.action, 'block');
 });
 
+test('validateOutput keyword matching does not trigger on substrings', () => {
+  const config = makeConfig({ blocked_keywords: ['kill', 'ass'] });
+  const result = validateOutput('The assistant has a skill issue', config);
+  assert.equal(result.action, 'send');
+});
+
 // --- PII leakage (critical) ---
 
 test('validateOutput blocks output with email PII', () => {
@@ -65,6 +71,14 @@ test('validateOutput blocks output with phone PII', () => {
   assert.ok(result.violations.some((v) => v.category === 'pii'));
 });
 
+test('validateOutput allows separator-free numbers that are not phone numbers', () => {
+  const config = makeConfig({
+    pii_detection: { enabled: true, block_in_input: true, block_in_output: true },
+  });
+  const result = validateOutput('Order number 1234567890 is ready', config);
+  assert.equal(result.action, 'send');
+});
+
 test('validateOutput blocks output with credit card PII', () => {
   const config = makeConfig({
     pii_detection: { enabled: true, block_in_input: true, block_in_output: true },
@@ -78,6 +92,14 @@ test('validateOutput skips PII check when block_in_output is false', () => {
     pii_detection: { enabled: true, block_in_input: true, block_in_output: false },
   });
   const result = validateOutput('Contact user@example.com', config);
+  assert.equal(result.action, 'send');
+});
+
+test('validateOutput allows separator-free SSN-like numbers', () => {
+  const config = makeConfig({
+    pii_detection: { enabled: true, block_in_input: true, block_in_output: true },
+  });
+  const result = validateOutput('Reference 123 45 6789', config);
   assert.equal(result.action, 'send');
 });
 

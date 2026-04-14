@@ -69,8 +69,17 @@ test('pii: detects US phone numbers', () => {
   assert.ok(PII_PATTERNS.some((p) => p.regex.test('Call me at +1 555 123 4567')));
 });
 
+test('pii: does not match separator-free phone numbers', () => {
+  assert.ok(!PII_PATTERNS.some((p) => p.regex.test('Order number 1234567890')));
+});
+
 test('pii: detects SSN-like patterns', () => {
   assert.ok(PII_PATTERNS.some((p) => p.regex.test('SSN: 123-45-6789')));
+});
+
+test('pii: does not match separator-free SSN-like numbers', () => {
+  assert.ok(!PII_PATTERNS.some((p) => p.regex.test('Reference 123456789')));
+  assert.ok(!PII_PATTERNS.some((p) => p.regex.test('Reference 123 45 6789')));
 });
 
 test('pii: detects credit card numbers', () => {

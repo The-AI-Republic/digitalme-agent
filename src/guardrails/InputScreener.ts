@@ -1,7 +1,8 @@
 import { JAILBREAK_PATTERNS, PII_PATTERNS } from './patterns.js';
+import { matchesBlockedKeyword } from './keywordMatcher.js';
 import type { GuardrailConfig, InputScreenResult } from './types.js';
 
-const PASS: InputScreenResult = { safe: true, action: 'proceed' };
+const PASS: InputScreenResult = Object.freeze({ safe: true, action: 'proceed' });
 
 /**
  * Screens fan input before the model call.
@@ -39,17 +40,15 @@ export function screenInput(message: string, config: GuardrailConfig): InputScre
     }
   }
 
-  // 3. Blocked keywords (case-insensitive, word-boundary match)
+  // 3. Blocked keywords (case-insensitive, boundary-aware match)
   if (config.blocked_keywords.length > 0) {
     for (const keyword of config.blocked_keywords) {
-      const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(`\\b${escaped}\\b`, 'i');
-      if (pattern.test(message)) {
+      if (matchesBlockedKeyword(message, keyword)) {
         return {
           safe: false,
           category: 'blocked_keyword',
           action: 'block',
-          matchedRule: keyword,
+          matchedRule: keyword.trim(),
         };
       }
     }

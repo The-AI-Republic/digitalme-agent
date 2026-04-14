@@ -50,12 +50,12 @@ export const PII_PATTERNS: readonly GuardrailPattern[] = [
   },
   {
     name: 'us_phone',
-    regex: /\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/,
+    regex: /(?:^|\D)(?:\+?1[-.\s])?(?:\(\d{3}\)|\d{3})[-.\s]\d{3}[-.\s]\d{4}(?!\d)/,
     category: 'pii',
   },
   {
     name: 'ssn',
-    regex: /\b\d{3}[-.\s]?\d{2}[-.\s]?\d{4}\b/,
+    regex: /\b\d{3}[-.]\d{2}[-.]\d{4}\b/,
     category: 'pii',
   },
   {
