@@ -123,6 +123,29 @@ export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentH
         ),
         (_event: AgentEvent) => { /* discard — forked agents are silent */ },
       );
+
+      // Record sidechain transcript unless skipTranscript is set
+      let sidechainPath: string | undefined;
+      if (transcriptRecorder && !config.skipTranscript && result.newMessages.length > 0) {
+        try {
+          await transcriptRecorder.insertMessageChain(
+            submission.conversationId,
+            result.newMessages,
+            true,  // isSidechain
+            forkId,
+          );
+          await transcriptRecorder.writeAgentMetadata(submission.conversationId, {
+            agentId: forkId,
+            agentType: 'fork',
+            description: config.forkLabel,
+            createdAt: new Date(startTime).toISOString(),
+          });
+          sidechainPath = `subagents/agent-${forkId}.jsonl`;
+        } catch {
+          // Best effort — recording failure should not block fork completion
+        }
+      }
+
       const forkedResult: ForkedAgentResult = {
         totalUsage: result.tokenUsage ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
         finalText: result.finalText,
@@ -142,6 +165,7 @@ export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentH
           tokenUsage: forkedResult.totalUsage,
           durationMs,
           toolCallCount: result.toolCallCount,
+          transcriptPath: sidechainPath,
         };
         transcriptRecorder.recordLifecycleEvent(completedEntry).catch(() => {});
       }

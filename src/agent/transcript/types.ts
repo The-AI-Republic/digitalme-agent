@@ -168,6 +168,14 @@ export interface RecordMessageOpts {
   agentId?: string;
 }
 
+export interface AgentMetadata {
+  agentId: string;
+  agentType: string;
+  description: string;
+  createdAt: string;
+  config?: Record<string, unknown>;
+}
+
 export interface ITranscriptRecorder {
   recordMessage(
     conversationId: string,
@@ -183,6 +191,11 @@ export interface ITranscriptRecorder {
     isSidechain?: boolean,
     agentId?: string,
     startingParentId?: string | null,
+  ): Promise<void>;
+
+  writeAgentMetadata(
+    conversationId: string,
+    metadata: AgentMetadata,
   ): Promise<void>;
 
   loadTranscript(conversationId: string): Promise<{ messages: Message[]; leafId: string | null }>;

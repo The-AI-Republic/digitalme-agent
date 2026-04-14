@@ -20,9 +20,9 @@ export interface PostTurnHookContext {
   sessionRuntime: { canFork(): boolean; registerForkedAgent(handle: ForkedAgentHandle): void };
   forkSemaphore: ForkSemaphore;
   turnExecutor: TurnExecutorLike;
+  transcriptRecorder?: ITranscriptRecorder;
   conversationId: string;
   lastResult: TurnExecutionResult;
-  transcriptRecorder?: ITranscriptRecorder;
   interactionSpanContext?: SpanContext;
 }
 

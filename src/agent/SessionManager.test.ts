@@ -40,6 +40,8 @@ class MemoryTranscriptRecorder implements ITranscriptRecorder {
 
   async insertMessageChain() {}
 
+  async writeAgentMetadata() {}
+
   async loadTranscript() {
     return { messages: [] as Message[], leafId: null };
   }

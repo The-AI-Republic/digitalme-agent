@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { generateId } from '../../models/ModelClient.js';
 import type { IToolRegistry } from '../../tools/registry.js';
 import type { Tool, ToolContext, ToolDefinition, ToolExecutionResult, ToolMetadata } from '../../tools/types.js';
@@ -131,8 +132,10 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool<SubagentInput> 
         toolRegistry,
       };
 
+      const agentId = `subagent-${args.subagent_type}-${randomUUID()}`;
+
       const submission: TurnSubmission = {
-        requestId: `subagent-${args.subagent_type}-${Date.now()}`,
+        requestId: agentId,
         conversationId: context.conversationId,
         userMessage: args.prompt,
         history: [],
@@ -174,6 +177,26 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool<SubagentInput> 
         );
 
         const durationMs = Date.now() - startTime;
+
+        // Record sidechain transcript for the subagent's internal history
+        if (deps.transcriptRecorder && result.newMessages.length > 0) {
+          try {
+            await deps.transcriptRecorder.insertMessageChain(
+              context.conversationId,
+              result.newMessages,
+              true,  // isSidechain
+              agentId,
+            );
+            await deps.transcriptRecorder.writeAgentMetadata(context.conversationId, {
+              agentId,
+              agentType: args.subagent_type,
+              description: args.description,
+              createdAt: new Date(startTime).toISOString(),
+            });
+          } catch {
+            // Best effort — recording failure should not fail the tool result
+          }
+        }
 
         // Record subagent_completed
         if (recorder) {

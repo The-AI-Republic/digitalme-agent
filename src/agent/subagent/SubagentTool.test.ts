@@ -11,6 +11,9 @@ import type {
   TurnSubmission,
 } from '../types.js';
 import type { ToolDefinition } from '../../tools/types.js';
+import type { Message } from '../../models/ModelClient.js';
+import { generateId } from '../../models/ModelClient.js';
+import type { ITranscriptRecorder, AgentMetadata } from '../transcript/types.js';
 
 function makeToolDef(name: string): ToolDefinition {
   return {
@@ -243,4 +246,130 @@ test('SubagentTool catches executor errors and returns failure', async () => {
 
   assert.equal(result.success, false);
   assert.ok(result.renderForModel().includes('model_failed'));
+});
+
+// --- Sidechain recording tests ---
+
+function makeFakeRecorder() {
+  const chains: { conversationId: string; messages: Message[]; isSidechain?: boolean; agentId?: string }[] = [];
+  const metadata: AgentMetadata[] = [];
+  const recorder: ITranscriptRecorder = {
+    async recordMessage() {},
+    async recordLifecycleEvent() {},
+    async insertMessageChain(conversationId, messages, isSidechain, agentId) {
+      chains.push({ conversationId, messages, isSidechain, agentId });
+    },
+    async writeAgentMetadata(_convId, meta) {
+      metadata.push(meta);
+    },
+    async loadTranscript() { return { messages: [], leafId: null }; },
+    seedParentId() {},
+  };
+  return { recorder, chains, metadata };
+}
+
+function makeExecutorWithMessages(finalText: string, newMessages: Message[]) {
+  return {
+    async *run(): AsyncGenerator<AgentEvent, TurnExecutionResult> {
+      yield { type: 'done' as const };
+      return {
+        finalText,
+        completedTurns: 1,
+        toolCallCount: 0,
+        newMessages,
+      };
+    },
+  };
+}
+
+test('SubagentTool records sidechain transcript via recorder', async () => {
+  const messages: Message[] = [
+    { role: 'user', content: 'task prompt', id: generateId() },
+    { role: 'assistant', content: 'task result', id: generateId() },
+  ];
+  const { recorder, chains, metadata } = makeFakeRecorder();
+
+  const tool = createSubagentTool({
+    turnExecutor: makeExecutorWithMessages('task result', messages),
+    parentToolRegistry: makeParentRegistry([]),
+    modelName: 'gpt-4o',
+    transcriptRecorder: recorder,
+  });
+
+  const result = await tool.execute(
+    {
+      description: 'test recording',
+      prompt: 'do something',
+      subagent_type: 'general-purpose',
+    },
+    { conversationId: 'conv-rec-1', signal: AbortSignal.abort(), policyConfig: {} },
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(chains.length, 1);
+  assert.equal(chains[0].isSidechain, true);
+  assert.ok(chains[0].agentId?.startsWith('subagent-general-purpose-'));
+  assert.equal(chains[0].messages.length, 2);
+
+  assert.equal(metadata.length, 1);
+  assert.equal(metadata[0].agentType, 'general-purpose');
+  assert.equal(metadata[0].description, 'test recording');
+});
+
+test('SubagentTool succeeds even when recorder throws', async () => {
+  const messages: Message[] = [
+    { role: 'assistant', content: 'good result', id: generateId() },
+  ];
+  const throwingRecorder: ITranscriptRecorder = {
+    async recordMessage() {},
+    async recordLifecycleEvent() {},
+    async insertMessageChain() { throw new Error('recorder_broke'); },
+    async writeAgentMetadata() { throw new Error('recorder_broke'); },
+    async loadTranscript() { return { messages: [], leafId: null }; },
+    seedParentId() {},
+  };
+
+  const tool = createSubagentTool({
+    turnExecutor: makeExecutorWithMessages('good result', messages),
+    parentToolRegistry: makeParentRegistry([]),
+    modelName: 'gpt-4o',
+    transcriptRecorder: throwingRecorder,
+  });
+
+  const result = await tool.execute(
+    {
+      description: 'test',
+      prompt: 'do something',
+      subagent_type: 'general-purpose',
+    },
+    { conversationId: 'conv-throw-1', signal: AbortSignal.abort(), policyConfig: {} },
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.renderForModel(), 'good result');
+});
+
+test('SubagentTool succeeds when no recorder is provided', async () => {
+  const messages: Message[] = [
+    { role: 'assistant', content: 'no recorder result', id: generateId() },
+  ];
+
+  const tool = createSubagentTool({
+    turnExecutor: makeExecutorWithMessages('no recorder result', messages),
+    parentToolRegistry: makeParentRegistry([]),
+    modelName: 'gpt-4o',
+    // no transcriptRecorder
+  });
+
+  const result = await tool.execute(
+    {
+      description: 'test',
+      prompt: 'do something',
+      subagent_type: 'general-purpose',
+    },
+    { conversationId: 'conv-no-rec', signal: AbortSignal.abort(), policyConfig: {} },
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.renderForModel(), 'no recorder result');
 });

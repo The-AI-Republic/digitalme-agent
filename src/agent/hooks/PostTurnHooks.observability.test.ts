@@ -15,6 +15,7 @@ function makeRecorder(): { recorder: ITranscriptRecorder; entries: TranscriptEnt
     async insertMessageChain() {},
     async loadTranscript() { return { messages: [] as Message[], leafId: null }; },
     seedParentId() {},
+    async writeAgentMetadata() {},
   };
   return { recorder, entries };
 }
@@ -134,6 +135,7 @@ test('recording failure does not crash the agent', async () => {
     async insertMessageChain() {},
     async loadTranscript() { return { messages: [] as Message[], leafId: null }; },
     seedParentId() {},
+    async writeAgentMetadata() {},
   };
 
   const registry = new PostTurnHookRegistry();

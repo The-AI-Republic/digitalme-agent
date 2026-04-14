@@ -47,6 +47,7 @@ function makeRecorder(): { recorder: ITranscriptRecorder; entries: TranscriptEnt
     async insertMessageChain() {},
     async loadTranscript() { return { messages: [] as Message[], leafId: null }; },
     seedParentId() {},
+    async writeAgentMetadata() {},
   };
   return { recorder, entries };
 }
