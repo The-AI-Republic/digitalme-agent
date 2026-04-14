@@ -115,3 +115,64 @@ This prompt body is definitely long enough.`,
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('scanSkillDir skips skills with symlinked SKILL.md files', () => {
+  const root = makeTempDir();
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (message?: unknown) => { warnings.push(String(message)); };
+
+  try {
+    const skillDir = path.join(root, 'beat-catalog');
+    const linkedFile = path.join(root, 'outside.md');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(
+      linkedFile,
+      `---
+description: Search my beats
+when_to_use: When fan asks about beats or pricing
+---
+
+This prompt body is definitely long enough.`,
+    );
+    fs.symlinkSync(linkedFile, path.join(skillDir, 'SKILL.md'));
+
+    const skills = scanSkillDir(root, 'local');
+    assert.equal(skills.length, 0);
+    assert.ok(warnings.some((warning) => warning.includes('SKILL.md cannot be a symbolic link')));
+  } finally {
+    console.warn = originalWarn;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('scanSkillDir skips skills with symlinked supporting markdown files', () => {
+  const root = makeTempDir();
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (message?: unknown) => { warnings.push(String(message)); };
+
+  try {
+    const skillDir = path.join(root, 'beat-catalog');
+    const linkedFile = path.join(root, 'outside.md');
+    writeSkill(
+      root,
+      'beat-catalog',
+      `---
+description: Search my beats
+when_to_use: When fan asks about beats or pricing
+---
+
+This prompt body is definitely long enough.`,
+    );
+    fs.writeFileSync(linkedFile, 'Lease pricing details');
+    fs.symlinkSync(linkedFile, path.join(skillDir, 'pricing.md'));
+
+    const skills = scanSkillDir(root, 'local');
+    assert.equal(skills.length, 0);
+    assert.ok(warnings.some((warning) => warning.includes('pricing.md cannot be a symbolic link')));
+  } finally {
+    console.warn = originalWarn;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
