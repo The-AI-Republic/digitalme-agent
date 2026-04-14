@@ -20,6 +20,10 @@ export const testConfig: AgentConfig = {
     base_url: null,
     heartbeat_interval_seconds: 20,
   },
+  skills: {
+    bundled_dir: './skills',
+    local_dir: '/app/skills-local',
+  },
   model: {
     provider: 'openai',
     name: 'gpt-4o',

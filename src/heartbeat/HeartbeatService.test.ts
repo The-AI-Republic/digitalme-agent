@@ -25,6 +25,10 @@ const config: AgentConfig = {
     base_url: 'http://platform.test',
     heartbeat_interval_seconds: 0.01,
   },
+  skills: {
+    bundled_dir: './skills',
+    local_dir: '/app/skills-local',
+  },
   model: {
     provider: 'openai',
     name: 'gpt-4o',

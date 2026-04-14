@@ -29,6 +29,10 @@ function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfi
       base_url: null,
       heartbeat_interval_seconds: 20,
     },
+    skills: {
+      bundled_dir: './skills',
+      local_dir: '/app/skills-local',
+    },
     model: {
       provider: modelProvider,
       name: 'test-model',

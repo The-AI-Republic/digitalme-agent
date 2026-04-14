@@ -31,6 +31,20 @@ test('SystemPromptBuilder produces 5 sections in correct order', () => {
   );
 });
 
+test('SystemPromptBuilder adds skills section when skillListing is present', () => {
+  const builder = makeBuilder();
+  const result = builder.build(makeContext({
+    skillListing: 'Available skills:\n- beat-catalog: Search beats',
+  }));
+
+  assert.equal(result.sections.length, 6);
+  assert.deepEqual(
+    result.sections.map((s) => s.name),
+    ['base_system', 'security', 'tone_style', 'soul', 'tool_policy', 'skills'],
+  );
+  assert.ok(result.sections[5]?.content.includes('beat-catalog'));
+});
+
 test('staticPrefix contains base_system, security, and tone_style content', () => {
   const builder = makeBuilder();
   const result = builder.build(makeContext());
@@ -49,6 +63,16 @@ test('dynamicTail contains soul and tool_policy content', () => {
   assert.ok(result.dynamicTail[0]!.includes('Test Creator'));
   assert.ok(result.dynamicTail[0]!.includes('You are a helpful test agent.'));
   assert.ok(result.dynamicTail[1]!.includes('Approved tools: web_search.'));
+});
+
+test('dynamicTail includes skills content when configured', () => {
+  const builder = makeBuilder();
+  const result = builder.build(makeContext({
+    skillListing: 'Available skills:\n- beat-catalog: Search beats',
+  }));
+
+  assert.equal(result.dynamicTail.length, 3);
+  assert.ok(result.dynamicTail[2]?.includes('beat-catalog'));
 });
 
 test('finalSystemPrompt preserves section declaration order', () => {

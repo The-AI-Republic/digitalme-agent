@@ -51,6 +51,8 @@ export interface ExecutionOptions {
   model?: string;
   /** Override tool registry (default: constructor-injected registry) */
   toolRegistry?: IToolRegistry;
+  /** Optional guardrail scope for future fan-facing vs internal policy separation. */
+  guardrailScope?: 'public' | 'internal';
 }
 
 export type TurnExecutorLike = {

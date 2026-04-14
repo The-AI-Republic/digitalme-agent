@@ -64,6 +64,7 @@ export interface TurnExecutorDeps {
   toolExecutor?: ToolExecutor;
   contextDeps?: PrepareContextDeps;
   transcriptRecorder?: ITranscriptRecorder;
+  skillListing?: string | null;
 }
 
 export class TurnExecutor {
@@ -75,6 +76,7 @@ export class TurnExecutor {
   private readonly policyChecker: IToolPolicyChecker;
   private readonly contextDeps: PrepareContextDeps;
   private readonly transcriptRecorder?: ITranscriptRecorder;
+  private readonly skillListing: string | null;
 
   constructor(private readonly config: AgentConfig, deps: TurnExecutorDeps = {}) {
     this.toolRegistry = deps.toolRegistry ?? createToolRegistry(config);
@@ -85,6 +87,7 @@ export class TurnExecutor {
     this.toolExecutor = deps.toolExecutor ?? new ToolExecutor(this.toolRegistry, this.policyChecker);
     this.contextDeps = deps.contextDeps ?? this.buildDefaultContextDeps();
     this.transcriptRecorder = deps.transcriptRecorder;
+    this.skillListing = deps.skillListing ?? null;
     // Only auto-enable router behavior when task-specific routing is configured.
     // This preserves existing fallback_model semantics for configs that have only
     // schema-default routing values.
@@ -179,6 +182,7 @@ export class TurnExecutor {
       soulSystemPromptOverride: this.config.soul.system_prompt_override ?? null,
       soulSystemPromptAppend: this.config.soul.system_prompt_append ?? null,
       approvedToolNames: toolRegistry.listNames(),
+      skillListing: this.skillListing,
       modelName: resolvedModelName,
       providerName: resolvedProvider,
     };
@@ -441,6 +445,7 @@ export class TurnExecutor {
         conversationId: context.conversationId,
         signal: context.signal ?? NEVER_ABORT,
         policyConfig: {},
+        currentModelName: modelName,
       };
 
       const toolEvents = new EventQueue<AgentEvent>();

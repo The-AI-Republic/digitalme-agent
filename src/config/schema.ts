@@ -54,6 +54,10 @@ export const agentConfigSchema = z.object({
     base_url: z.string().url().optional().nullable(),
     heartbeat_interval_seconds: z.number().positive().default(20),
   }).default({}),
+  skills: z.object({
+    bundled_dir: z.string().default('./skills'),
+    local_dir: z.string().default('/app/skills-local'),
+  }).default({}),
   model: modelSchema,
   fallback_model: modelSchema.optional(),
   limits: z.object({
