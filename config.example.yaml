@@ -1,66 +1,120 @@
+# =============================================================================
+# DigitalMe Agent Configuration
+# =============================================================================
+# Copy this file to config.yaml and edit it to match your agent.
+#   cp config.example.yaml config.yaml
+
+# --- Soul: defines who your agent is and how it behaves ---
 soul:
+  # Display name of the agent
   name: "Alice"
+  # One-line description of who the agent is
   description: "A personal wellness coach specializing in mindfulness."
+  # How the agent speaks — warm, blunt, formal, playful, etc.
   tone: "Warm but direct. Keep answers short. Use humor sparingly."
+  # What the agent won't do or discuss
   boundaries: "Don't give medical diagnoses. Redirect emergencies to 911."
+  # Domain expertise or topics the agent knows about
   knowledge: "Certified in CBT and mindfulness meditation techniques."
+  # Any additional context baked into the agent's personality
   others: "Always recommend journaling as a first step."
+  # Override the entire system prompt (advanced — omit to use the default)
+  # system_prompt_override:
+  # Append extra instructions to the default system prompt
+  # system_prompt_append:
   tools:
+    # Allow the agent to search the web during conversations
     allow_web_search: false
 
+# --- Server: HTTP listener settings ---
 server:
+  # Port the agent listens on (default: 8088)
   port: 8088
+  # Bind address (0.0.0.0 = all interfaces)
   bind: "0.0.0.0"
 
+# --- Auth: credentials from the platform ---
 auth:
+  # API key generated when you connect an agent on the platform
   api_key: ${DIGITALME_API_KEY}
+  # HMAC signing secret for verifying platform requests
   signing_secret: ${DIGITALME_SIGNING_SECRET}
 
+# --- Platform: connection to the DigitalMe platform ---
 platform:
+  # Platform API URL (set to null for standalone mode without a platform)
   base_url: http://host.docker.internal:8080
+  # How often (seconds) the agent sends a heartbeat to the platform
   heartbeat_interval_seconds: 20
 
+# --- Model: primary LLM provider ---
 model:
+  # LLM provider: openai | anthropic | xai | groq | google-ai-studio | fireworks | together
   provider: openai
+  # Model name (e.g. gpt-4o, claude-sonnet-4-20250514, gemini-2.5-flash)
   name: gpt-4o
+  # API key for the LLM provider
   api_key: ${MODEL_API_KEY}
+  # Custom API base URL (null = use provider default)
   base_url:
+  # Maximum tokens the model can generate per response
   max_output_tokens: 8192
 
-# Optional fallback model for recovery on consecutive provider failures
+# --- Fallback model: used when the primary provider is unhealthy ---
 # fallback_model:
 #   provider: anthropic
 #   name: claude-sonnet-4-20250514
 #   api_key: ${FALLBACK_API_KEY}
+#   base_url:
 #   max_output_tokens: 8192
 
-# Model routing: task-specific models and provider health tracking
+# --- Routing: task-specific models and provider health tracking ---
 # routing:
 #   task_models:
+#     # Cheaper/faster model for conversation summarization
 #     summary:
 #       provider: openai
 #       name: gpt-4o-mini
 #       api_key: ${MODEL_API_KEY}
 #       max_output_tokens: 4096
+#     # Model for session memory extraction
 #     extraction:
 #       provider: openai
 #       name: gpt-4o-mini
 #       api_key: ${MODEL_API_KEY}
 #       max_output_tokens: 4096
+#     # Model for background forked agent tasks
+#     # forked:
+#     #   provider: openai
+#     #   name: gpt-4o-mini
+#     #   api_key: ${MODEL_API_KEY}
+#     #   max_output_tokens: 4096
 #   health:
+#     # Enable provider health tracking and automatic fallback
 #     enabled: true
+#     # Number of recent calls in the sliding window per provider
 #     window_size: 20
+#     # Failure rate (0.0–1.0) that triggers fallback to another provider
 #     failure_threshold: 0.5
+#     # Seconds after a provider is marked unhealthy before retrying it
 #     recovery_after_seconds: 60
 
+# --- Limits: request and session constraints ---
 limits:
+  # Maximum character length of a single user message
   max_message_length: 4000
+  # Maximum messages kept in conversation history
   max_history_messages: 100
+  # Maximum tool-use turns per single request
   max_turns: 10
+  # Maximum concurrent requests the agent handles simultaneously
   max_concurrent: 50
+  # Maximum queued requests waiting to be processed
   max_pending: 1000
 
+# --- Context: context window management and compaction ---
 context:
+  # Known model context sizes (used for compaction calculations)
   model_metadata:
     gpt-4o:
       context_window_size: 128000
@@ -68,44 +122,79 @@ context:
     gpt-4o-mini:
       context_window_size: 128000
       max_output_tokens: 16384
+  # Fallback context window size for unknown models
   default_context_window_size: 128000
+  # Fallback max output tokens for unknown models
   default_max_output_tokens: 4096
+
+  # Microcompact: aggressive compaction of old/stale messages
   microcompact:
+    # Enable microcompact to compress old messages automatically
     enabled: true
+    # Minutes of inactivity before a conversation gap triggers compaction
     gap_threshold_minutes: 60
+    # Number of recent tool results to keep uncompacted
     keep_recent_results: 5
+
+  # Tool result persistence: offload large tool results to disk
   tool_result_persistence:
+    # Enable disk-based storage for large tool outputs
     enabled: true
+    # Max characters kept inline per tool result (rest goes to disk)
     default_max_result_chars: 10000
+    # Total character budget for tool results per message
     per_message_budget_chars: 30000
+    # Bytes of preview kept inline when a result is offloaded
     preview_size_bytes: 2000
+    # Directory for storing offloaded tool results
     storage_dir: /tmp/digitalme-agent
+
+  # Session memory: extract and maintain a running memory of the conversation
   session_memory:
+    # Enable session memory extraction (experimental)
     enabled: false
+
+  # Compaction thresholds: context usage ratios that trigger compaction stages
   thresholds:
+    # Context usage ratio that triggers microcompact
     microcompact_ratio: 0.5
+    # Context usage ratio that triggers projection-based compaction
     projection_ratio: 0.7
+    # Context usage ratio that triggers overflow compaction (drop oldest messages)
     overflow_ratio: 0.9
 
+# --- Security ---
 security:
+  # Maximum age (seconds) of HMAC-signed requests before they're rejected
   hmac_tolerance_seconds: 300
 
 # --- Creator Guardrails (optional, off by default) ---
+# Protect your agent from misuse with input/output filtering.
 # guardrails:
+#   # Enable the guardrails system
 #   enabled: true
+#   # Block messages containing these exact phrases
 #   blocked_keywords:
 #     - "buy crypto"
 #     - "send money"
 #     - "wire transfer"
 #   response_rules:
+#     # Truncate agent responses longer than this (characters)
 #     max_response_length: 2000
+#     # Strip external URLs from agent responses
 #     block_external_links: true
 #   pii_detection:
+#     # Enable PII detection (emails, phone numbers, SSNs, etc.)
 #     enabled: true
+#     # Block user messages containing PII
 #     block_in_input: true
+#     # Block agent responses containing PII
 #     block_in_output: true
 #   jailbreak_detection:
+#     # Enable heuristic jailbreak/prompt-injection detection
 #     enabled: true
 #   messages:
+#     # Response shown when user input is blocked
 #     input_blocked: "I can't respond to that. Let me know if there's something else I can help with!"
+#     # Response shown when agent output is blocked
 #     output_blocked: "Sorry, I wasn't able to generate a suitable response. Please try again."
