@@ -25,6 +25,7 @@ Detailed per-sector plans live in:
 - `12_configuration_lifecycle/IMPLEMENTATION_PLAN.md` [deferred]
 - `13_structured_analytics/IMPLEMENTATION_PLAN.md` [deferred]
 - `14_creator_skills/IMPLEMENTATION_PLAN.md`
+- `15_fast_model_routing/IMPLEMENTATION_PLAN.md`
 
 It assumes:
 
