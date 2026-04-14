@@ -167,6 +167,23 @@ export class SessionRuntime {
           }
         },
       );
+
+      // Terminal failures should bypass normal success commit / hooks / usage sync paths.
+      if (terminalReason === 'model_error' || terminalReason === 'aborted') {
+        activeTurn.fail(new Error(`Terminal reason: ${terminalReason}`));
+        const failedEntry: TaskFailedEntry = {
+          type: 'task_failed',
+          conversationId: submission.conversationId,
+          taskId: submission.requestId,
+          turnId: activeTurn.turnId,
+          timestamp: new Date().toISOString(),
+          error: `Terminal reason: ${terminalReason}`,
+          turn: activeTurn.snapshot(),
+        };
+        await this.deps.transcriptRecorder.recordLifecycleEvent(failedEntry);
+        return;
+      }
+
       this.commitResult(result, activeTurn);
 
       // Fire-and-forget: launch post-turn hooks AFTER committing result
@@ -198,33 +215,19 @@ export class SessionRuntime {
         });
       }
 
-      // Record task_failed for terminal model errors; task_completed otherwise
-      if (terminalReason === 'model_error' || terminalReason === 'aborted') {
-        const failedEntry: TaskFailedEntry = {
-          type: 'task_failed',
-          conversationId: submission.conversationId,
-          taskId: submission.requestId,
-          turnId: activeTurn.turnId,
-          timestamp: new Date().toISOString(),
-          error: `Terminal reason: ${terminalReason}`,
-          turn: activeTurn.snapshot(),
-        };
-        await this.deps.transcriptRecorder.recordLifecycleEvent(failedEntry);
-      } else {
-        const completedEntry: TaskCompletedEntry = {
-          type: 'task_completed',
-          conversationId: submission.conversationId,
-          taskId: submission.requestId,
-          turnId: activeTurn.turnId,
-          timestamp: new Date().toISOString(),
-          finalText: result.finalText,
-          completedTurns: result.completedTurns,
-          toolCallCount: result.toolCallCount,
-          tokenUsage: result.tokenUsage,
-          session: this.state.snapshot(),
-        };
-        await this.deps.transcriptRecorder.recordLifecycleEvent(completedEntry);
-      }
+      const completedEntry: TaskCompletedEntry = {
+        type: 'task_completed',
+        conversationId: submission.conversationId,
+        taskId: submission.requestId,
+        turnId: activeTurn.turnId,
+        timestamp: new Date().toISOString(),
+        finalText: result.finalText,
+        completedTurns: result.completedTurns,
+        toolCallCount: result.toolCallCount,
+        tokenUsage: result.tokenUsage,
+        session: this.state.snapshot(),
+      };
+      await this.deps.transcriptRecorder.recordLifecycleEvent(completedEntry);
     } catch (error) {
       activeTurn.fail(error);
       const failedEntry: TaskFailedEntry = {

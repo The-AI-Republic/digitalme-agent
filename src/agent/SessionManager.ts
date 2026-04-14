@@ -241,6 +241,10 @@ export class SessionManager {
       const entries = await fs.readdir(this.storageDir);
       const cutoff = Date.now() - this.config.limits.session_ttl_seconds * 1000;
       for (const entry of entries) {
+        // Preserve shared persistence directories; only per-conversation temp dirs are sweep candidates.
+        if (entry === 'usage') {
+          continue;
+        }
         const dirPath = path.join(this.storageDir, entry);
         try {
           const stat = await fs.stat(dirPath);

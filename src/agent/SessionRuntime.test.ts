@@ -136,6 +136,39 @@ test('failed execution clears activeTurn', async () => {
   assert.equal(runtime.hasActiveTurn(), false);
 });
 
+test('terminal model_error records task_failed without committing success state', async () => {
+  const { recorder, lifecycleEvents } = createMockTranscriptRecorder();
+  const state = new SessionState('conv-1', []);
+  const runtime = new SessionRuntime(state, {
+    turnExecutor: {
+      run: async function* () {
+        yield { type: 'done', terminalReason: { reason: 'model_error', error: 'boom' } } as AgentEvent;
+        return makeResult({
+          finalText: '',
+          newMessages: [
+            { role: 'user', content: 'hello', id: generateId() },
+            { role: 'assistant', content: 'should not commit', id: generateId() },
+          ],
+        });
+      },
+    },
+    transcriptRecorder: recorder,
+  });
+  const events = new EventQueue<AgentEvent>();
+
+  await runtime.execute(makeSubmission(), events);
+
+  const types = lifecycleEvents.map((e) => e.type);
+  assert.ok(types.includes('task_failed'));
+  assert.ok(!types.includes('task_completed'));
+
+  const failedEntry = lifecycleEvents.find((e: any) => e.type === 'task_failed') as any;
+  assert.equal(failedEntry.turn.status, 'failed');
+
+  const snap = state.snapshot();
+  assert.equal(snap.messageCount, 0);
+});
+
 test('reconcileWithPlatformHistory reseeded triggers lifecycle recording', async () => {
   const state = new SessionState('conv-1', [
     { role: 'user', content: 'old' },
