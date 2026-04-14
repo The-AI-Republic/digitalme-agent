@@ -53,7 +53,7 @@ export class TurnExecutor {
       inputScreenResult = screenInput(submission.userMessage, guardrailConfig);
     } catch {
       // Fail-closed: if screener throws, block the message
-      inputScreenResult = { safe: false, category: 'jailbreak' as const, action: 'block' as const, matchedRule: 'screener_error' };
+      inputScreenResult = { safe: false, category: 'error' as const, action: 'block' as const, matchedRule: 'screener_error' };
     }
 
     if (!inputScreenResult.safe) {

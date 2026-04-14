@@ -4,7 +4,7 @@ export type GuardrailConfig = AgentConfig['guardrails'];
 
 export interface InputScreenResult {
   safe: boolean;
-  category?: 'jailbreak' | 'pii' | 'blocked_keyword';
+  category?: 'jailbreak' | 'pii' | 'blocked_keyword' | 'error';
   action: 'proceed' | 'block';
   matchedRule?: string;
 }

@@ -77,7 +77,7 @@ export function validateOutput(text: string, config: GuardrailConfig): OutputVal
 
   // Strip external links
   if (violations.some((v) => v.category === 'external_link')) {
-    modified = modified.replace(EXTERNAL_LINK_PATTERN.regex, '[link removed]');
+    modified = modified.replace(/https?:\/\/[^\s]+/gi, '[link removed]');
   }
 
   // Truncate if too long
