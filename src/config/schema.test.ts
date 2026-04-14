@@ -136,19 +136,3 @@ test('agentConfigSchema accepts optional nullable platform base_url', () => {
     assert.equal(result.data.platform.base_url, null);
   }
 });
-
-test('agentConfigSchema rejects blank blocked keywords', () => {
-  const input = {
-    persona: { name: 'Test', default_system_prompt: 'prompt' },
-    server: {},
-    auth: { api_key: 'key', signing_secret: 'secret' },
-    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key' },
-    limits: {},
-    security: {},
-    guardrails: {
-      blocked_keywords: ['   '],
-    },
-  };
-  const result = agentConfigSchema.safeParse(input);
-  assert.equal(result.success, false);
-});

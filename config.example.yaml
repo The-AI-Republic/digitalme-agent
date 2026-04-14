@@ -33,23 +33,3 @@ limits:
 
 security:
   hmac_tolerance_seconds: 300
-
-# --- Creator Guardrails (optional, off by default) ---
-# guardrails:
-#   enabled: true
-#   blocked_keywords:
-#     - "buy crypto"
-#     - "send money"
-#     - "wire transfer"
-#   response_rules:
-#     max_response_length: 2000
-#     block_external_links: true
-#   pii_detection:
-#     enabled: true
-#     block_in_input: true
-#     block_in_output: true
-#   jailbreak_detection:
-#     enabled: true
-#   messages:
-#     input_blocked: "I can't respond to that. Let me know if there's something else I can help with!"
-#     output_blocked: "Sorry, I wasn't able to generate a suitable response. Please try again."
