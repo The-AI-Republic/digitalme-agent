@@ -125,6 +125,7 @@ export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentH
       );
 
       // Record sidechain transcript unless skipTranscript is set
+      let sidechainPath: string | undefined;
       if (transcriptRecorder && !config.skipTranscript && result.newMessages.length > 0) {
         try {
           await transcriptRecorder.insertMessageChain(
@@ -137,8 +138,9 @@ export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentH
             agentId: forkId,
             agentType: 'fork',
             description: config.forkLabel,
-            createdAt: new Date().toISOString(),
+            createdAt: new Date(startTime).toISOString(),
           });
+          sidechainPath = `subagents/agent-${forkId}.jsonl`;
         } catch {
           // Best effort — recording failure should not block fork completion
         }
@@ -163,6 +165,7 @@ export function launchForkedAgent(params: LaunchForkedAgentParams): ForkedAgentH
           tokenUsage: forkedResult.totalUsage,
           durationMs,
           toolCallCount: result.toolCallCount,
+          transcriptPath: sidechainPath,
         };
         transcriptRecorder.recordLifecycleEvent(completedEntry).catch(() => {});
       }

@@ -348,3 +348,28 @@ test('SubagentTool succeeds even when recorder throws', async () => {
   assert.equal(result.success, true);
   assert.equal(result.renderForModel(), 'good result');
 });
+
+test('SubagentTool succeeds when no recorder is provided', async () => {
+  const messages: Message[] = [
+    { role: 'assistant', content: 'no recorder result', id: generateId() },
+  ];
+
+  const tool = createSubagentTool({
+    turnExecutor: makeExecutorWithMessages('no recorder result', messages),
+    parentToolRegistry: makeParentRegistry([]),
+    modelName: 'gpt-4o',
+    // no transcriptRecorder
+  });
+
+  const result = await tool.execute(
+    {
+      description: 'test',
+      prompt: 'do something',
+      subagent_type: 'general-purpose',
+    },
+    { conversationId: 'conv-no-rec', signal: AbortSignal.abort(), policyConfig: {} },
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.renderForModel(), 'no recorder result');
+});

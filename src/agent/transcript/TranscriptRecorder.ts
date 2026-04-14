@@ -168,7 +168,10 @@ export class TranscriptRecorder implements ITranscriptRecorder {
     const filePath = this.getFilePath(conversationId, isSidechain, agentId);
 
     for (const message of messages) {
-      if (dedupSet.has(message.id)) {
+      // Sidechain writes bypass the main dedup set — these messages were already
+      // recorded to the main transcript by TurnExecutor during execution, but the
+      // sidechain file is a separate copy of the agent's internal conversation.
+      if (!isSidechain && dedupSet.has(message.id)) {
         // Already recorded — skip but track as potential parent
         currentParentId = message.id;
         continue;
@@ -185,12 +188,15 @@ export class TranscriptRecorder implements ITranscriptRecorder {
       };
 
       await this.appendEntry(filePath, entry);
-      dedupSet.add(message.id);
+      if (!isSidechain) {
+        dedupSet.add(message.id);
+      }
       currentParentId = message.id;
     }
 
-    // Update parent cursor
-    if (currentParentId !== null) {
+    // Only update the shared parent cursor for main-chain writes.
+    // Sidechain writes must not interfere with the main transcript's chain.
+    if (!isSidechain && currentParentId !== null) {
       this.lastParentId.set(conversationId, currentParentId);
     }
   }
