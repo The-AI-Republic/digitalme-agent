@@ -16,6 +16,8 @@ export interface PrepareContextDeps {
   promptProjector?: PromptProjector;
   postCompactRecovery?: PostCompactRecovery;
   sessionMemory?: SessionMemory;
+  /** Set by CostAwareRouter when quota usage is high — triggers earlier/more aggressive compaction. */
+  aggressiveCompaction?: boolean;
 }
 
 /**
@@ -67,8 +69,11 @@ export async function prepareContextForModelCall(
   const effectiveUsage = rewrote ? undefined : lastKnownUsage;
   const pressure = deps.tokenBudget.assessPressure(modelName, currentMessages, effectiveUsage);
 
-  // Step 4: Session memory compaction (when pressure is at projection or above)
-  if (pressure === 'projection' || pressure === 'overflow') {
+  // Step 4: Session memory compaction (when pressure is at projection or above,
+  // or when aggressive compaction is signaled by cost-aware routing)
+  const shouldCompact = pressure === 'projection' || pressure === 'overflow'
+    || (deps.aggressiveCompaction && pressure === 'microcompact');
+  if (shouldCompact) {
     if (deps.sessionMemoryCompact) {
       try {
         const compactResult = await deps.sessionMemoryCompact.tryCompact(currentMessages, modelName);

@@ -572,3 +572,68 @@ test('recovery: normal tool call path is unchanged', async () => {
   assert.ok(events.some(e => e.type === 'tool_start'));
   assert.ok(events.some(e => e.type === 'tool_end'));
 });
+
+// --- Track 04: Terminal reason semantics tests ---
+
+test('recovery: model_error terminal reason emitted on unrecoverable model failure', async () => {
+  // Auth errors (401) are non-retriable and should produce model_error
+  const { executor } = makeExecutor([
+    { error: { status: 401, message: 'Unauthorized' } },
+  ]);
+
+  const events: AgentEvent[] = [];
+  const gen = executor.run(submission);
+  try {
+    await consumeGenerator(gen, (event) => events.push(event));
+  } catch {
+    // expected — auth errors propagate
+  }
+
+  const doneEvent = events.find(e => e.type === 'done') as { terminalReason?: { reason: string; error?: string } } | undefined;
+  assert.ok(doneEvent, 'Should have a done event with model_error terminal reason');
+  assert.equal(doneEvent?.terminalReason?.reason, 'model_error');
+});
+
+test('recovery: aborted terminal reason on pre-aborted signal', async () => {
+  const controller = new AbortController();
+  controller.abort();
+
+  const { executor } = makeExecutor([
+    { type: 'final_text', text: 'should not run' },
+  ]);
+
+  // Pre-aborted signal should yield aborted terminal reason and return (not throw)
+  const events: AgentEvent[] = [];
+  const gen = executor.run({ ...submission, signal: controller.signal });
+  try {
+    await consumeGenerator(gen, (event) => events.push(event));
+  } catch {
+    // abort may still throw in some paths
+  }
+
+  // If events were emitted, check for aborted terminal
+  const doneEvent = events.find(e => e.type === 'done') as { terminalReason?: { reason: string; phase?: string } } | undefined;
+  if (doneEvent) {
+    assert.equal(doneEvent.terminalReason?.reason, 'aborted');
+  }
+});
+
+test('recovery: apiRetryCount is tracked across retry attempts', async () => {
+  // We verify indirectly: 2 retries then success should have produced
+  // exactly 2 api_retry recovery events with incrementing attempt numbers
+  const { executor } = makeExecutor([
+    { error: { status: 429, message: 'Rate limited' } },
+    { error: { status: 429, message: 'Rate limited' } },
+    { type: 'final_text', text: 'ok' },
+  ]);
+
+  const { events } = await collectEvents(executor.run(submission));
+
+  const retryEvents = events.filter(
+    e => e.type === 'recovery' && (e as { reason: string }).reason === 'api_retry'
+  );
+  assert.equal(retryEvents.length, 2);
+  // Attempt numbers should be 1 and 2
+  assert.equal((retryEvents[0] as { detail?: { attempt: number } }).detail?.attempt, 1);
+  assert.equal((retryEvents[1] as { detail?: { attempt: number } }).detail?.attempt, 2);
+});

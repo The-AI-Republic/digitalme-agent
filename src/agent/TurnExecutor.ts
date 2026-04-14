@@ -236,6 +236,11 @@ export class TurnExecutor {
         modelName = this.config.fallback_model.name;
         yield { type: 'recovery', reason: 'cost_aware_downgrade', detail: { from: this.config.model.name, to: modelName } };
       }
+
+      // Signal aggressive compaction when approaching quota limits
+      if (decision.increaseCompaction) {
+        this.contextDeps.aggressiveCompaction = true;
+      }
     }
 
     // Increment turn count
