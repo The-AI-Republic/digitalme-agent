@@ -63,7 +63,7 @@ Session memory is NOT cleared on platform reseed (`SessionRuntime.ts`). Stale me
 ### P0 -- Blocking / Security
 
 1. **Delete stale test files** (5 files) -- these break the test suite
-2. **Enforce guardrailScope in TurnExecutor** -- internal/subagent turns bypass fan-facing guardrails (Track 10)
+2. **Enforce guardrailScope in TurnExecutor** -- internal/subagent turns are tagged with `guardrailScope: 'internal'`, but TurnExecutor never reads that flag, so guardrails currently run unconditionally instead of honoring the intended bypass semantics (Track 10)
 3. **Validate partial chunks during truncation recovery** -- blocked content streams to client before final validation (Track 10)
 4. **Add guardrail integration to CreatorSkillTool** -- fan input via skill arguments bypasses screening (Track 14)
 

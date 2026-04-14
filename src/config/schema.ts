@@ -158,6 +158,10 @@ export const agentConfigSchema = z.object({
     enabled: z.boolean().default(true),
     max_concurrent: z.number().int().positive().default(2),
   }).default({}),
+  subagents: z.object({
+    enabled: z.boolean().default(false),
+    max_concurrent: z.number().int().positive().default(2),
+  }).default({}),
   hooks: z.object({
     post_turn: z.object({
       enabled: z.boolean().default(true),

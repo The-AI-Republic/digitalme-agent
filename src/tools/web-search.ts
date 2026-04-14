@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { Tool, ToolContext, ToolDefinition, ToolExecutionResult, ToolMetadata } from './types.js';
+import { zodObjectToJsonSchema } from './schema.js';
 
 const webSearchInputSchema = z.object({
   query: z.string().min(1).max(500),
@@ -58,38 +59,6 @@ function formatResultsAsText(data: WebSearchData): string {
   return lines.join('\n');
 }
 
-function zodToJsonSchema(schema: z.ZodObject<z.ZodRawShape>): Record<string, unknown> {
-  // Minimal Zod-to-JSON-Schema for the web search input.
-  // For more complex schemas, use a library like zod-to-json-schema.
-  const shape = schema.shape;
-  const properties: Record<string, unknown> = {};
-  const required: string[] = [];
-
-  for (const [key, value] of Object.entries(shape)) {
-    const zodType = value as z.ZodTypeAny;
-    if (zodType instanceof z.ZodString) {
-      const checks = (zodType as z.ZodString)._def.checks ?? [];
-      const prop: Record<string, unknown> = { type: 'string' };
-      for (const check of checks) {
-        if (check.kind === 'min') prop.minLength = check.value;
-        if (check.kind === 'max') prop.maxLength = check.value;
-      }
-      prop.description = `The ${key}.`;
-      properties[key] = prop;
-    }
-    if (!zodType.isOptional()) {
-      required.push(key);
-    }
-  }
-
-  return {
-    type: 'object',
-    properties,
-    required,
-    additionalProperties: false,
-  };
-}
-
 export class WebSearchTool implements Tool<WebSearchInput, WebSearchData> {
   readonly name = 'web_search';
 
@@ -106,7 +75,7 @@ export class WebSearchTool implements Tool<WebSearchInput, WebSearchData> {
     function: {
       name: this.name,
       description: 'Look up factual public web snippets via DuckDuckGo Instant Answer and return a short list of results.',
-      parameters: zodToJsonSchema(this.inputSchema),
+      parameters: zodObjectToJsonSchema(this.inputSchema),
     },
   };
 

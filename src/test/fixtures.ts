@@ -108,6 +108,10 @@ export const testConfig: AgentConfig = {
     enabled: true,
     max_concurrent: 2,
   },
+  subagents: {
+    enabled: false,
+    max_concurrent: 2,
+  },
   hooks: {
     post_turn: {
       enabled: true,

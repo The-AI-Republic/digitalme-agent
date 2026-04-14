@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Message } from '../../models/ModelClient.js';
 import type { ToolResultPersistenceConfig } from './types.js';
+import { assertSafePathComponent } from '../../utils/safePath.js';
 
 export interface ArtifactRef {
   filePath: string;
@@ -118,7 +119,7 @@ export class ToolResultPersistence {
   }
 
   async cleanup(conversationId: string): Promise<void> {
-    const dirPath = path.join(this.config.storageDir, conversationId);
+    const dirPath = path.join(this.config.storageDir, assertSafePathComponent(conversationId));
     await fs.rm(dirPath, { recursive: true, force: true });
   }
 
@@ -129,9 +130,9 @@ export class ToolResultPersistence {
   private getResultPath(conversationId: string, toolCallId: string): string {
     return path.join(
       this.config.storageDir,
-      conversationId,
+      assertSafePathComponent(conversationId),
       'tool-results',
-      `${toolCallId}.txt`,
+      `${assertSafePathComponent(toolCallId)}.txt`,
     );
   }
 

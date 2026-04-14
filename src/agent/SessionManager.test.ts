@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { generateId, type Message } from '../models/ModelClient.js';
@@ -135,4 +138,40 @@ test('SessionManager wires the transcript recorder into the default TurnExecutor
   }).turnExecutor;
 
   assert.equal(turnExecutor.transcriptRecorder, transcriptRecorder);
+});
+
+
+test('SessionManager sweep preserves shared usage persistence directory', async () => {
+  const storageDir = await fs.mkdtemp(path.join(os.tmpdir(), 'session-manager-'));
+  try {
+    const oldMtime = new Date(Date.now() - 2 * config.limits.session_ttl_seconds * 1000);
+    const usageDir = path.join(storageDir, 'usage');
+    const orphanDir = path.join(storageDir, 'conv-old');
+
+    await fs.mkdir(usageDir, { recursive: true });
+    await fs.mkdir(orphanDir, { recursive: true });
+    await fs.utimes(usageDir, oldMtime, oldMtime);
+    await fs.utimes(orphanDir, oldMtime, oldMtime);
+
+    const manager = new SessionManager({
+      ...config,
+      context: {
+        ...config.context,
+        tool_result_persistence: {
+          ...config.context.tool_result_persistence,
+          storage_dir: storageDir,
+        },
+      },
+    }, {
+      turnExecutor: new FakeTurnExecutor(),
+      transcriptRecorder: new MemoryTranscriptRecorder(),
+    });
+
+    await (manager as any).sweepOrphanedTempFiles();
+
+    await assert.doesNotReject(() => fs.stat(usageDir));
+    await assert.rejects(() => fs.stat(orphanDir));
+  } finally {
+    await fs.rm(storageDir, { recursive: true, force: true });
+  }
 });

@@ -104,16 +104,19 @@ function makeToolRegistry(tool: Tool) {
   };
 }
 
+function makeTestFactory(client: FakeModelClient) {
+  return {
+    createClient() { return client; },
+    createFromConfig() { return client; },
+  };
+}
+
 function makeExecutor(steps: ModelStepResult[]) {
   const tool = makeFakeTool();
   const client = new FakeModelClient([...steps]);
   return new TurnExecutor(config, {
     systemPromptBuilder: makeFakeBuilder(),
-    modelClientFactory: {
-      createClient() {
-        return client;
-      },
-    },
+    modelClientFactory: makeTestFactory(client),
     toolRegistry: makeToolRegistry(tool),
   });
 }
@@ -123,11 +126,7 @@ function makeExecutorWithClient(steps: ModelStepResult[]) {
   const client = new FakeModelClient([...steps]);
   const executor = new TurnExecutor(config, {
     systemPromptBuilder: makeFakeBuilder(),
-    modelClientFactory: {
-      createClient() {
-        return client;
-      },
-    },
+    modelClientFactory: makeTestFactory(client),
     toolRegistry: makeToolRegistry(tool),
   });
   return { executor, client };
@@ -169,7 +168,7 @@ test('TurnExecutor yields tool_start before the tool finishes', async () => {
   ]);
   const executor = new TurnExecutor(config, {
     systemPromptBuilder: makeFakeBuilder(),
-    modelClientFactory: { createClient: () => client },
+    modelClientFactory: makeTestFactory(client),
     toolRegistry: makeToolRegistry(slowTool),
   });
 
@@ -375,7 +374,10 @@ test('TurnExecutor aborts before starting model work when the request is already
     signal: controller.signal,
   };
 
-  await assert.rejects(() => collectEvents(executor.run(submission)), /request_aborted/);
+  const { events } = await collectEvents(executor.run(submission));
+  const doneEvent = events.find(e => e.type === 'done') as { terminalReason?: { reason: string } } | undefined;
+  assert.ok(doneEvent, 'done event must be emitted for pre-aborted signal');
+  assert.equal(doneEvent?.terminalReason?.reason, 'aborted');
   assert.equal(client.requests.length, 0);
 });
 
@@ -445,7 +447,7 @@ test('TurnExecutor passes correct PromptContext fields to builder', async () => 
 
   const executor = new TurnExecutor(config, {
     systemPromptBuilder: builder,
-    modelClientFactory: { createClient() { return client; } },
+    modelClientFactory: makeTestFactory(client),
     toolRegistry: makeToolRegistry(tool),
   });
 
@@ -504,7 +506,7 @@ test('ExecutionOptions.toolRegistry overrides default registry', async () => {
 
   const executor = new TurnExecutor(config, {
     systemPromptBuilder: builder,
-    modelClientFactory: { createClient() { return client; } },
+    modelClientFactory: makeTestFactory(client),
     toolRegistry: makeToolRegistry(defaultTool),
   });
 
@@ -581,12 +583,9 @@ test('ExecutionOptions.model bypasses router resolution when a router is injecte
   const executor = new TurnExecutor(config, {
     systemPromptBuilder: makeFakeBuilder(),
     modelClientFactory: {
-      createClient() {
-        return client;
-      },
-      getRouter() {
-        return router;
-      },
+      createClient() { return client; },
+      createFromConfig() { return client; },
+      getRouter() { return router; },
     },
     modelRouter: router,
     toolRegistry: makeToolRegistry(makeFakeTool()),

@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { AgentEvent, ForkedAgentHandle, TurnExecutionResult, TurnSubmission } from './types.js';
 import { consumeGenerator } from './types.js';
 import type { TurnExecutorLike } from './types.js';
+import { assertSafePathComponent } from '../utils/safePath.js';
 import { ActiveTurn } from './ActiveTurn.js';
 import { EventQueue } from './EventQueue.js';
 import { SessionState } from './SessionState.js';
@@ -18,6 +19,7 @@ import type {
 } from './transcript/types.js';
 import { ConversationUsageTracker } from '../usage/ConversationUsageTracker.js';
 import type { UsageAggregator } from '../usage/UsageAggregator.js';
+import type { UsagePersistence } from '../usage/UsagePersistence.js';
 
 export interface SessionRuntimeDeps {
   turnExecutor: TurnExecutorLike;
@@ -50,12 +52,14 @@ export class SessionRuntime {
   readonly sessionMemory?: SessionMemory;
   readonly usageTracker: ConversationUsageTracker;
   private readonly usageAggregator?: UsageAggregator;
+  private readonly usagePersistence?: UsagePersistence;
 
   constructor(
     readonly state: SessionState,
     private readonly deps: SessionRuntimeDeps,
     runtimeConfig?: SessionRuntimeConfig,
     usageAggregator?: UsageAggregator,
+    usagePersistence?: UsagePersistence,
   ) {
     this.forkedAgentsEnabled = runtimeConfig?.forkedAgentsEnabled ?? true;
     this.hooksEnabled = runtimeConfig?.hooksEnabled ?? true;
@@ -63,6 +67,7 @@ export class SessionRuntime {
     this.hookRegistry = new PostTurnHookRegistry(runtimeConfig?.hookTimeoutMs ?? 30_000, deps.transcriptRecorder);
     this.usageTracker = new ConversationUsageTracker(state.conversationId);
     this.usageAggregator = usageAggregator;
+    this.usagePersistence = usagePersistence;
 
     // Register session memory extraction hook if enabled
     const smConfig = runtimeConfig?.sessionMemoryConfig;
@@ -74,7 +79,7 @@ export class SessionRuntime {
         minimumTokensToInit: smConfig.minimumTokensToInit,
         maxTotalTokens: smConfig.maxTotalTokens,
         maxSectionTokens: smConfig.maxSectionTokens,
-        storagePath: path.join(smConfig.storageDir, state.conversationId, 'session-memory.md'),
+        storagePath: path.join(smConfig.storageDir, assertSafePathComponent(state.conversationId), 'session-memory.md'),
       });
       this.hookRegistry.register(createSessionMemoryHook(this.sessionMemory), 'session_memory');
     }
@@ -116,6 +121,11 @@ export class SessionRuntime {
     this.state.touch();
     const reconcileResult = this.state.reconcileWithPlatformHistory(submission.history);
     if (reconcileResult === 'reseeded') {
+      // Clear stale session memory on reseed to prevent pollution from previous conversation
+      if (this.sessionMemory) {
+        await this.sessionMemory.clear().catch(() => {});
+      }
+
       const reseededEntry: SessionReseededEntry = {
         type: 'session_reseeded',
         conversationId: submission.conversationId,
@@ -141,6 +151,8 @@ export class SessionRuntime {
     await this.deps.transcriptRecorder.recordLifecycleEvent(startedEntry);
 
     try {
+      // Track terminal reason from the event stream to distinguish model_error from success
+      let terminalReason: string | undefined;
       const result = await consumeGenerator(
         this.deps.turnExecutor.run(
           { ...submission, promptHistory: this.state.getMessages() },
@@ -148,8 +160,30 @@ export class SessionRuntime {
           activeTurn,
           this.usageTracker,
         ),
-        (event) => events.push(event),
+        (event) => {
+          events.push(event);
+          if (event.type === 'done' && (event as { terminalReason?: { reason: string } }).terminalReason) {
+            terminalReason = (event as { terminalReason: { reason: string } }).terminalReason.reason;
+          }
+        },
       );
+
+      // Terminal failures should bypass normal success commit / hooks / usage sync paths.
+      if (terminalReason === 'model_error' || terminalReason === 'aborted') {
+        activeTurn.fail(new Error(`Terminal reason: ${terminalReason}`));
+        const failedEntry: TaskFailedEntry = {
+          type: 'task_failed',
+          conversationId: submission.conversationId,
+          taskId: submission.requestId,
+          turnId: activeTurn.turnId,
+          timestamp: new Date().toISOString(),
+          error: `Terminal reason: ${terminalReason}`,
+          turn: activeTurn.snapshot(),
+        };
+        await this.deps.transcriptRecorder.recordLifecycleEvent(failedEntry);
+        return;
+      }
+
       this.commitResult(result, activeTurn);
 
       // Fire-and-forget: launch post-turn hooks AFTER committing result
@@ -171,9 +205,14 @@ export class SessionRuntime {
       // Update usage tracker tool call count from result
       this.usageTracker.setToolCallCount(result.toolCallCount);
 
-      // Sync conversation usage to aggregator
+      // Sync conversation usage to aggregator and persist
       if (this.usageAggregator) {
         this.usageAggregator.updateConversation(this.usageTracker.getUsage());
+      }
+      if (this.usagePersistence) {
+        this.usagePersistence.save(this.usageTracker.snapshot()).catch((err) => {
+          console.warn(`[SessionRuntime] Failed to persist usage for ${submission.conversationId}:`, err);
+        });
       }
 
       const completedEntry: TaskCompletedEntry = {
@@ -205,6 +244,20 @@ export class SessionRuntime {
     } finally {
       this.activeTurn = undefined;
       this.state.touch();
+    }
+  }
+
+  /** Restore usage state from persistence (call during cold start). */
+  async restoreUsage(): Promise<void> {
+    if (!this.usagePersistence) return;
+    try {
+      const snapshot = await this.usagePersistence.load(this.state.conversationId);
+      if (snapshot) {
+        this.usageTracker.restore(snapshot);
+      }
+    } catch (error) {
+      // Log but do not block session creation — corrupted files need visibility
+      console.warn(`[SessionRuntime] Failed to restore usage for ${this.state.conversationId}:`, error);
     }
   }
 

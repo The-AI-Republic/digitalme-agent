@@ -28,9 +28,9 @@ test('historyMessageSchema rejects content exceeding 100k chars', () => {
 
 test('agentConfigSchema accepts a valid full config', () => {
   const input = {
-    persona: {
+    soul: {
       name: 'Test',
-      default_system_prompt: 'You are a test agent.',
+      description: 'You are a test agent.',
     },
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
@@ -44,7 +44,7 @@ test('agentConfigSchema accepts a valid full config', () => {
     // Check defaults are applied
     assert.equal(result.data.server.port, 8088);
     assert.equal(result.data.server.bind, '0.0.0.0');
-    assert.equal(result.data.persona.tools.allow_web_search, false);
+    assert.equal(result.data.soul.tools.allow_web_search, false);
     assert.equal(result.data.limits.max_message_length, 4000);
     assert.equal(result.data.limits.max_concurrent, 50);
     assert.equal(result.data.security.hmac_tolerance_seconds, 300);
@@ -52,9 +52,9 @@ test('agentConfigSchema accepts a valid full config', () => {
   }
 });
 
-test('agentConfigSchema rejects missing persona name', () => {
+test('agentConfigSchema rejects missing soul name', () => {
   const input = {
-    persona: { name: '', default_system_prompt: 'prompt' },
+    soul: { name: '', description: 'a description' },
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
     model: { provider: 'openai', name: 'gpt-4o', api_key: 'model-key' },
@@ -67,7 +67,7 @@ test('agentConfigSchema rejects missing persona name', () => {
 
 test('agentConfigSchema rejects missing auth fields', () => {
   const input = {
-    persona: { name: 'Test', default_system_prompt: 'prompt' },
+    soul: { name: 'Test', description: 'a description' },
     server: {},
     auth: {},
     model: { provider: 'openai', name: 'gpt-4o', api_key: 'model-key' },
@@ -78,24 +78,24 @@ test('agentConfigSchema rejects missing auth fields', () => {
   assert.equal(result.success, false);
 });
 
-test('agentConfigSchema rejects invalid model provider', () => {
+test('agentConfigSchema accepts anthropic as valid provider', () => {
   const input = {
-    persona: { name: 'Test', default_system_prompt: 'prompt' },
+    soul: { name: 'Test', description: 'a description' },
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
-    model: { provider: 'anthropic', name: 'claude', api_key: 'key' },
+    model: { provider: 'anthropic', name: 'claude-sonnet-4-6', api_key: 'key' },
     limits: {},
     security: {},
   };
   const result = agentConfigSchema.safeParse(input);
-  assert.equal(result.success, false);
+  assert.equal(result.success, true);
 });
 
 test('agentConfigSchema accepts all valid model providers', () => {
-  const providers = ['openai', 'xai', 'groq', 'google-ai-studio', 'fireworks', 'together'] as const;
+  const providers = ['openai', 'anthropic', 'xai', 'groq', 'google-ai-studio', 'fireworks', 'together'] as const;
   for (const provider of providers) {
     const input = {
-      persona: { name: 'Test', default_system_prompt: 'prompt' },
+      soul: { name: 'Test', description: 'a description' },
       server: {},
       auth: { api_key: 'key', signing_secret: 'secret' },
       model: { provider, name: 'model-name', api_key: 'key' },
@@ -109,7 +109,7 @@ test('agentConfigSchema accepts all valid model providers', () => {
 
 test('agentConfigSchema rejects negative port', () => {
   const input = {
-    persona: { name: 'Test', default_system_prompt: 'prompt' },
+    soul: { name: 'Test', description: 'a description' },
     server: { port: -1 },
     auth: { api_key: 'key', signing_secret: 'secret' },
     model: { provider: 'openai', name: 'gpt-4o', api_key: 'key' },
@@ -122,7 +122,7 @@ test('agentConfigSchema rejects negative port', () => {
 
 test('agentConfigSchema accepts optional nullable platform base_url', () => {
   const input = {
-    persona: { name: 'Test', default_system_prompt: 'prompt' },
+    soul: { name: 'Test', description: 'a description' },
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
     platform: { base_url: null },
@@ -139,7 +139,7 @@ test('agentConfigSchema accepts optional nullable platform base_url', () => {
 
 test('agentConfigSchema rejects blank blocked keywords', () => {
   const input = {
-    persona: { name: 'Test', default_system_prompt: 'prompt' },
+    soul: { name: 'Test', description: 'a description' },
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
     model: { provider: 'openai', name: 'gpt-4o', api_key: 'key' },
@@ -151,4 +151,49 @@ test('agentConfigSchema rejects blank blocked keywords', () => {
   };
   const result = agentConfigSchema.safeParse(input);
   assert.equal(result.success, false);
+});
+
+test('agentConfigSchema accepts soul with optional fields', () => {
+  const input = {
+    soul: {
+      name: 'Test',
+      description: 'a description',
+      tone: 'warm and friendly',
+      boundaries: 'no politics',
+      knowledge: 'cooking expert',
+      others: 'loves cats',
+      system_prompt_append: 'Always be helpful.',
+    },
+    server: {},
+    auth: { api_key: 'key', signing_secret: 'secret' },
+    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key' },
+    limits: {},
+    security: {},
+  };
+  const result = agentConfigSchema.safeParse(input);
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal(result.data.soul.tone, 'warm and friendly');
+    assert.equal(result.data.soul.boundaries, 'no politics');
+    assert.equal(result.data.soul.knowledge, 'cooking expert');
+    assert.equal(result.data.soul.system_prompt_append, 'Always be helpful.');
+  }
+});
+
+test('agentConfigSchema accepts subagents config', () => {
+  const input = {
+    soul: { name: 'Test', description: 'a description' },
+    server: {},
+    auth: { api_key: 'key', signing_secret: 'secret' },
+    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key' },
+    limits: {},
+    security: {},
+    subagents: { enabled: true, max_concurrent: 3 },
+  };
+  const result = agentConfigSchema.safeParse(input);
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal(result.data.subagents.enabled, true);
+    assert.equal(result.data.subagents.max_concurrent, 3);
+  }
 });

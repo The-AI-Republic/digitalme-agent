@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AgentConfig } from '../config/schema.js';
+import { assertSafePathComponent } from '../utils/safePath.js';
 import { initialProcessRuntimeState, type ProcessRuntimeState } from './ProcessRuntimeState.js';
 import type { AgentEvent, TurnExecutorLike, TurnSubmission } from './types.js';
 import { EventQueue } from './EventQueue.js';
@@ -10,10 +11,13 @@ import { TurnExecutor } from './TurnExecutor.js';
 import { TranscriptRecorder } from './transcript/TranscriptRecorder.js';
 import type { ITranscriptRecorder } from './transcript/types.js';
 import { UsageAggregator } from '../usage/UsageAggregator.js';
+import { UsagePersistence } from '../usage/UsagePersistence.js';
 import { ToolRegistry, createToolRegistry } from '../tools/registry.js';
 import { SkillRegistry } from '../skills/SkillRegistry.js';
 import { buildSkillListingSection } from '../skills/SkillListingBuilder.js';
 import { createCreatorSkillTool } from '../tools/CreatorSkillTool.js';
+import { createSubagentTool } from './subagent/SubagentTool.js';
+import { SkillTracker } from '../skills/SkillTracker.js';
 
 export interface SessionManagerDeps {
   getState?: () => ProcessRuntimeState;
@@ -29,6 +33,8 @@ export class SessionManager {
   private readonly storageDir: string;
   private readonly getProcessState: () => ProcessRuntimeState;
   readonly usageAggregator: UsageAggregator;
+  private readonly usagePersistence: UsagePersistence;
+  private readonly skillTracker: SkillTracker;
   private readonly skillRegistry?: SkillRegistry;
 
   constructor(
@@ -38,6 +44,8 @@ export class SessionManager {
     this.getProcessState = deps.getState ?? (() => initialProcessRuntimeState());
     this.transcriptRecorder = deps.transcriptRecorder ?? new TranscriptRecorder();
     this.usageAggregator = new UsageAggregator();
+    this.usagePersistence = new UsagePersistence(config.context.tool_result_persistence.storage_dir);
+    this.skillTracker = new SkillTracker();
     if (deps.turnExecutor) {
       this.turnExecutor = deps.turnExecutor;
     } else {
@@ -65,6 +73,18 @@ export class SessionManager {
           parentToolRegistry: toolRegistry,
           defaultModelName: config.model.name,
           getSessionRuntime: (conversationId) => this.sessions.get(conversationId),
+          guardrailConfig: config.guardrails,
+          skillTracker: this.skillTracker,
+        }));
+      }
+
+      // Register SubagentTool when enabled
+      if (config.subagents?.enabled) {
+        toolRegistry.register(createSubagentTool({
+          turnExecutor,
+          parentToolRegistry: toolRegistry,
+          modelName: config.model.name,
+          transcriptRecorder: this.transcriptRecorder,
         }));
       }
 
@@ -165,7 +185,12 @@ export class SessionManager {
       },
       this.runtimeConfig,
       this.usageAggregator,
+      this.usagePersistence,
     );
+
+    // Restore usage from persistence on cold start
+    await runtime.restoreUsage();
+
     this.sessions.set(submission.conversationId, runtime);
     return runtime;
   }
@@ -216,6 +241,10 @@ export class SessionManager {
       const entries = await fs.readdir(this.storageDir);
       const cutoff = Date.now() - this.config.limits.session_ttl_seconds * 1000;
       for (const entry of entries) {
+        // Preserve shared persistence directories; only per-conversation temp dirs are sweep candidates.
+        if (entry === 'usage') {
+          continue;
+        }
         const dirPath = path.join(this.storageDir, entry);
         try {
           const stat = await fs.stat(dirPath);
@@ -232,7 +261,7 @@ export class SessionManager {
   }
 
   private async cleanupConversationTempDir(conversationId: string): Promise<void> {
-    const dirPath = path.join(this.storageDir, conversationId);
+    const dirPath = path.join(this.storageDir, assertSafePathComponent(conversationId));
     await fs.rm(dirPath, { recursive: true, force: true });
   }
 }

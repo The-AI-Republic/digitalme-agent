@@ -122,6 +122,12 @@ The rename from `persona` to `soul` in the config schema is a breaking change no
 
 The field was meant to be defined early for forward compatibility. Can be added when needed.
 
+### Bug: Stale config schema tests still use `persona`
+
+**Severity: MEDIUM**
+
+The runtime schema has moved to `soul`, but `src/config/schema.test.ts` still constructs configs with `persona` and asserts on `result.data.persona...`. This is additional test fallout from the rename and should be updated alongside the orphaned `PromptComposer` test.
+
 ---
 
 ## Notable Improvements Beyond Design

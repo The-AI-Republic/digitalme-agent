@@ -53,10 +53,14 @@ export class AnthropicClient extends ModelClient {
       signal: request.signal ?? undefined,
     });
 
+    const cacheReadTokens = response.usage.cache_read_input_tokens ?? 0;
+    const cacheWriteTokens = response.usage.cache_creation_input_tokens ?? 0;
     const usage: TokenUsage = {
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,
       totalTokens: response.usage.input_tokens + response.usage.output_tokens,
+      ...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
+      ...(cacheWriteTokens > 0 ? { cacheWriteTokens } : {}),
     };
 
     const toolCalls: ToolCall[] = [];

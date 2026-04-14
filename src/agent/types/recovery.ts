@@ -14,7 +14,7 @@ export type TerminalReason =
   | { reason: 'max_turns' }
   | { reason: 'prompt_too_long' }
   | { reason: 'model_error'; error: string }
-  | { reason: 'aborted'; phase: 'streaming' | 'tools' }
+  | { reason: 'aborted'; phase: 'pre_loop' | 'streaming' | 'tools' }
   | { reason: 'max_output_exhausted' }
   | { reason: 'quota_exceeded' };
 
@@ -36,6 +36,8 @@ export interface RecoveryState {
   accumulatedText: string;
   fallbackAttempted: boolean;
   lastTransition: ContinuationReason | undefined;
+  /** Number of API retries attempted in the current recovery window. */
+  apiRetryCount: number;
 }
 
 export const RECOVERY_LIMITS = {
@@ -51,5 +53,6 @@ export function initialRecoveryState(): RecoveryState {
     accumulatedText: '',
     fallbackAttempted: false,
     lastTransition: undefined,
+    apiRetryCount: 0,
   };
 }

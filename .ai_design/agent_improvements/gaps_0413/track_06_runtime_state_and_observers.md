@@ -1,104 +1,86 @@
-# Track 06: Runtime State and Observers -- Gap Analysis
+# Track 06 -- Runtime State and Observers Remediation Plan
 
-## Summary
+## Status
 
-Track 06 is **complete with minor cleanup needed**. All four new modules are implemented, integrated, and tested (33 tests passing). The core design goals (unified draining, store primitive, TurnExecutionState cleanup, observer wiring) are achieved. Two stale test files remain from deleted modules.
+Track 06 is effectively complete. There is no meaningful feature implementation left in this track.
 
----
+The remaining work is **cleanup required to make the repo consistent with the landed design**.
 
-## Step 1: RuntimeStore and ProcessRuntimeState
+## Validated Remaining Gaps
 
-| Task | Status | Notes |
-|------|--------|-------|
-| `createStore<T>(initialState, onChange)` | YES | ~22 lines, minimal |
-| `Object.is` short-circuit | YES | |
-| `ProcessRuntimeState` with `activeRequestCount`, `draining` | YES | |
-| `initialProcessRuntimeState()` | YES | |
-| Unit tests | YES | 7 tests |
+### Gap 1: stale `TurnState` test file
 
-**Status: COMPLETE**
+- `src/agent/TurnState.ts` has been deleted as intended.
+- `src/agent/TurnState.test.ts` still exists and imports the deleted module.
+- Impact:
+  - breaks the test suite
+  - misrepresents the current architecture by testing a removed type
 
----
+### Gap 2: stale `shutdown` test file
 
-## Step 2: Unify Process Runtime Ownership in Agent
+- `src/agent/shutdown.ts` has been deleted as intended.
+- `src/agent/shutdown.test.ts` still exists and imports the deleted module.
+- Impact:
+  - breaks the test suite
+  - suggests the old duplicated drain-state design is still present
 
-| Task | Status | Notes |
-|------|--------|-------|
-| Agent creates runtime store in constructor | YES | |
-| `submit()` rejects when draining | YES | |
-| `submit()` increments/decrements `activeRequestCount` | YES | |
-| `beginDrain()` sets `draining: true` | YES | |
-| Delete `shutdown.ts` | YES | |
-| Remove duplicated draining from Queue/SessionManager | YES | |
-| DI cleanup with factory pattern | YES | |
+## Remediation Scope
 
-**Status: COMPLETE**
+This pass should do only two things:
 
----
+1. delete or replace the stale tests that reference removed modules
+2. confirm current runtime-state coverage remains intact through the new modules
 
-## Step 3: Thread Store Reads into SubmissionQueue and SessionManager
+There is no subsystem redesign required here.
 
-| Task | Status | Notes |
-|------|--------|-------|
-| Queue accepts `getState: () => ProcessRuntimeState` | YES | |
-| Queue uses `getState().draining` to reject | YES | |
-| SessionManager uses `getState().draining` to reject | YES | |
-| Stats remain pull-based | YES | |
+## Implementation Plan
 
-**Status: COMPLETE**
+### Step 1: remove stale tests
 
----
+**Target files**
+- `src/agent/TurnState.test.ts`
+- `src/agent/shutdown.test.ts`
 
-## Step 4: TurnExecutionState Refactor
+**Changes**
+- Delete both files unless there is specific behavior that still needs coverage under the new architecture.
 
-| Task | Status | Notes |
-|------|--------|-------|
-| Create `TurnExecutionState.ts` | YES | All specified fields |
-| `ActiveTurn` uses `executionState` | YES | |
-| Remove `turnCount`/`tokenUsage` from TurnContext | YES | |
-| TurnExecutor uses `executionState` throughout | YES | |
-| Delete `TurnState.ts` | YES | |
+**Acceptance criteria**
+- No test imports `./TurnState.js` or `./shutdown.js`.
+- The repo no longer carries tests for deleted runtime-state modules.
 
-**Bug:** `src/agent/TurnState.test.ts` still exists, imports deleted `TurnState.ts`.
+### Step 2: verify replacement coverage is sufficient
 
-**Status: YES (with stale test file)**
+**Target files**
+- `src/agent/TurnExecutionState.test.ts`
+- `src/agent/ProcessRuntimeState.test.ts`
+- `src/agent/RuntimeObservers.test.ts`
+- `src/agent/Agent.test.ts`
 
----
+**Changes**
+- Confirm existing tests already cover the behavior formerly represented by the stale files.
+- Add targeted assertions only if a real behavioral gap exists after deleting the stale tests.
 
-## Step 5: RuntimeObservers
+**Acceptance criteria**
+- The current architecture is tested through current modules, not historical ones.
+- No replacement tests are added unless they cover behavior that is actually untested today.
 
-| Task | Status | Notes |
-|------|--------|-------|
-| `createRuntimeObservers(listeners?)` | YES | Factory pattern (slight deviation from single function export) |
-| Explicit field diffs | YES | `activeRequestCount` and `draining` |
-| No lifecycle control flow in observers | YES | |
-| Wired as store `onChange` callback | YES | |
-| Tests | YES | 7 tests |
+## Test Plan
 
-**Status: COMPLETE**
+Run at minimum:
 
----
+- `node --loader ts-node/esm --test src/agent/TurnExecutionState.test.ts`
+- `node --loader ts-node/esm --test src/agent/ProcessRuntimeState.test.ts`
+- `node --loader ts-node/esm --test src/agent/RuntimeObservers.test.ts`
+- `node --loader ts-node/esm --test src/agent/Agent.test.ts`
 
-## Stale Artifacts (Bugs)
+## Out of Scope
 
-| Issue | Severity | File |
-|-------|----------|------|
-| `TurnState.test.ts` imports deleted `TurnState.ts` | MEDIUM | `src/agent/TurnState.test.ts` |
-| `shutdown.test.ts` imports deleted `shutdown.ts` | MEDIUM | `src/agent/shutdown.test.ts` |
+- Reworking runtime-store ownership
+- Changing observer semantics
+- Reopening the TurnExecutionState migration
 
-Both test files are orphaned and will fail when the test suite runs.
+## Source References
 
----
-
-## Done Criteria
-
-| Criterion | Status |
-|-----------|--------|
-| `draining` in exactly one place | YES |
-| `Agent` is sole store writer | YES |
-| Stats remain owned by components | YES |
-| TurnExecutionState replaces split state | YES |
-| Health remains pull-based | YES |
-| No control flow in observers | YES |
-
-**Overall: COMPLETE with 2 stale test files to delete.**
+- Gap analysis source: `gaps_0413/track_06_runtime_state_and_observers.md` (this file supersedes the earlier wording)
+- Original design: `agent_improvements/06_runtime_state_and_observers/IMPLEMENTATION_PLAN.md`
+- Original task inventory: `agent_improvements/06_runtime_state_and_observers/tasks.md`

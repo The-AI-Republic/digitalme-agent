@@ -181,18 +181,20 @@ test('recovery: 413 when transcript too short to compact -> prompt_too_long', as
   assert.equal(result.finalText, '');
 });
 
-test('recovery: 401 -> throws immediately without retry', async () => {
+test('recovery: 401 -> terminates with model_error without retry', async () => {
   const { executor } = makeExecutor([
     { error: { status: 401, message: 'Unauthorized' } },
   ]);
 
-  await assert.rejects(
-    () => collectEvents(executor.run(submission)),
-    (err: unknown) => (err as { status: number }).status === 401,
-  );
+  const { events, result } = await collectEvents(executor.run(submission));
+
+  const doneEvent = events.find(e => e.type === 'done') as { terminalReason?: { reason: string; error?: string } };
+  assert.equal(doneEvent?.terminalReason?.reason, 'model_error');
+  assert.ok(doneEvent?.terminalReason?.error);
+  assert.equal(result.finalText, '');
 });
 
-test('recovery: retries exhaust after MAX_API_RETRIES -> throws', async () => {
+test('recovery: retries exhaust after MAX_API_RETRIES -> model_error', async () => {
   const { executor } = makeExecutor([
     { error: { status: 500, message: 'fail' } },
     { error: { status: 500, message: 'fail' } },
@@ -200,10 +202,12 @@ test('recovery: retries exhaust after MAX_API_RETRIES -> throws', async () => {
     { error: { status: 500, message: 'fail' } },  // 4th = exhausted
   ]);
 
-  await assert.rejects(
-    () => collectEvents(executor.run(submission)),
-    (err: unknown) => (err as { status: number }).status === 500,
-  );
+  const { events, result } = await collectEvents(executor.run(submission));
+
+  const doneEvent = events.find(e => e.type === 'done') as { terminalReason?: { reason: string; error?: string } };
+  assert.equal(doneEvent?.terminalReason?.reason, 'model_error');
+  assert.ok(doneEvent?.terminalReason?.error);
+  assert.equal(result.finalText, '');
 });
 
 test('recovery: recovery events are emitted even when retries exhaust', async () => {
@@ -345,6 +349,34 @@ test('recovery: multiple truncations accumulate correctly', async () => {
 
   const { result } = await collectEvents(executor.run(submission));
   assert.equal(result.finalText, 'ABC');
+});
+
+test('recovery: blocked partial output persists refusal message in newMessages', async () => {
+  const config = {
+    ...testConfig,
+    guardrails: {
+      ...testConfig.guardrails,
+      enabled: true,
+      blocked_keywords: ['forbidden phrase'],
+      jailbreak_detection: { enabled: false },
+      pii_detection: { enabled: false, block_in_input: false, block_in_output: false },
+      messages: {
+        input_blocked: 'Input blocked.',
+        output_blocked: 'Output blocked.',
+      },
+    },
+  };
+  const { executor } = makeExecutor([
+    { type: 'final_text', text: 'contains forbidden phrase', truncated: true },
+  ], undefined, config);
+
+  const { result } = await collectEvents(executor.run(submission));
+
+  assert.equal(result.finalText, 'Output blocked.');
+  const assistantMessages = result.newMessages.filter((message) => message.role === 'assistant');
+  assert.ok(assistantMessages.length >= 1, 'Expected a persisted refusal assistant message');
+  assert.equal(assistantMessages.at(-1)?.content, 'Output blocked.');
+  assert.equal(assistantMessages.at(-1)?.synthetic, true);
 });
 
 test('recovery: truncation exhausted after MAX_OUTPUT_RECOVERY_ATTEMPTS -> max_output_exhausted', async () => {
@@ -528,7 +560,7 @@ test('recovery: max_output_recovery events include attempt numbers', async () =>
 
 // --- Abort behavior ---
 
-test('recovery: abort still throws request_aborted', async () => {
+test('recovery: pre-aborted signal yields aborted terminal and returns gracefully', async () => {
   const { executor } = makeExecutor([
     { type: 'final_text', text: 'should not run' },
   ]);
@@ -536,10 +568,11 @@ test('recovery: abort still throws request_aborted', async () => {
   const controller = new AbortController();
   controller.abort();
 
-  await assert.rejects(
-    () => collectEvents(executor.run({ ...submission, signal: controller.signal })),
-    /request_aborted/,
-  );
+  const { events } = await collectEvents(executor.run({ ...submission, signal: controller.signal }));
+  const doneEvent = events.find(e => e.type === 'done') as { terminalReason?: { reason: string; phase?: string } } | undefined;
+  assert.ok(doneEvent, 'done event must be emitted for pre-aborted signal');
+  assert.equal(doneEvent?.terminalReason?.reason, 'aborted');
+  assert.equal(doneEvent?.terminalReason?.phase, 'pre_loop');
 });
 
 // --- Normal path regression ---
@@ -571,4 +604,68 @@ test('recovery: normal tool call path is unchanged', async () => {
   assert.equal(result.finalText, 'after tool');
   assert.ok(events.some(e => e.type === 'tool_start'));
   assert.ok(events.some(e => e.type === 'tool_end'));
+});
+
+// --- Track 04: Terminal reason semantics tests ---
+
+test('recovery: model_error terminal reason emitted on unrecoverable model failure', async () => {
+  // Auth errors (401) are non-retriable and should produce model_error
+  const { executor } = makeExecutor([
+    { error: { status: 401, message: 'Unauthorized' } },
+  ]);
+
+  const events: AgentEvent[] = [];
+  const gen = executor.run(submission);
+  try {
+    await consumeGenerator(gen, (event) => events.push(event));
+  } catch {
+    // expected — auth errors propagate
+  }
+
+  const doneEvent = events.find(e => e.type === 'done') as { terminalReason?: { reason: string; error?: string } } | undefined;
+  assert.ok(doneEvent, 'Should have a done event with model_error terminal reason');
+  assert.equal(doneEvent?.terminalReason?.reason, 'model_error');
+});
+
+test('recovery: aborted terminal reason on pre-aborted signal', async () => {
+  const controller = new AbortController();
+  controller.abort();
+
+  const { executor } = makeExecutor([
+    { type: 'final_text', text: 'should not run' },
+  ]);
+
+  // Pre-aborted signal should yield aborted terminal reason and return (not throw)
+  const events: AgentEvent[] = [];
+  const gen = executor.run({ ...submission, signal: controller.signal });
+  try {
+    await consumeGenerator(gen, (event) => events.push(event));
+  } catch {
+    // abort may still throw in some paths
+  }
+
+  // Assert aborted terminal reason was emitted
+  const doneEvent = events.find(e => e.type === 'done') as { terminalReason?: { reason: string; phase?: string } } | undefined;
+  assert.ok(doneEvent, 'done event must be emitted for pre-aborted signal');
+  assert.equal(doneEvent?.terminalReason?.reason, 'aborted');
+});
+
+test('recovery: apiRetryCount is tracked across retry attempts', async () => {
+  // We verify indirectly: 2 retries then success should have produced
+  // exactly 2 api_retry recovery events with incrementing attempt numbers
+  const { executor } = makeExecutor([
+    { error: { status: 429, message: 'Rate limited' } },
+    { error: { status: 429, message: 'Rate limited' } },
+    { type: 'final_text', text: 'ok' },
+  ]);
+
+  const { events } = await collectEvents(executor.run(submission));
+
+  const retryEvents = events.filter(
+    e => e.type === 'recovery' && (e as { reason: string }).reason === 'api_retry'
+  );
+  assert.equal(retryEvents.length, 2);
+  // Attempt numbers should be 1 and 2
+  assert.equal((retryEvents[0] as { detail?: { attempt: number } }).detail?.attempt, 1);
+  assert.equal((retryEvents[1] as { detail?: { attempt: number } }).detail?.attempt, 2);
 });

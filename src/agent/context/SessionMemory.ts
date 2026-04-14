@@ -33,6 +33,8 @@ export class SessionMemory {
 
   private extractionInProgress = false;
   private extractionPromise: Promise<void> | null = null;
+  /** Set by clear() — prevents getMemory() from reading stale files after reseed. */
+  private cleared = false;
 
   constructor(private readonly config: SessionMemoryConfig) {}
 
@@ -84,6 +86,7 @@ export class SessionMemory {
   }
 
   async getMemory(): Promise<SessionMemoryContent | undefined> {
+    if (this.cleared) return undefined;
     try {
       const text = await fs.readFile(this.config.storagePath, 'utf-8');
       if (!text || text.trim() === SESSION_MEMORY_TEMPLATE.trim()) {
@@ -119,6 +122,7 @@ export class SessionMemory {
   }
 
   async clear(): Promise<void> {
+    this.cleared = true;
     this.state = {
       tokensAtLastExtraction: 0,
       sessionMemoryInitialized: false,
@@ -129,7 +133,7 @@ export class SessionMemory {
     try {
       await fs.unlink(this.config.storagePath);
     } catch {
-      // File may not exist
+      // File may not exist — the in-memory `cleared` flag prevents stale reads regardless
     }
   }
 
