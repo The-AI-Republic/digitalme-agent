@@ -100,7 +100,7 @@ export class TurnExecutor {
     this.usageAggregator = deps.usageAggregator;
     this.skillListing = deps.skillListing ?? null;
     this.modelRouter = deps.modelRouter
-      ?? ((config.fallback_model || config.fast_model || config.routing.health.enabled)
+      ?? ((config.fallback_model || config.fast_model)
         ? (this.modelClientFactory.getRouter?.() ?? new ModelRouter(config, this.modelClientFactory))
         : undefined);
 
@@ -162,6 +162,10 @@ export class TurnExecutor {
     activeTurn?: ActiveTurn,
     usageTracker?: ConversationUsageTracker,
   ): AsyncGenerator<AgentEvent, TurnExecutionResult> {
+    if (options?.model && options?.modelConfig) {
+      throw new Error('ExecutionOptions.model and modelConfig are mutually exclusive');
+    }
+
     const maxTurns = options?.maxTurns ?? this.config.limits.max_turns;
     const explicitModelConfig = options?.modelConfig;
     const maxOutputTokens = options?.maxOutputTokens
@@ -186,7 +190,7 @@ export class TurnExecutor {
       model: modelName,
       conversationId: submission.conversationId,
       requestId: submission.requestId,
-      executionContext: options?.model ? 'background' : 'main',
+      executionContext: (options?.model || options?.modelConfig) ? 'background' : 'main',
     });
 
     // Wire usage recorder to aggregator and tracker
@@ -262,6 +266,7 @@ export class TurnExecutor {
     // Resolve the model before prompt construction so the prompt can reference the resolved model
     let resolvedModelName = modelName;
     let resolvedProvider = this.config.model.provider;
+    let resolvedModelBaseUrl = this.config.model.base_url;
     let primaryClient: ModelClient;
     if (selectedModelConfig) {
       primaryClient = this.modelRouter
@@ -269,6 +274,7 @@ export class TurnExecutor {
         : this.modelClientFactory.createFromConfig(selectedModelConfig);
       resolvedModelName = selectedModelConfig.name;
       resolvedProvider = selectedModelConfig.provider;
+      resolvedModelBaseUrl = selectedModelConfig.base_url;
       modelName = selectedModelConfig.name;
     } else if (options?.model) {
       primaryClient = this.modelClientFactory.createClient();
@@ -277,6 +283,7 @@ export class TurnExecutor {
       primaryClient = client;
       resolvedModelName = decision.modelConfig.name;
       resolvedProvider = decision.modelConfig.provider;
+      resolvedModelBaseUrl = decision.modelConfig.base_url;
     } else {
       primaryClient = this.modelClientFactory.createClient();
     }
@@ -463,7 +470,7 @@ export class TurnExecutor {
           primaryClient,
           { model: resolvedModelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
           recovery,
-          resolvedProvider,
+          { provider: resolvedProvider, baseUrl: resolvedModelBaseUrl },
           interactionSpan,
         );
       } catch (error) {
@@ -930,13 +937,14 @@ export class TurnExecutor {
     primaryClient: ModelClient,
     initialRequest: Parameters<ModelClient['generate']>[0],
     recovery: RecoveryState,
-    provider?: string,
+    currentModelInfo?: { provider?: string; baseUrl?: string | null },
     parentSpan?: Span,
   ): Promise<{ result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] }> {
     let consecutive529 = 0;
     let client = primaryClient;
     let request = initialRequest;
-    let currentProvider = provider ?? this.config.model.provider;
+    let currentProvider = currentModelInfo?.provider ?? this.config.model.provider;
+    let currentBaseUrl = currentModelInfo?.baseUrl ?? this.config.model.base_url;
     let currentModel = initialRequest.model;
     const events: AgentEvent[] = [];
 
@@ -975,7 +983,7 @@ export class TurnExecutor {
               && this.config.fallback_model
               && !recovery.fallbackAttempted
               && !this.isSameModelConfig(
-                { provider: currentProvider, name: currentModel },
+                { provider: currentProvider, name: currentModel, base_url: currentBaseUrl },
                 this.config.fallback_model,
               )
               && this.modelClientFactory.createFromConfig) {
@@ -988,6 +996,7 @@ export class TurnExecutor {
               client = this.modelClientFactory.createFromConfig(this.config.fallback_model);
             }
             currentProvider = this.config.fallback_model.provider;
+            currentBaseUrl = this.config.fallback_model.base_url;
             // Switch to the fallback model name so the client uses it
             currentModel = this.config.fallback_model.name;
             request = { ...request, model: currentModel };
@@ -1046,9 +1055,11 @@ export class TurnExecutor {
   }
 
   private isSameModelConfig(
-    current: { provider: string; name: string },
+    current: { provider: string; name: string; base_url?: string | null },
     target: ModelConfig,
   ): boolean {
-    return current.provider === target.provider && current.name === target.name;
+    return current.provider === target.provider
+      && current.name === target.name
+      && (current.base_url ?? null) === (target.base_url ?? null);
   }
 }

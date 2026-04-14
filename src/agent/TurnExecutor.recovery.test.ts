@@ -115,7 +115,15 @@ function makeExecutor(
       ) {
         return fallbackClient;
       }
-      return primaryClient;
+      if (
+        modelConfig.provider === config.model.provider
+        && modelConfig.name === config.model.name
+        && modelConfig.api_key === config.model.api_key
+        && modelConfig.base_url === config.model.base_url
+      ) {
+        return primaryClient;
+      }
+      throw new Error(`Unexpected model config in test factory: ${modelConfig.provider}/${modelConfig.name}`);
     },
   };
 

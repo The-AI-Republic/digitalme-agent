@@ -631,7 +631,29 @@ test('ExecutionOptions.modelConfig records usage with the resolved provider and 
   assert.ok(usageEvent);
   assert.equal(usageEvent.record.provider, 'anthropic');
   assert.equal(usageEvent.record.model, 'claude-sonnet-4-6');
+  assert.equal(usageEvent.record.executionContext, 'background');
   assert.equal(usageEvent.record.estimatedCostUsd, 3);
+});
+
+test('ExecutionOptions rejects simultaneous model and modelConfig overrides', async () => {
+  const { executor } = makeExecutorWithClient([
+    { type: 'final_text', text: 'ok' },
+  ]);
+  const fastModelConfig: ModelConfig = {
+    provider: 'anthropic',
+    name: 'claude-haiku',
+    api_key: 'fast-key',
+    base_url: null,
+    max_output_tokens: 2048,
+  };
+
+  await assert.rejects(
+    collectEvents(executor.run(
+      { requestId: 'req-model-conflict', conversationId: 'conv-model-conflict', userMessage: 'hi', history: [] },
+      { model: 'gpt-4o-mini', modelConfig: fastModelConfig },
+    )),
+    /ExecutionOptions\.model and modelConfig are mutually exclusive/,
+  );
 });
 
 test('Cost-aware downgrade emits no recovery event when no downgrade model is configured', async () => {
