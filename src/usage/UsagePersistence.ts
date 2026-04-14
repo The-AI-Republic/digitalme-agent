@@ -8,6 +8,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ConversationUsage } from './types.js';
+import { assertSafePathComponent } from '../utils/safePath.js';
 
 export class UsagePersistence {
   constructor(private readonly storageDir: string) {}
@@ -15,8 +16,11 @@ export class UsagePersistence {
   /** Save a conversation usage snapshot to disk. */
   async save(usage: ConversationUsage): Promise<void> {
     const filePath = this.getFilePath(usage.conversationId);
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify(usage), 'utf-8');
+    const dir = path.dirname(filePath);
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(tempPath, JSON.stringify(usage), 'utf-8');
+    await fs.rename(tempPath, filePath);
   }
 
   /** Load a conversation usage snapshot from disk. Returns undefined if not found. */
@@ -25,8 +29,12 @@ export class UsagePersistence {
     try {
       const data = await fs.readFile(filePath, 'utf-8');
       return JSON.parse(data) as ConversationUsage;
-    } catch {
-      return undefined;
+    } catch (error) {
+      // ENOENT is expected (no prior snapshot); anything else is corruption
+      if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return undefined;
+      }
+      throw error;
     }
   }
 
@@ -41,6 +49,6 @@ export class UsagePersistence {
   }
 
   private getFilePath(conversationId: string): string {
-    return path.join(this.storageDir, 'usage', `${conversationId}.json`);
+    return path.join(this.storageDir, 'usage', `${assertSafePathComponent(conversationId)}.json`);
   }
 }

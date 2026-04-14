@@ -374,7 +374,10 @@ test('TurnExecutor aborts before starting model work when the request is already
     signal: controller.signal,
   };
 
-  await assert.rejects(() => collectEvents(executor.run(submission)), /request_aborted/);
+  const { events } = await collectEvents(executor.run(submission));
+  const doneEvent = events.find(e => e.type === 'done') as { terminalReason?: { reason: string } } | undefined;
+  assert.ok(doneEvent, 'done event must be emitted for pre-aborted signal');
+  assert.equal(doneEvent?.terminalReason?.reason, 'aborted');
   assert.equal(client.requests.length, 0);
 });
 

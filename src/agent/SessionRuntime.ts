@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { AgentEvent, ForkedAgentHandle, TurnExecutionResult, TurnSubmission } from './types.js';
 import { consumeGenerator } from './types.js';
 import type { TurnExecutorLike } from './types.js';
+import { assertSafePathComponent } from '../utils/safePath.js';
 import { ActiveTurn } from './ActiveTurn.js';
 import { EventQueue } from './EventQueue.js';
 import { SessionState } from './SessionState.js';
@@ -78,7 +79,7 @@ export class SessionRuntime {
         minimumTokensToInit: smConfig.minimumTokensToInit,
         maxTotalTokens: smConfig.maxTotalTokens,
         maxSectionTokens: smConfig.maxSectionTokens,
-        storagePath: path.join(smConfig.storageDir, state.conversationId, 'session-memory.md'),
+        storagePath: path.join(smConfig.storageDir, assertSafePathComponent(state.conversationId), 'session-memory.md'),
       });
       this.hookRegistry.register(createSessionMemoryHook(this.sessionMemory), 'session_memory');
     }
@@ -150,6 +151,8 @@ export class SessionRuntime {
     await this.deps.transcriptRecorder.recordLifecycleEvent(startedEntry);
 
     try {
+      // Track terminal reason from the event stream to distinguish model_error from success
+      let terminalReason: string | undefined;
       const result = await consumeGenerator(
         this.deps.turnExecutor.run(
           { ...submission, promptHistory: this.state.getMessages() },
@@ -157,7 +160,12 @@ export class SessionRuntime {
           activeTurn,
           this.usageTracker,
         ),
-        (event) => events.push(event),
+        (event) => {
+          events.push(event);
+          if (event.type === 'done' && (event as { terminalReason?: { reason: string } }).terminalReason) {
+            terminalReason = (event as { terminalReason: { reason: string } }).terminalReason.reason;
+          }
+        },
       );
       this.commitResult(result, activeTurn);
 
@@ -185,22 +193,38 @@ export class SessionRuntime {
         this.usageAggregator.updateConversation(this.usageTracker.getUsage());
       }
       if (this.usagePersistence) {
-        this.usagePersistence.save(this.usageTracker.snapshot()).catch(() => {});
+        this.usagePersistence.save(this.usageTracker.snapshot()).catch((err) => {
+          console.warn(`[SessionRuntime] Failed to persist usage for ${submission.conversationId}:`, err);
+        });
       }
 
-      const completedEntry: TaskCompletedEntry = {
-        type: 'task_completed',
-        conversationId: submission.conversationId,
-        taskId: submission.requestId,
-        turnId: activeTurn.turnId,
-        timestamp: new Date().toISOString(),
-        finalText: result.finalText,
-        completedTurns: result.completedTurns,
-        toolCallCount: result.toolCallCount,
-        tokenUsage: result.tokenUsage,
-        session: this.state.snapshot(),
-      };
-      await this.deps.transcriptRecorder.recordLifecycleEvent(completedEntry);
+      // Record task_failed for terminal model errors; task_completed otherwise
+      if (terminalReason === 'model_error' || terminalReason === 'aborted') {
+        const failedEntry: TaskFailedEntry = {
+          type: 'task_failed',
+          conversationId: submission.conversationId,
+          taskId: submission.requestId,
+          turnId: activeTurn.turnId,
+          timestamp: new Date().toISOString(),
+          error: `Terminal reason: ${terminalReason}`,
+          turn: activeTurn.snapshot(),
+        };
+        await this.deps.transcriptRecorder.recordLifecycleEvent(failedEntry);
+      } else {
+        const completedEntry: TaskCompletedEntry = {
+          type: 'task_completed',
+          conversationId: submission.conversationId,
+          taskId: submission.requestId,
+          turnId: activeTurn.turnId,
+          timestamp: new Date().toISOString(),
+          finalText: result.finalText,
+          completedTurns: result.completedTurns,
+          toolCallCount: result.toolCallCount,
+          tokenUsage: result.tokenUsage,
+          session: this.state.snapshot(),
+        };
+        await this.deps.transcriptRecorder.recordLifecycleEvent(completedEntry);
+      }
     } catch (error) {
       activeTurn.fail(error);
       const failedEntry: TaskFailedEntry = {
@@ -228,8 +252,9 @@ export class SessionRuntime {
       if (snapshot) {
         this.usageTracker.restore(snapshot);
       }
-    } catch {
-      // Best-effort — missing persistence should not block session creation
+    } catch (error) {
+      // Log but do not block session creation — corrupted files need visibility
+      console.warn(`[SessionRuntime] Failed to restore usage for ${this.state.conversationId}:`, error);
     }
   }
 

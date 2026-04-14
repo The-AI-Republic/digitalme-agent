@@ -29,7 +29,9 @@ function makeBuilder(): ISystemPromptBuilder {
   return {
     build: (_ctx: PromptContext): BuiltPrompt => ({
       finalSystemPrompt: ['You are a test agent.'],
-      sections: [{ name: 'test', content: 'You are a test agent.', cachePolicy: 'volatile' as const }],
+      sections: [{ name: 'test', content: 'You are a test agent.', cachePolicy: 'volatile' as const, boundary: 'dynamic' as const }],
+      staticPrefix: ['You are a test agent.'],
+      dynamicTail: [],
     }),
     clearCache: () => {},
   };

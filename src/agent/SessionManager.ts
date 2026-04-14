@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AgentConfig } from '../config/schema.js';
+import { assertSafePathComponent } from '../utils/safePath.js';
 import { initialProcessRuntimeState, type ProcessRuntimeState } from './ProcessRuntimeState.js';
 import type { AgentEvent, TurnExecutorLike, TurnSubmission } from './types.js';
 import { EventQueue } from './EventQueue.js';
@@ -16,6 +17,7 @@ import { SkillRegistry } from '../skills/SkillRegistry.js';
 import { buildSkillListingSection } from '../skills/SkillListingBuilder.js';
 import { createCreatorSkillTool } from '../tools/CreatorSkillTool.js';
 import { createSubagentTool } from './subagent/SubagentTool.js';
+import { SkillTracker } from '../skills/SkillTracker.js';
 
 export interface SessionManagerDeps {
   getState?: () => ProcessRuntimeState;
@@ -32,6 +34,7 @@ export class SessionManager {
   private readonly getProcessState: () => ProcessRuntimeState;
   readonly usageAggregator: UsageAggregator;
   private readonly usagePersistence: UsagePersistence;
+  private readonly skillTracker: SkillTracker;
   private readonly skillRegistry?: SkillRegistry;
 
   constructor(
@@ -42,6 +45,7 @@ export class SessionManager {
     this.transcriptRecorder = deps.transcriptRecorder ?? new TranscriptRecorder();
     this.usageAggregator = new UsageAggregator();
     this.usagePersistence = new UsagePersistence(config.context.tool_result_persistence.storage_dir);
+    this.skillTracker = new SkillTracker();
     if (deps.turnExecutor) {
       this.turnExecutor = deps.turnExecutor;
     } else {
@@ -70,6 +74,7 @@ export class SessionManager {
           defaultModelName: config.model.name,
           getSessionRuntime: (conversationId) => this.sessions.get(conversationId),
           guardrailConfig: config.guardrails,
+          skillTracker: this.skillTracker,
         }));
       }
 
@@ -252,7 +257,7 @@ export class SessionManager {
   }
 
   private async cleanupConversationTempDir(conversationId: string): Promise<void> {
-    const dirPath = path.join(this.storageDir, conversationId);
+    const dirPath = path.join(this.storageDir, assertSafePathComponent(conversationId));
     await fs.rm(dirPath, { recursive: true, force: true });
   }
 }

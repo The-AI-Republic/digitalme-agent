@@ -197,6 +197,9 @@ export class TurnExecutor {
       this.usageAggregator?.recordUsage(record);
     });
 
+    // Per-turn flag — set by cost-aware routing, consumed by prepareContextForModelCall
+    let aggressiveCompaction = false;
+
     // Pre-turn quota check
     if (this.costAwareRouter && usageTracker) {
       const usage = usageTracker.getUsage();
@@ -211,11 +214,14 @@ export class TurnExecutor {
         enforcer.onWarning(warningListener);
       }
 
-      const decision = this.costAwareRouter.evaluate(usage, dailyCost, monthlyCost);
-
-      // Unregister listener to prevent accumulation across turns
-      if (enforcer) {
-        enforcer.removeWarning(warningListener);
+      let decision;
+      try {
+        decision = this.costAwareRouter.evaluate(usage, dailyCost, monthlyCost);
+      } finally {
+        // Unregister listener to prevent accumulation across turns
+        if (enforcer) {
+          enforcer.removeWarning(warningListener);
+        }
       }
 
       // Emit any quota warnings as events
@@ -242,9 +248,9 @@ export class TurnExecutor {
         yield { type: 'recovery', reason: 'cost_aware_downgrade', detail: { from: this.config.model.name, to: modelName } };
       }
 
-      // Signal aggressive compaction when approaching quota limits
+      // Signal aggressive compaction when approaching quota limits (per-turn flag, not shared state)
       if (decision.increaseCompaction) {
-        this.contextDeps.aggressiveCompaction = true;
+        aggressiveCompaction = true;
       }
     }
 
@@ -382,17 +388,33 @@ export class TurnExecutor {
 
     try {
     while (executionState.getIterationIndex() < maxTurns) {
-      this.throwIfAborted(context.signal);
+      // Check for abort before each iteration — yield terminal event instead of throwing
+      if (context.signal?.aborted) {
+        yield { type: 'done', terminalReason: { reason: 'aborted', phase: 'pre_loop' } };
+        spanEnded = true;
+        endSpan(interactionSpan, { 'terminal.reason': 'aborted' });
+        return {
+          finalText: recovery.accumulatedText || '',
+          tokenUsage: executionState.getTokenUsage(),
+          completedTurns: executionState.getIterationIndex(),
+          toolCallCount: executionState.snapshot().toolCallCount,
+          newMessages: context.messages.slice(baselineLength),
+          interactionSpanContext: capturedSpanContext,
+        };
+      }
       executionState.incrementIteration();
       executionState.beginModelTurn();
 
       // Per-model-step context preparation: persistence, microcompact, pressure assessment
+      const contextDepsForTurn = aggressiveCompaction
+        ? { ...this.contextDeps, aggressiveCompaction: true }
+        : this.contextDeps;
       const prepared = await prepareContextForModelCall(
         context.messages,
         resolvedModelName,
         executionState.getTokenUsage(),
         context.conversationId,
-        this.contextDeps,
+        contextDepsForTurn,
       );
       // Replace messages with prepared version (may have cleared stale tool results)
       if (prepared.rewrote) {
@@ -562,6 +584,22 @@ export class TurnExecutor {
                   rule: partialCheck.violations[0]?.rule ?? 'unknown',
                 };
                 const blockedText = partialCheck.replacementResponse ?? guardrailConfig.messages.output_blocked;
+                const refusalMsg: Message = {
+                  role: 'assistant',
+                  content: blockedText,
+                  id: generateId(),
+                  timestamp: new Date().toISOString(),
+                  synthetic: true,
+                };
+                context.messages.push(refusalMsg);
+
+                if (recorder) {
+                  await recorder.recordMessage(submission.conversationId, refusalMsg, {
+                    taskId: submission.requestId,
+                    turnId: activeTurn?.turnId,
+                  });
+                }
+
                 yield { type: 'text_delta', content: blockedText };
                 yield { type: 'done', terminalReason: { reason: 'completed' } };
                 spanEnded = true;
@@ -580,6 +618,22 @@ export class TurnExecutor {
             } catch {
               // Fail-closed on validator error during recovery
               const blockedText = guardrailConfig.messages.output_blocked;
+              const refusalMsg: Message = {
+                role: 'assistant',
+                content: blockedText,
+                id: generateId(),
+                timestamp: new Date().toISOString(),
+                synthetic: true,
+              };
+              context.messages.push(refusalMsg);
+
+              if (recorder) {
+                await recorder.recordMessage(submission.conversationId, refusalMsg, {
+                  taskId: submission.requestId,
+                  turnId: activeTurn?.turnId,
+                });
+              }
+
               yield { type: 'text_delta', content: blockedText };
               yield { type: 'done', terminalReason: { reason: 'completed' } };
               spanEnded = true;

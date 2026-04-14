@@ -85,8 +85,9 @@ export async function prepareContextForModelCall(
           messagesRemoved += prevCount - currentMessages.length;
           tokensSaved += compactResult.preCompactTokens - compactResult.postCompactTokens;
         }
-      } catch {
+      } catch (error) {
         // Session memory compaction is best-effort; continue with existing messages
+        console.warn('[prepareContext] Session memory compaction failed:', error);
       }
     }
   }
@@ -103,8 +104,9 @@ export async function prepareContextForModelCall(
         currentMessages = [...currentMessages, ...recoveryMessages];
         rewrote = true;
       }
-    } catch {
+    } catch (error) {
       // Recovery is best-effort
+      console.warn('[prepareContext] Post-compact recovery failed:', error);
     }
   }
 
@@ -132,8 +134,9 @@ export async function prepareContextForModelCall(
       if (deps.sessionMemory) {
         try {
           sessionMemoryContent = await deps.sessionMemory.getMemory() ?? undefined;
-        } catch {
+        } catch (error) {
           // best-effort
+          console.warn('[prepareContext] Session memory fetch for projection failed:', error);
         }
       }
 

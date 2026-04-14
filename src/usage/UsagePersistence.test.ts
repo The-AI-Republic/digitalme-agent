@@ -78,3 +78,18 @@ test('UsagePersistence remove does not throw for missing file', async () => {
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test('UsagePersistence save replaces target atomically without leaving temp files behind', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'usage-test-'));
+  try {
+    const persistence = new UsagePersistence(dir);
+    await persistence.save(makeUsage('conv-1'));
+
+    const usageDir = path.join(dir, 'usage');
+    const files = await fs.readdir(usageDir);
+
+    assert.deepEqual(files, ['conv-1.json']);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
