@@ -48,6 +48,14 @@ export class QuotaEnforcer {
     this.warningListeners.push(listener);
   }
 
+  /** Remove a previously registered warning listener. */
+  removeWarning(listener: QuotaWarningListener): void {
+    const idx = this.warningListeners.indexOf(listener);
+    if (idx !== -1) {
+      this.warningListeners.splice(idx, 1);
+    }
+  }
+
   /**
    * Check whether a new turn is allowed given current conversation usage.
    *

@@ -109,9 +109,52 @@ export async function prepareContextForModelCall(
   }
 
   // Re-assess pressure after compaction
-  const finalPressure = (compactionType && compactionType !== 'microcompact')
+  const postCompactPressure = (compactionType && compactionType !== 'microcompact')
     ? deps.tokenBudget.assessPressure(modelName, currentMessages)
     : pressure;
+
+  // Step 6: Prompt projection — when pressure remains high after compaction,
+  // select a recent tail of messages that fits the context window
+  let finalPressure = postCompactPressure;
+  if (deps.promptProjector && (postCompactPressure === 'projection' || postCompactPressure === 'overflow')) {
+    // Find the latest user message for projection input
+    let latestUserMessage: Message | undefined;
+    for (let i = currentMessages.length - 1; i >= 0; i--) {
+      if (currentMessages[i].role === 'user') {
+        latestUserMessage = currentMessages[i];
+        break;
+      }
+    }
+
+    if (latestUserMessage) {
+      // Get session memory content if available
+      let sessionMemoryContent;
+      if (deps.sessionMemory) {
+        try {
+          sessionMemoryContent = await deps.sessionMemory.getMemory() ?? undefined;
+        } catch {
+          // best-effort
+        }
+      }
+
+      const projected = deps.promptProjector.project({
+        fullHistory: currentMessages,
+        latestUserMessage,
+        modelName,
+        pressure: postCompactPressure,
+        systemPromptTokenEstimate: 0, // Conservative — system prompt already in messages[0]
+        sessionMemory: sessionMemoryContent,
+      });
+
+      if (projected.length < currentMessages.length) {
+        const prevCount = currentMessages.length;
+        currentMessages = projected;
+        rewrote = true;
+        messagesRemoved += prevCount - currentMessages.length;
+        finalPressure = deps.tokenBudget.assessPressure(modelName, currentMessages);
+      }
+    }
+  }
 
   return {
     messages: currentMessages,

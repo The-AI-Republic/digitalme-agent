@@ -203,7 +203,7 @@ export class TurnExecutor {
       const dailyCost = this.usageAggregator?.getDailyCost();
       const monthlyCost = this.usageAggregator?.getMonthlyCost();
 
-      // Collect quota warnings during evaluation
+      // Collect quota warnings during evaluation (register + unregister to avoid leak)
       const pendingWarnings: QuotaWarningEvent[] = [];
       const enforcer = this.costAwareRouter.getEnforcer();
       const warningListener = (warning: QuotaWarningEvent) => { pendingWarnings.push(warning); };
@@ -212,6 +212,11 @@ export class TurnExecutor {
       }
 
       const decision = this.costAwareRouter.evaluate(usage, dailyCost, monthlyCost);
+
+      // Unregister listener to prevent accumulation across turns
+      if (enforcer) {
+        enforcer.removeWarning(warningListener);
+      }
 
       // Emit any quota warnings as events
       for (const warning of pendingWarnings) {
@@ -451,11 +456,20 @@ export class TurnExecutor {
               interactionSpanContext: capturedSpanContext,
             };
           }
-          // Unrecoverable model error
-          yield { type: 'done', terminalReason: { reason: 'model_error', error: cause instanceof Error ? cause.message : String(cause) } };
+          // Unrecoverable model error — return terminal result (no throw)
+          const errorMessage = cause instanceof Error ? cause.message : String(cause);
+          yield { type: 'error', message: errorMessage };
+          yield { type: 'done', terminalReason: { reason: 'model_error', error: errorMessage } };
           spanEnded = true;
           endSpanWithError(interactionSpan, cause);
-          throw cause;
+          return {
+            finalText: recovery.accumulatedText || '',
+            tokenUsage: executionState.getTokenUsage(),
+            completedTurns: executionState.getIterationIndex(),
+            toolCallCount: executionState.snapshot().toolCallCount,
+            newMessages: context.messages.slice(baselineLength),
+            interactionSpanContext: capturedSpanContext,
+          };
         }
         // Non-recovery error (e.g. abort during tools)
         if (error instanceof Error && (error.message === 'request_aborted' || error.name === 'AbortError')) {
