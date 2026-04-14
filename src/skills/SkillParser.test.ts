@@ -33,7 +33,7 @@ test('toLoadedSkill applies defaults when frontmatter fields are omitted', () =>
   assert.equal(skill.name, 'skill-dir');
   assert.equal(skill.context, 'inline');
   assert.equal(skill.model, 'inherit');
-  assert.equal(skill.max_turns, 3);
+  assert.equal(skill.max_turns, 1);
   assert.equal(skill.timeout_seconds, 30);
   assert.equal(skill.source, 'bundled');
 });
@@ -42,4 +42,33 @@ test('parseSkillFile returns empty frontmatter when no fence is present', () => 
   const parsed = parseSkillFile('Plain prompt body');
   assert.deepEqual(parsed.frontmatter, {});
   assert.equal(parsed.body, 'Plain prompt body');
+});
+
+test('parseSkillFile throws on malformed YAML frontmatter', () => {
+  assert.throws(
+    () => parseSkillFile(`---
+description: [unterminated
+---
+
+Prompt body`),
+  );
+});
+
+test('toLoadedSkill defaults fork context to three turns', () => {
+  const skill = toLoadedSkill(
+    {
+      frontmatter: {
+        description: 'Desc',
+        when_to_use: 'When fan asks about beats',
+        context: 'fork',
+      },
+      body: 'Prompt body long enough',
+    },
+    'skill-dir',
+    '/tmp/skill-dir',
+    'bundled',
+  );
+
+  assert.equal(skill.context, 'fork');
+  assert.equal(skill.max_turns, 3);
 });

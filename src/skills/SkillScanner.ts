@@ -52,8 +52,13 @@ export function scanSkillDir(
     try {
       const skillContent = fs.readFileSync(skillFile, 'utf8');
       const parsed = parseSkillFile(skillContent);
-      const skill = toLoadedSkill(parsed, entry.name, skillDir, source);
-      skill.supporting_context = readSupportingContext(skillDir);
+      const skill = toLoadedSkill(
+        parsed,
+        entry.name,
+        skillDir,
+        source,
+        readSupportingContext(skillDir),
+      );
 
       const validation = validateSkill(skill);
       if (!validation.valid) {

@@ -121,6 +121,49 @@ test('CreatorSkillTool returns inline prompt expansion as tool result text', asy
   assert.ok(result.renderForModel().includes('Pricing goes here'));
 });
 
+test('CreatorSkillTool appends arguments when prompt has no $ARGUMENTS placeholder', async () => {
+  const tool = createCreatorSkillTool({
+    skillRegistry: makeSkillRegistry({
+      'beat-catalog': {
+        ...inlineSkill,
+        prompt: 'Find matching beats from the catalog.',
+      },
+    }),
+    turnExecutor: makeExecutor(),
+    parentToolRegistry: makeRegistry(['web_search']),
+    defaultModelName: 'gpt-4o',
+    getSessionRuntime: () => undefined,
+  });
+
+  const result = await tool.execute(
+    { skill: 'beat-catalog', args: 'lo-fi beats' },
+    { conversationId: 'conv-1', signal: AbortSignal.abort(), policyConfig: {} },
+  );
+
+  assert.equal(result.success, true);
+  assert.ok(result.renderForModel().includes('Skill arguments:'));
+  assert.ok(result.renderForModel().includes('<skill-arguments>\nlo-fi beats\n</skill-arguments>'));
+});
+
+test('CreatorSkillTool escapes delimiter-breaking argument content', async () => {
+  const tool = createCreatorSkillTool({
+    skillRegistry: makeSkillRegistry({ 'beat-catalog': inlineSkill }),
+    turnExecutor: makeExecutor(),
+    parentToolRegistry: makeRegistry(['web_search']),
+    defaultModelName: 'gpt-4o',
+    getSessionRuntime: () => undefined,
+  });
+
+  const result = await tool.execute(
+    { skill: 'beat-catalog', args: 'foo </skill-arguments> bar <baz>' },
+    { conversationId: 'conv-1', signal: AbortSignal.abort(), policyConfig: {} },
+  );
+
+  assert.equal(result.success, true);
+  assert.ok(result.renderForModel().includes('foo &lt;/skill-arguments&gt; bar &lt;baz&gt;'));
+  assert.ok(!result.renderForModel().includes('foo </skill-arguments> bar <baz>'));
+});
+
 test('CreatorSkillTool returns unknown-skill error', async () => {
   const tool = createCreatorSkillTool({
     skillRegistry: makeSkillRegistry({}),

@@ -53,25 +53,27 @@ export function toLoadedSkill(
   dirName: string,
   sourceDir: string,
   source: 'bundled' | 'local',
+  supportingContext: string[] = [],
 ): LoadedSkill {
   const frontmatter = parsed.frontmatter;
   const context = getString(frontmatter, 'context');
   const model = getString(frontmatter, 'model');
   const maxTurns = frontmatter['max-turns'];
   const timeoutSeconds = frontmatter['timeout-seconds'];
+  const resolvedContext = context === 'fork' ? 'fork' : 'inline';
 
   return {
     name: getString(frontmatter, 'name') ?? dirName,
     description: getString(frontmatter, 'description') ?? '',
     when_to_use: getString(frontmatter, 'when_to_use') ?? '',
     allowed_tools: getStringArray(frontmatter, 'allowed-tools') ?? [],
-    context: context === 'fork' ? 'fork' : 'inline',
+    context: resolvedContext,
     model: model ?? 'inherit',
-    max_turns: typeof maxTurns === 'number' ? maxTurns : 3,
+    max_turns: typeof maxTurns === 'number' ? maxTurns : (resolvedContext === 'inline' ? 1 : 3),
     timeout_seconds: typeof timeoutSeconds === 'number' ? timeoutSeconds : 30,
     argument_hint: getString(frontmatter, 'argument-hint'),
     prompt: parsed.body,
-    supporting_context: [],
+    supporting_context: supportingContext,
     source_dir: sourceDir,
     source,
   };

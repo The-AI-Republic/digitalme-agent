@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Tool, ToolContext, ToolDefinition, ToolExecutionResult, ToolMetadata } from './types.js';
 import { DEFAULT_TOOL_METADATA } from './types.js';
@@ -24,7 +25,21 @@ export interface CreatorSkillToolDeps {
 }
 
 function expandArguments(prompt: string, args: string): string {
-  return prompt.replace(/\$ARGUMENTS/g, `<skill-arguments>\n${args}\n</skill-arguments>`);
+  const escapedArgs = args
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+  const wrappedArgs = `<skill-arguments>\n${escapedArgs}\n</skill-arguments>`;
+
+  if (prompt.includes('$ARGUMENTS')) {
+    return prompt.replace(/\$ARGUMENTS/g, wrappedArgs);
+  }
+
+  if (!args.trim()) {
+    return prompt;
+  }
+
+  return `${prompt}\n\nSkill arguments:\n${wrappedArgs}`;
 }
 
 function buildSkillPrompt(skill: LoadedSkill, args: string): string {
@@ -64,7 +79,7 @@ function buildForkedSkillSubmission(
   skillName: string,
 ): TurnSubmission {
   return {
-    requestId: `skill-${skillName}-${Date.now()}`,
+    requestId: `skill-${skillName}-${randomUUID()}`,
     conversationId,
     userMessage: prompt,
     history: [],
