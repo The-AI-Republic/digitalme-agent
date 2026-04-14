@@ -11,6 +11,8 @@ import type {
   Batch,
   ToolErrorCategory,
 } from './types.js';
+import { startToolSpan, endSpan, endSpanWithError } from '../../telemetry/spans.js';
+import type { Span } from '@opentelemetry/api';
 
 const MAX_CONCURRENCY = 5;
 
@@ -102,10 +104,17 @@ function defaultSummary(
  * timeout, result rendering, normalization, and budget enforcement.
  */
 export class ToolExecutor {
+  private parentSpan?: Span;
+
   constructor(
     private readonly registry: IToolRegistry,
     private readonly policyChecker: IToolPolicyChecker,
   ) {}
+
+  /** Set the parent span for OTEL tracing of tool calls. */
+  setParentSpan(span: Span): void {
+    this.parentSpan = span;
+  }
 
   async runTools(
     calls: ToolCall[],
@@ -325,6 +334,9 @@ export class ToolExecutor {
     const start = Date.now();
     const { signal, cleanup } = createToolAbortSignal(context.signal, tool.metadata.timeoutMs);
 
+    // Start OTEL tool span if parent is available
+    const toolSpan = this.parentSpan ? startToolSpan(toolName, this.parentSpan) : undefined;
+
     try {
       const toolContext: ToolContext = {
         conversationId: context.conversationId,
@@ -359,6 +371,7 @@ export class ToolExecutor {
       };
 
       callbacks.onToolEnd(toolName, callId, result.success);
+      if (toolSpan) endSpan(toolSpan, { 'tool.duration_ms': durationMs, 'tool.success': true });
       return record;
     } catch (error: unknown) {
       const durationMs = Date.now() - start;
@@ -370,6 +383,7 @@ export class ToolExecutor {
           : `Tool ${toolName} failed: ${error instanceof Error ? error.message : String(error)}`;
 
       callbacks.onToolEnd(toolName, callId, false);
+      if (toolSpan) endSpanWithError(toolSpan, error, { 'tool.duration_ms': durationMs });
       return makeErrorRecord(callId, toolName, parsedInput as Record<string, unknown>, category, message, durationMs);
     } finally {
       cleanup();

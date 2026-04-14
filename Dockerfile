@@ -7,6 +7,7 @@ RUN npm ci
 
 COPY tsconfig.json config.example.yaml ./
 COPY src ./src
+COPY skills ./skills
 
 RUN npm run build
 

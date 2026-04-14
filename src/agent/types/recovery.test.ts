@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 
 import { initialRecoveryState, RECOVERY_LIMITS } from './recovery.js';
 
-test('initialRecoveryState returns zeroed state', () => {
+test('initialRecoveryState returns zeroed state including apiRetryCount', () => {
   const state = initialRecoveryState();
   assert.equal(state.hasAttemptedReactiveCompact, false);
   assert.equal(state.maxOutputRecoveryCount, 0);
   assert.equal(state.accumulatedText, '');
   assert.equal(state.fallbackAttempted, false);
   assert.equal(state.lastTransition, undefined);
+  assert.equal(state.apiRetryCount, 0);
 });
 
 test('RECOVERY_LIMITS has expected values', () => {

@@ -1,132 +1,144 @@
-# Track 04: Recovery and Continuation -- Gap Analysis
+# Track 04 -- Recovery and Continuation Remediation Plan
 
-## Overview
+## Status
 
-Track 04 is substantially complete with most design goals achieved. All recovery paths (API retry, fallback model, max-output continuation, reactive compaction) are implemented and well-tested.
+Track 04 is functionally implemented. The remaining work is **semantic completion and cleanup** around recovery state, terminal behavior, and test depth.
 
----
+This document focuses only on validated work that still needs to happen.
 
-## Step 1: Recovery Types and Event Contracts
+## Validated Remaining Gaps
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `ContinuationReason` union | YES | All 5 variants match design. |
-| `TerminalReason` union | YES | All 6 variants + bonus `quota_exceeded`. |
-| `ApiErrorCategory` union | YES | All 6 categories match. |
-| `RecoveryState` interface | PARTIAL | `apiRetryCount` field from design is missing. |
-| `RECOVERY_LIMITS` constants | YES | All 3 limits match. |
-| `recovery` event type on `AgentEvent` | YES | |
-| `done` with `terminalReason` | YES | |
-| Unit tests for `recovery.ts` | **NO** | Only tested indirectly. |
+### Gap 1: `RecoveryState` is incomplete relative to the design
 
----
+- `src/agent/types/recovery.ts` is missing `apiRetryCount`.
+- The current runtime still retries correctly, but the state contract no longer matches the original design.
+- Risk:
+  - recovery bookkeeping is split between loop locals and recovery state
+  - future observability/debugging will have less explicit state
 
-## Step 2: Config and Model Factory Support for Fallback
+### Gap 2: `model_error` and `aborted` terminal reasons are defined but unused
 
-| Item | Status | Notes |
-|------|--------|-------|
-| Reusable `modelSchema` | YES | |
-| `fallback_model` config | YES | Optional as designed. |
-| `createFromConfig()` on factory | PARTIAL | Declared optional (`?`) on interface -- fragile. |
+- `TurnExecutor` still throws on unrecoverable model errors and aborts.
+- The design called for explicit terminal semantics rather than contradictory `done` + throw behavior.
+- Risk:
+  - event consumers cannot rely on terminal reason coverage
+  - shutdown/abort behavior remains less inspectable than intended
 
----
+### Gap 3: `IModelClientFactory.createFromConfig` is still optional
 
-## Step 3: API Error Categorization and Backoff
+- The concrete factory implements it.
+- The interface keeps it optional, forcing fallback logic to branch defensively.
+- Risk:
+  - the fallback path treats a required capability as optional
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `categorizeApiError()` | YES | Complete duck-typing + message fallback. |
-| `exponentialBackoff()` | YES | `100ms * 2^attempt`. |
-| Tests | PARTIAL | Use real timers; only 2 of 3 attempts tested. |
+### Gap 4: recovery test coverage is thin in a few critical places
 
----
+- `src/agent/types/recovery.test.ts` exists, so the issue is not “no tests.”
+- Remaining gaps:
+  - no isolated tests for `callModelWithRecovery()`
+  - no direct tests for terminal-reason semantics on hard model failure / abort
+  - backoff tests still use real timers rather than fake timers
 
-## Step 4-5: TurnExecutor Recovery Integration
+## Remediation Scope
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `callModelWithRecovery()` | YES | Full implementation. |
-| Retry loop with `MAX_API_RETRIES` | YES | |
-| Context overflow returns `{ type: 'context_overflow' }` | YES | |
-| Auth error throws immediately | YES | |
-| Fallback trigger conditions | YES | All 4 conditions checked. |
-| Reset retry budget on fallback | YES | |
-| `RecoveryError` for buffered events | YES | Good improvement over design. |
-| Recovery events emitted | YES | All 4 types. |
-| Continuation tracking (`lastTransition`) | YES | |
+Implement the following only:
 
----
+1. Finish the recovery state contract.
+2. Make terminal reasons authoritative for hard-stop cases.
+3. Tighten the model factory interface.
+4. Add focused recovery tests.
 
-## Step 6: Max-Output Continuation
+Do **not** redesign the already-working distributed recovery structure.
 
-| Item | Status | Notes |
-|------|--------|-------|
-| Detect `result.truncated` | YES | |
-| Accumulate text across continuations | YES | |
-| Bounded by `MAX_OUTPUT_RECOVERY_ATTEMPTS=3` | YES | |
-| Exhausted returns `max_output_exhausted` | YES | |
-| Partial text emitted as `text_delta` | YES | Good UX improvement. |
+## Implementation Plan
 
----
+### Step 1: Complete the `RecoveryState` contract
 
-## Step 7: Reactive Compaction
+**Target files**
+- `src/agent/types/recovery.ts`
+- `src/agent/types/recovery.test.ts`
+- `src/agent/TurnExecutor.ts`
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `groupByRound()` | YES | |
-| `tryReactiveCompact()` | YES | Drop-middle strategy. |
-| Guard with `hasAttemptedReactiveCompact` | YES | |
-| Tests | YES | Comprehensive. |
+**Changes**
+- Add `apiRetryCount` back to `RecoveryState`.
+- Initialize it in `initialRecoveryState()`.
+- Increment it on retry.
+- Reset it when fallback succeeds or when a model call succeeds, depending on the intended semantics chosen in code comments.
 
-**Note:** Two compaction implementations coexist:
-1. `src/agent/reactiveCompact.ts` -- simple, used by TurnExecutor
-2. `src/agent/context/ReactiveCompact.ts` -- class-based with LLM summarization, unused
+**Acceptance criteria**
+- `RecoveryState` once again matches the design contract for retry bookkeeping.
+- Tests assert the zeroed initial state, including `apiRetryCount`.
 
----
+### Step 2: Use terminal reasons for hard-stop error and abort paths
 
-## Step 8: Terminal Reason Semantics
+**Target files**
+- `src/agent/TurnExecutor.ts`
+- `src/agent/types.ts`
+- relevant tests under `src/agent/`
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `completed` terminal reason | YES | |
-| `max_turns` graceful return | YES | No throw. |
-| `prompt_too_long` terminal reason | YES | |
-| `max_output_exhausted` terminal reason | YES | |
-| `model_error` terminal reason | **NO** | Defined but never used -- errors still throw. |
-| `aborted` terminal reason | **NO** | Defined but never emitted -- abort still throws. |
+**Changes**
+- For unrecoverable model failure:
+  - emit `done` with `terminalReason: { reason: 'model_error', error: ... }`
+  - return a terminal result or propagate only if there is a strong existing API contract that requires throw semantics
+- For abort handling:
+  - translate request aborts into `terminalReason: { reason: 'aborted', phase: ... }`
+  - keep phase semantics concrete and documented
 
----
+**Acceptance criteria**
+- `model_error` is no longer dead type surface.
+- `aborted` is no longer dead type surface.
+- Event consumers can observe terminal reason coverage for these paths.
 
-## Step 9: Tests
+### Step 3: Tighten the factory interface
 
-| Item | Status | Notes |
-|------|--------|-------|
-| TurnExecutor recovery tests | YES | Comprehensive -- 20+ scenarios. |
-| `initialRecoveryState()` unit tests | **NO** | |
-| `callModelWithRecovery()` isolated tests | **NO** | Only indirect. |
-| `fallback_model` config documentation | **NO** | |
+**Target files**
+- `src/models/ModelClientFactory.ts`
+- any tests that stub `IModelClientFactory`
 
----
+**Changes**
+- Make `createFromConfig(modelConfig)` required on `IModelClientFactory`.
+- Update any test doubles accordingly.
 
-## Summary of Gaps
+**Acceptance criteria**
+- Fallback logic does not need `if (createFromConfig)` style defensive branching.
+- Interface matches actual runtime expectations.
 
-### Missing
+### Step 4: Add focused recovery tests
 
-1. `apiRetryCount` field on `RecoveryState` (state tracked internally but not persisted).
-2. `model_error` terminal reason never used -- errors still throw.
-3. `aborted` terminal reason never used -- abort still throws.
-4. Unit tests for `recovery.ts` types.
-5. `fallback_model` config documentation.
-6. Isolated `callModelWithRecovery()` unit tests.
+**Target files**
+- `src/agent/TurnExecutor.recovery.test.ts`
+- `src/agent/apiRetry.test.ts`
+- optionally new focused tests if isolation is cleaner than expanding existing files
 
-### Partial
+**Changes**
+- Add tests for:
+  - retry bookkeeping / `apiRetryCount`
+  - unrecoverable model error terminal semantics
+  - abort terminal semantics
+  - `callModelWithRecovery()` fallback path, if practical through a focused harness
+- Convert backoff timing tests to fake timers if the test framework support is acceptable; otherwise document why real timers remain.
 
-1. `createFromConfig` optional on interface -- fragile null check in fallback path.
-2. `exponentialBackoff` tests use real timers.
-3. Unused class-based recovery modules in `context/` -- need documentation or removal.
+**Acceptance criteria**
+- Recovery behavior is validated at the semantic level, not only through broad loop tests.
+- The remaining recovery gaps are genuinely closed rather than only documented.
 
-### Deviations (Acceptable)
+## Test Plan
 
-1. `RecoveryError` wrapper -- solves real event-buffering problem.
-2. ModelRouter integration -- adds health tracking value.
-3. `quota_exceeded` terminal reason -- supports quotas feature.
+Run at minimum:
+
+- `node --loader ts-node/esm --test src/agent/types/recovery.test.ts`
+- `node --loader ts-node/esm --test src/agent/apiRetry.test.ts`
+- `node --loader ts-node/esm --test src/agent/TurnExecutor.recovery.test.ts`
+- `node --loader ts-node/esm --test src/agent/TurnExecutor.test.ts`
+
+## Out of Scope
+
+- Replacing the inline/distributed recovery structure with a RecoveryManager
+- Reworking reactive compaction architecture
+- Reopening fallback model routing decisions already handled by Track 09 integration
+
+## Source References
+
+- Gap analysis source: `gaps_0413/track_04_recovery_and_continuation.md` (this file supersedes the earlier wording)
+- Original design: `agent_improvements/04_recovery_and_continuation/IMPLEMENTATION_PLAN.md`
+- Original task inventory: `agent_improvements/04_recovery_and_continuation/tasks.md`

@@ -2,16 +2,22 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Tool, ToolContext, ToolDefinition, ToolExecutionResult, ToolMetadata } from './types.js';
 import { DEFAULT_TOOL_METADATA } from './types.js';
+import { zodObjectToJsonSchema } from './schema.js';
 import type { IToolRegistry } from './registry.js';
 import type { SkillRegistry } from '../skills/SkillRegistry.js';
 import type { LoadedSkill } from '../skills/types.js';
 import type { ExecutionOptions, ForkedAgentResult, TurnExecutorLike, TurnSubmission } from '../agent/types.js';
 import type { SessionRuntime } from '../agent/SessionRuntime.js';
 import { launchForkedAgent } from '../agent/fork/ForkedAgent.js';
+import { screenInput } from '../guardrails/InputScreener.js';
+import { validateOutput } from '../guardrails/OutputValidator.js';
+import type { AgentConfig } from '../config/schema.js';
+import type { SkillTracker } from '../skills/SkillTracker.js';
+import type { SkillExecutionRecord } from '../skills/types.js';
 
 const creatorSkillInputSchema = z.object({
-  skill: z.string().min(1),
-  args: z.string().optional(),
+  skill: z.string().min(1).describe('Name of the skill to invoke.'),
+  args: z.string().optional().describe('Relevant context from the fan message.'),
 });
 
 type CreatorSkillInput = z.infer<typeof creatorSkillInputSchema>;
@@ -22,6 +28,8 @@ export interface CreatorSkillToolDeps {
   parentToolRegistry: IToolRegistry;
   defaultModelName: string;
   getSessionRuntime: (conversationId: string) => SessionRuntime | undefined;
+  guardrailConfig?: AgentConfig['guardrails'];
+  skillTracker?: SkillTracker;
 }
 
 function expandArguments(prompt: string, args: string): string {
@@ -117,14 +125,7 @@ export function createCreatorSkillTool(deps: CreatorSkillToolDeps): Tool<Creator
     function: {
       name: 'CreatorSkill',
       description: 'Invoke a creator-defined skill to handle a specific task.',
-      parameters: {
-        type: 'object',
-        properties: {
-          skill: { type: 'string', description: 'Name of the skill to invoke.' },
-          args: { type: 'string', description: 'Relevant context from the fan message.' },
-        },
-        required: ['skill'],
-      },
+      parameters: zodObjectToJsonSchema(creatorSkillInputSchema),
     },
   };
 
@@ -147,8 +148,41 @@ export function createCreatorSkillTool(deps: CreatorSkillToolDeps): Tool<Creator
         return { success: false, data: { error }, renderForModel: () => error };
       }
 
+      // Screen skill arguments (fan input) through guardrails
+      if (deps.guardrailConfig && args.args) {
+        try {
+          const screenResult = screenInput(args.args, deps.guardrailConfig);
+          if (!screenResult.safe) {
+            const error = `Skill input blocked: ${screenResult.category ?? 'policy_violation'}`;
+            return { success: false, data: { error }, renderForModel: () => error };
+          }
+        } catch {
+          // Fail-closed
+          const error = 'Skill input screening failed';
+          return { success: false, data: { error }, renderForModel: () => error };
+        }
+      }
+
       const prompt = buildSkillPrompt(skill, args.args ?? '');
+      const startTime = Date.now();
+
       if (skill.context === 'inline') {
+        // Track inline execution
+        if (deps.skillTracker) {
+          const record: SkillExecutionRecord = {
+            skillName: skill.name,
+            conversationId: context.conversationId,
+            timestamp: startTime,
+            context: 'inline',
+            success: true,
+            latencyMs: Date.now() - startTime,
+            turnsUsed: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            toolsUsed: [],
+          };
+          deps.skillTracker.record(record);
+        }
         return {
           success: true,
           data: { prompt },
@@ -208,12 +242,65 @@ export function createCreatorSkillTool(deps: CreatorSkillToolDeps): Tool<Creator
           () => handle.abort(),
         );
 
+        // Validate forked skill output through guardrails
+        let outputText = result.finalText;
+        if (deps.guardrailConfig && outputText) {
+          try {
+            const outputCheck = validateOutput(outputText, deps.guardrailConfig);
+            if (outputCheck.action === 'block') {
+              const error = 'Skill output blocked by guardrails';
+              return { success: false, data: { error }, renderForModel: () => error };
+            } else if (outputCheck.action === 'modify' && outputCheck.modifiedText !== undefined) {
+              outputText = outputCheck.modifiedText;
+            }
+          } catch {
+            // Fail-closed
+            const error = 'Skill output validation failed';
+            return { success: false, data: { error }, renderForModel: () => error };
+          }
+        }
+
+        // Track forked execution success
+        if (deps.skillTracker) {
+          const record: SkillExecutionRecord = {
+            skillName: skill.name,
+            conversationId: context.conversationId,
+            timestamp: startTime,
+            context: 'fork',
+            success: true,
+            latencyMs: Date.now() - startTime,
+            turnsUsed: 0,
+            inputTokens: result.totalUsage.inputTokens,
+            outputTokens: result.totalUsage.outputTokens,
+            toolsUsed: skill.allowed_tools,
+          };
+          deps.skillTracker.record(record);
+        }
+
         return {
           success: true,
-          data: { finalText: result.finalText },
-          renderForModel: () => result.finalText,
+          data: { finalText: outputText },
+          renderForModel: () => outputText,
         };
       } catch (error) {
+        // Track forked execution failure
+        if (deps.skillTracker) {
+          const record: SkillExecutionRecord = {
+            skillName: skill.name,
+            conversationId: context.conversationId,
+            timestamp: startTime,
+            context: 'fork',
+            success: false,
+            errorReason: error instanceof Error ? error.message : String(error),
+            latencyMs: Date.now() - startTime,
+            turnsUsed: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            toolsUsed: [],
+          };
+          deps.skillTracker.record(record);
+        }
+
         const message = error instanceof Error ? error.message : String(error);
         return {
           success: false,

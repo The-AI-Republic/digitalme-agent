@@ -48,6 +48,9 @@ function makeExecutor(config: AgentConfig, steps: ModelStepResult[]) {
         createClient() {
           return client;
         },
+        createFromConfig() {
+          return client;
+        },
       },
       toolRegistry: {
         listDefinitions() { return []; },

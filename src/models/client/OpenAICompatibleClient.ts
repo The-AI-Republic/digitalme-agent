@@ -56,10 +56,12 @@ export class OpenAICompatibleClient extends ModelClient {
       throw new Error('Model returned no message');
     }
 
+    const thinkingTokens = response.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
     const usage: TokenUsage | undefined = response.usage ? {
       inputTokens: response.usage.prompt_tokens,
       outputTokens: response.usage.completion_tokens,
       totalTokens: response.usage.total_tokens,
+      ...(thinkingTokens > 0 ? { thinkingTokens } : {}),
     } : undefined;
 
     if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {

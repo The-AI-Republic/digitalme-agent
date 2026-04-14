@@ -18,6 +18,7 @@ import type {
 } from './transcript/types.js';
 import { ConversationUsageTracker } from '../usage/ConversationUsageTracker.js';
 import type { UsageAggregator } from '../usage/UsageAggregator.js';
+import type { UsagePersistence } from '../usage/UsagePersistence.js';
 
 export interface SessionRuntimeDeps {
   turnExecutor: TurnExecutorLike;
@@ -50,12 +51,14 @@ export class SessionRuntime {
   readonly sessionMemory?: SessionMemory;
   readonly usageTracker: ConversationUsageTracker;
   private readonly usageAggregator?: UsageAggregator;
+  private readonly usagePersistence?: UsagePersistence;
 
   constructor(
     readonly state: SessionState,
     private readonly deps: SessionRuntimeDeps,
     runtimeConfig?: SessionRuntimeConfig,
     usageAggregator?: UsageAggregator,
+    usagePersistence?: UsagePersistence,
   ) {
     this.forkedAgentsEnabled = runtimeConfig?.forkedAgentsEnabled ?? true;
     this.hooksEnabled = runtimeConfig?.hooksEnabled ?? true;
@@ -63,6 +66,7 @@ export class SessionRuntime {
     this.hookRegistry = new PostTurnHookRegistry(runtimeConfig?.hookTimeoutMs ?? 30_000, deps.transcriptRecorder);
     this.usageTracker = new ConversationUsageTracker(state.conversationId);
     this.usageAggregator = usageAggregator;
+    this.usagePersistence = usagePersistence;
 
     // Register session memory extraction hook if enabled
     const smConfig = runtimeConfig?.sessionMemoryConfig;
@@ -116,6 +120,11 @@ export class SessionRuntime {
     this.state.touch();
     const reconcileResult = this.state.reconcileWithPlatformHistory(submission.history);
     if (reconcileResult === 'reseeded') {
+      // Clear stale session memory on reseed to prevent pollution from previous conversation
+      if (this.sessionMemory) {
+        await this.sessionMemory.clear().catch(() => {});
+      }
+
       const reseededEntry: SessionReseededEntry = {
         type: 'session_reseeded',
         conversationId: submission.conversationId,
@@ -171,9 +180,12 @@ export class SessionRuntime {
       // Update usage tracker tool call count from result
       this.usageTracker.setToolCallCount(result.toolCallCount);
 
-      // Sync conversation usage to aggregator
+      // Sync conversation usage to aggregator and persist
       if (this.usageAggregator) {
         this.usageAggregator.updateConversation(this.usageTracker.getUsage());
+      }
+      if (this.usagePersistence) {
+        this.usagePersistence.save(this.usageTracker.snapshot()).catch(() => {});
       }
 
       const completedEntry: TaskCompletedEntry = {
@@ -205,6 +217,19 @@ export class SessionRuntime {
     } finally {
       this.activeTurn = undefined;
       this.state.touch();
+    }
+  }
+
+  /** Restore usage state from persistence (call during cold start). */
+  async restoreUsage(): Promise<void> {
+    if (!this.usagePersistence) return;
+    try {
+      const snapshot = await this.usagePersistence.load(this.state.conversationId);
+      if (snapshot) {
+        this.usageTracker.restore(snapshot);
+      }
+    } catch {
+      // Best-effort — missing persistence should not block session creation
     }
   }
 

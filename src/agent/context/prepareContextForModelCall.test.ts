@@ -111,3 +111,66 @@ test('pipeline runs on every call (idempotent when nothing to compact)', async (
   assert.equal(r2.rewrote, false);
   assert.deepEqual(r1.messages, r2.messages);
 });
+
+// --- Track 02: Steps 4-5 pipeline extension tests ---
+
+test('pipeline triggers session memory compaction on projection pressure', async () => {
+  const compactedMsgs: Message[] = [
+    { role: 'assistant', content: '[compacted]', id: generateId(), synthetic: true },
+    { role: 'user', content: 'recent message', id: generateId() },
+  ];
+
+  const tinyBudget = new TokenBudget({
+    modelMetadata: {},
+    defaultContextWindowSize: 100,
+    defaultMaxOutputTokens: 20,
+    microcompactRatio: 0.1,
+    projectionRatio: 0.2,
+    overflowRatio: 0.9,
+    safetyMargin: 1.33,
+  });
+
+  const deps = {
+    ...makeDeps(),
+    tokenBudget: tinyBudget,
+    sessionMemoryCompact: {
+      tryCompact: async () => ({
+        messages: compactedMsgs,
+        preCompactTokens: 400,
+        postCompactTokens: 200,
+      }),
+    } as any,
+  };
+
+  // Create messages that exceed the tiny context window
+  const messages: Message[] = Array.from({ length: 20 }, (_, i) => ({
+    role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+    content: 'a'.repeat(50),
+    id: generateId(),
+  }));
+
+  const result = await prepareContextForModelCall(messages, 'test-model', undefined, 'conv-1', deps);
+
+  assert.equal(result.compactionType, 'projection');
+  assert.equal(result.rewrote, true);
+  assert.ok(result.tokensSaved > 0);
+});
+
+test('pipeline does not invoke session memory compact on nominal pressure', async () => {
+  let compactCalled = false;
+  const deps = {
+    ...makeDeps(),
+    sessionMemoryCompact: {
+      tryCompact: async () => {
+        compactCalled = true;
+        return null;
+      },
+    } as any,
+  };
+
+  const messages: Message[] = [
+    { role: 'user', content: 'hi', id: generateId() },
+  ];
+  await prepareContextForModelCall(messages, 'test-model', undefined, 'conv-1', deps);
+  assert.equal(compactCalled, false, 'Session memory compact should not be called on nominal pressure');
+});

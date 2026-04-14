@@ -10,10 +10,12 @@ import { TurnExecutor } from './TurnExecutor.js';
 import { TranscriptRecorder } from './transcript/TranscriptRecorder.js';
 import type { ITranscriptRecorder } from './transcript/types.js';
 import { UsageAggregator } from '../usage/UsageAggregator.js';
+import { UsagePersistence } from '../usage/UsagePersistence.js';
 import { ToolRegistry, createToolRegistry } from '../tools/registry.js';
 import { SkillRegistry } from '../skills/SkillRegistry.js';
 import { buildSkillListingSection } from '../skills/SkillListingBuilder.js';
 import { createCreatorSkillTool } from '../tools/CreatorSkillTool.js';
+import { createSubagentTool } from './subagent/SubagentTool.js';
 
 export interface SessionManagerDeps {
   getState?: () => ProcessRuntimeState;
@@ -29,6 +31,7 @@ export class SessionManager {
   private readonly storageDir: string;
   private readonly getProcessState: () => ProcessRuntimeState;
   readonly usageAggregator: UsageAggregator;
+  private readonly usagePersistence: UsagePersistence;
   private readonly skillRegistry?: SkillRegistry;
 
   constructor(
@@ -38,6 +41,7 @@ export class SessionManager {
     this.getProcessState = deps.getState ?? (() => initialProcessRuntimeState());
     this.transcriptRecorder = deps.transcriptRecorder ?? new TranscriptRecorder();
     this.usageAggregator = new UsageAggregator();
+    this.usagePersistence = new UsagePersistence(config.context.tool_result_persistence.storage_dir);
     if (deps.turnExecutor) {
       this.turnExecutor = deps.turnExecutor;
     } else {
@@ -65,6 +69,17 @@ export class SessionManager {
           parentToolRegistry: toolRegistry,
           defaultModelName: config.model.name,
           getSessionRuntime: (conversationId) => this.sessions.get(conversationId),
+          guardrailConfig: config.guardrails,
+        }));
+      }
+
+      // Register SubagentTool when enabled
+      if (config.subagents?.enabled) {
+        toolRegistry.register(createSubagentTool({
+          turnExecutor,
+          parentToolRegistry: toolRegistry,
+          modelName: config.model.name,
+          transcriptRecorder: this.transcriptRecorder,
         }));
       }
 
@@ -165,7 +180,12 @@ export class SessionManager {
       },
       this.runtimeConfig,
       this.usageAggregator,
+      this.usagePersistence,
     );
+
+    // Restore usage from persistence on cold start
+    await runtime.restoreUsage();
+
     this.sessions.set(submission.conversationId, runtime);
     return runtime;
   }

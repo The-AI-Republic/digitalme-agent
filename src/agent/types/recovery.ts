@@ -36,6 +36,8 @@ export interface RecoveryState {
   accumulatedText: string;
   fallbackAttempted: boolean;
   lastTransition: ContinuationReason | undefined;
+  /** Number of API retries attempted in the current recovery window. */
+  apiRetryCount: number;
 }
 
 export const RECOVERY_LIMITS = {
@@ -51,5 +53,6 @@ export function initialRecoveryState(): RecoveryState {
     accumulatedText: '',
     fallbackAttempted: false,
     lastTransition: undefined,
+    apiRetryCount: 0,
   };
 }

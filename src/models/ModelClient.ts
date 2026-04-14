@@ -49,6 +49,12 @@ export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Tokens read from provider cache (Anthropic). Billed at reduced rate. */
+  cacheReadTokens?: number;
+  /** Tokens written to provider cache (Anthropic). Billed at premium rate. */
+  cacheWriteTokens?: number;
+  /** Reasoning/thinking tokens (OpenAI o-series). */
+  thinkingTokens?: number;
 }
 
 export type ModelStepResult =

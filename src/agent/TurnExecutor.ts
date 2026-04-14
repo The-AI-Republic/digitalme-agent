@@ -46,6 +46,7 @@ import { CostAwareRouter } from '../usage/CostAwareRouter.js';
 import type { UsageAggregator } from '../usage/UsageAggregator.js';
 import { screenInput } from '../guardrails/InputScreener.js';
 import { validateOutput } from '../guardrails/OutputValidator.js';
+import type { QuotaWarningEvent } from '../usage/types.js';
 
 /** Shared signal that never fires — avoids per-call AbortController allocation. */
 const NEVER_ABORT = new AbortController().signal;
@@ -201,7 +202,21 @@ export class TurnExecutor {
       const usage = usageTracker.getUsage();
       const dailyCost = this.usageAggregator?.getDailyCost();
       const monthlyCost = this.usageAggregator?.getMonthlyCost();
+
+      // Collect quota warnings during evaluation
+      const pendingWarnings: QuotaWarningEvent[] = [];
+      const enforcer = this.costAwareRouter.getEnforcer();
+      const warningListener = (warning: QuotaWarningEvent) => { pendingWarnings.push(warning); };
+      if (enforcer) {
+        enforcer.onWarning(warningListener);
+      }
+
       const decision = this.costAwareRouter.evaluate(usage, dailyCost, monthlyCost);
+
+      // Emit any quota warnings as events
+      for (const warning of pendingWarnings) {
+        yield { type: 'quota_warning', quotaType: warning.quotaType, currentUsage: warning.currentUsage, limit: warning.limit, percentUsed: warning.percentUsed };
+      }
 
       if (!decision.allowed) {
         yield { type: 'quota_exceeded', reason: decision.quotaResult.reason ?? 'quota_exceeded', refusalMessage: decision.refusalMessage ?? '' };
@@ -301,34 +316,58 @@ export class TurnExecutor {
     }
 
     // --- Input guardrail: screen fan message before model call ---
+    // Skip guardrails for internal scope (e.g. forked skill executions, subagents)
     const guardrailConfig = this.config.guardrails;
-    let inputScreenResult;
-    try {
-      inputScreenResult = screenInput(submission.userMessage, guardrailConfig);
-    } catch {
-      // Fail-closed: if screener throws, block the message
-      inputScreenResult = { safe: false, category: 'error' as const, action: 'block' as const, matchedRule: 'screener_error' };
-    }
+    const guardrailScope = options?.guardrailScope ?? 'public';
 
-    if (!inputScreenResult.safe) {
-      yield {
-        type: 'guardrail_block',
-        phase: 'input',
-        category: inputScreenResult.category ?? 'unknown',
-        rule: inputScreenResult.matchedRule ?? 'unknown',
-      };
-      yield { type: 'text_delta', content: guardrailConfig.messages.input_blocked };
-      yield { type: 'done', terminalReason: { reason: 'completed' } };
-      spanEnded = true;
-      endSpan(interactionSpan, { 'terminal.reason': 'guardrail_input_blocked' });
-      return {
-        finalText: guardrailConfig.messages.input_blocked,
-        tokenUsage: undefined,
-        completedTurns: 0,
-        toolCallCount: 0,
-        newMessages: context.messages.slice(baselineLength),
-        interactionSpanContext: capturedSpanContext,
-      };
+    if (guardrailScope === 'public') {
+      let inputScreenResult;
+      try {
+        inputScreenResult = screenInput(submission.userMessage, guardrailConfig);
+      } catch {
+        // Fail-closed: if screener throws, block the message
+        inputScreenResult = { safe: false, category: 'error' as const, action: 'block' as const, matchedRule: 'screener_error' };
+      }
+
+      if (!inputScreenResult.safe) {
+        yield {
+          type: 'guardrail_block',
+          phase: 'input',
+          category: inputScreenResult.category ?? 'unknown',
+          rule: inputScreenResult.matchedRule ?? 'unknown',
+        };
+
+        // Persist refusal assistant text so history/transcript shape stays consistent
+        const refusalText = guardrailConfig.messages.input_blocked;
+        const refusalMsg: Message = {
+          role: 'assistant',
+          content: refusalText,
+          id: generateId(),
+          timestamp: new Date().toISOString(),
+          synthetic: true,
+        };
+        context.messages.push(refusalMsg);
+
+        if (recorder) {
+          await recorder.recordMessage(submission.conversationId, refusalMsg, {
+            taskId: submission.requestId,
+            turnId: activeTurn?.turnId,
+          });
+        }
+
+        yield { type: 'text_delta', content: refusalText };
+        yield { type: 'done', terminalReason: { reason: 'completed' } };
+        spanEnded = true;
+        endSpan(interactionSpan, { 'terminal.reason': 'guardrail_input_blocked' });
+        return {
+          finalText: refusalText,
+          tokenUsage: undefined,
+          completedTurns: 0,
+          toolCallCount: 0,
+          newMessages: context.messages.slice(baselineLength),
+          interactionSpanContext: capturedSpanContext,
+        };
+      }
     }
 
     try {
@@ -392,9 +431,40 @@ export class TurnExecutor {
           for (const event of error.recoveryEvents) {
             yield event;
           }
+          const cause = error.cause;
+          // Check if this was an abort
+          if (cause instanceof Error && (cause.message === 'request_aborted' || cause.name === 'AbortError')) {
+            yield { type: 'done', terminalReason: { reason: 'aborted', phase: 'streaming' } };
+            spanEnded = true;
+            endSpanWithError(interactionSpan, cause);
+            return {
+              finalText: recovery.accumulatedText || '',
+              tokenUsage: executionState.getTokenUsage(),
+              completedTurns: executionState.getIterationIndex(),
+              toolCallCount: executionState.snapshot().toolCallCount,
+              newMessages: context.messages.slice(baselineLength),
+              interactionSpanContext: capturedSpanContext,
+            };
+          }
+          // Unrecoverable model error
+          yield { type: 'done', terminalReason: { reason: 'model_error', error: cause instanceof Error ? cause.message : String(cause) } };
           spanEnded = true;
-          endSpanWithError(interactionSpan, error.cause);
-          throw error.cause;
+          endSpanWithError(interactionSpan, cause);
+          throw cause;
+        }
+        // Non-recovery error (e.g. abort during tools)
+        if (error instanceof Error && (error.message === 'request_aborted' || error.name === 'AbortError')) {
+          yield { type: 'done', terminalReason: { reason: 'aborted', phase: 'tools' } };
+          spanEnded = true;
+          endSpanWithError(interactionSpan, error);
+          return {
+            finalText: recovery.accumulatedText || '',
+            tokenUsage: executionState.getTokenUsage(),
+            completedTurns: executionState.getIterationIndex(),
+            toolCallCount: executionState.snapshot().toolCallCount,
+            newMessages: context.messages.slice(baselineLength),
+            interactionSpanContext: capturedSpanContext,
+          };
         }
         spanEnded = true;
         endSpanWithError(interactionSpan, error);
@@ -458,13 +528,61 @@ export class TurnExecutor {
       if (result.type === 'final_text' && result.truncated) {
         if (recovery.maxOutputRecoveryCount < RECOVERY_LIMITS.MAX_OUTPUT_RECOVERY_ATTEMPTS) {
           recovery.maxOutputRecoveryCount += 1;
+
+          // Validate partial text through guardrails before streaming (public scope only)
+          let partialText = result.text;
+          if (guardrailScope === 'public' && partialText) {
+            try {
+              const partialCheck = validateOutput(partialText, guardrailConfig);
+              if (partialCheck.action === 'block') {
+                // Partial text contains blocked content — abort recovery, return refusal
+                yield {
+                  type: 'guardrail_block',
+                  phase: 'output',
+                  category: partialCheck.violations[0]?.category ?? 'unknown',
+                  rule: partialCheck.violations[0]?.rule ?? 'unknown',
+                };
+                const blockedText = partialCheck.replacementResponse ?? guardrailConfig.messages.output_blocked;
+                yield { type: 'text_delta', content: blockedText };
+                yield { type: 'done', terminalReason: { reason: 'completed' } };
+                spanEnded = true;
+                endSpan(interactionSpan, { 'terminal.reason': 'guardrail_output_blocked_partial' });
+                return {
+                  finalText: blockedText,
+                  tokenUsage: result.tokenUsage,
+                  completedTurns: executionState.getIterationIndex(),
+                  toolCallCount: executionState.snapshot().toolCallCount,
+                  newMessages: context.messages.slice(baselineLength),
+                  interactionSpanContext: capturedSpanContext,
+                };
+              } else if (partialCheck.action === 'modify' && partialCheck.modifiedText !== undefined) {
+                partialText = partialCheck.modifiedText;
+              }
+            } catch {
+              // Fail-closed on validator error during recovery
+              const blockedText = guardrailConfig.messages.output_blocked;
+              yield { type: 'text_delta', content: blockedText };
+              yield { type: 'done', terminalReason: { reason: 'completed' } };
+              spanEnded = true;
+              endSpan(interactionSpan, { 'terminal.reason': 'guardrail_error_partial' });
+              return {
+                finalText: blockedText,
+                tokenUsage: result.tokenUsage,
+                completedTurns: executionState.getIterationIndex(),
+                toolCallCount: executionState.snapshot().toolCallCount,
+                newMessages: context.messages.slice(baselineLength),
+                interactionSpanContext: capturedSpanContext,
+              };
+            }
+          }
+
           // Emit partial text immediately so callers see progress
-          if (result.text) {
-            yield { type: 'text_delta', content: result.text };
+          if (partialText) {
+            yield { type: 'text_delta', content: partialText };
           }
           // Preserve the partial assistant text in the conversation for the model
-          context.messages.push({ role: 'assistant', content: result.text, id: generateId(), timestamp: new Date().toISOString() });
-          recovery.accumulatedText += result.text;
+          context.messages.push({ role: 'assistant', content: partialText, id: generateId(), timestamp: new Date().toISOString() });
+          recovery.accumulatedText += partialText;
           context.messages.push({
             role: 'user',
             content: 'Output limit reached. Resume exactly where you stopped.',
@@ -501,36 +619,38 @@ export class TurnExecutor {
       if (result.type === 'final_text') {
         let fullText = recovery.accumulatedText + result.text;
 
-        // --- Output guardrail: validate response before delivery ---
-        let outputResult;
-        try {
-          outputResult = validateOutput(fullText, guardrailConfig);
-        } catch {
-          // Fail-closed: if validator throws, block the response
-          outputResult = {
-            violations: [{ rule: 'validator_error', severity: 'critical' as const, category: 'error' as const }],
-            action: 'block' as const,
-            replacementResponse: guardrailConfig.messages.output_blocked,
-          };
-        }
-
-        if (outputResult.action === 'block') {
-          yield {
-            type: 'guardrail_block',
-            phase: 'output',
-            category: outputResult.violations[0]?.category ?? 'unknown',
-            rule: outputResult.violations[0]?.rule ?? 'unknown',
-          };
-          fullText = outputResult.replacementResponse ?? guardrailConfig.messages.output_blocked;
-        } else if (outputResult.action === 'modify' && outputResult.modifiedText !== undefined) {
-          for (const violation of outputResult.violations) {
-            yield {
-              type: 'guardrail_modify',
-              category: violation.category,
-              rule: violation.rule,
+        // --- Output guardrail: validate response before delivery (public scope only) ---
+        if (guardrailScope === 'public') {
+          let outputResult;
+          try {
+            outputResult = validateOutput(fullText, guardrailConfig);
+          } catch {
+            // Fail-closed: if validator throws, block the response
+            outputResult = {
+              violations: [{ rule: 'validator_error', severity: 'critical' as const, category: 'error' as const }],
+              action: 'block' as const,
+              replacementResponse: guardrailConfig.messages.output_blocked,
             };
           }
-          fullText = outputResult.modifiedText;
+
+          if (outputResult.action === 'block') {
+            yield {
+              type: 'guardrail_block',
+              phase: 'output',
+              category: outputResult.violations[0]?.category ?? 'unknown',
+              rule: outputResult.violations[0]?.rule ?? 'unknown',
+            };
+            fullText = outputResult.replacementResponse ?? guardrailConfig.messages.output_blocked;
+          } else if (outputResult.action === 'modify' && outputResult.modifiedText !== undefined) {
+            for (const violation of outputResult.violations) {
+              yield {
+                type: 'guardrail_modify',
+                category: violation.category,
+                rule: violation.rule,
+              };
+            }
+            fullText = outputResult.modifiedText;
+          }
         }
 
         // Push final assistant message to context
@@ -620,6 +740,8 @@ export class TurnExecutor {
       const activeExecutor = (toolRegistry === this.toolRegistry)
         ? this.toolExecutor
         : new ToolExecutor(toolRegistry, this.policyChecker);
+      // Wire OTEL parent span for tool tracing
+      activeExecutor.setParentSpan(interactionSpan);
       const recordsPromise = activeExecutor.runTools(
         result.calls, toolContext, resultBudget, callbacks,
       ).finally(() => toolEvents.close());
@@ -743,6 +865,7 @@ export class TurnExecutor {
         // Record success for health tracking
         this.modelRouter?.recordSuccess(currentProvider, request.model, Date.now() - startTime);
         recordModelCall(currentModel, true);
+        recovery.apiRetryCount = 0; // Reset on success
         if (attemptSpan) endSpan(attemptSpan);
         return { result, events };
       } catch (error) {
@@ -801,6 +924,7 @@ export class TurnExecutor {
         if ((category === 'rate_limit' || category === 'overloaded' || category === 'server_error')
             && attempt < RECOVERY_LIMITS.MAX_API_RETRIES) {
           await exponentialBackoff(attempt);
+          recovery.apiRetryCount += 1;
           recovery.lastTransition = {
             reason: 'api_retry',
             attempt: attempt + 1,

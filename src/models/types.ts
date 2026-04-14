@@ -70,3 +70,9 @@ export const DEFAULT_HEALTH_CONFIG: HealthTrackerConfig = {
   failureThreshold: 0.5,
   recoveryAfterSeconds: 60,
 };
+
+// --- Model capabilities (future use) ---
+// Intentionally omitted from implementation scope.
+// When model-specific capabilities (vision, function calling, streaming)
+// need to influence routing decisions, define a ModelCapability interface here
+// and add a `capabilities` field to the routing types above.

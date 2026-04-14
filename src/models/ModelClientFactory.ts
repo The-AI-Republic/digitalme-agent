@@ -78,7 +78,7 @@ export class ModelClientFactory {
 
 export interface IModelClientFactory {
   createClient(): ModelClient;
-  createFromConfig?(modelConfig: ModelConfig): ModelClient;
+  createFromConfig(modelConfig: ModelConfig): ModelClient;
   getRouter?(): ModelRouter;
 }
 

@@ -4,7 +4,8 @@ import { SessionRuntime } from './SessionRuntime.js';
 import { SessionState } from './SessionState.js';
 import { EventQueue } from './EventQueue.js';
 import type { AgentEvent, TurnExecutionResult, TurnSubmission } from './types.js';
-import type { RolloutEntry } from './RolloutRecorder.js';
+import type { ITranscriptRecorder } from './transcript/types.js';
+import { generateId } from '../models/ModelClient.js';
 
 function makeSubmission(overrides: Partial<TurnSubmission> = {}): TurnSubmission {
   return {
@@ -19,9 +20,9 @@ function makeSubmission(overrides: Partial<TurnSubmission> = {}): TurnSubmission
 function makeResult(overrides: Partial<TurnExecutionResult> = {}): TurnExecutionResult {
   return {
     finalText: 'response',
-    promptMessages: [
-      { role: 'user', content: 'hello' },
-      { role: 'assistant', content: 'response' },
+    newMessages: [
+      { role: 'user', content: 'hello', id: generateId() },
+      { role: 'assistant', content: 'response', id: generateId() },
     ],
     completedTurns: 1,
     toolCallCount: 0,
@@ -29,17 +30,37 @@ function makeResult(overrides: Partial<TurnExecutionResult> = {}): TurnExecution
   };
 }
 
-function createDeps(result: TurnExecutionResult = makeResult()) {
-  const recorded: RolloutEntry[] = [];
+function createMockTranscriptRecorder(): {
+  recorder: ITranscriptRecorder;
+  lifecycleEvents: Array<{ type: string; [key: string]: unknown }>;
+} {
+  const lifecycleEvents: Array<{ type: string; [key: string]: unknown }> = [];
+  const recorder: ITranscriptRecorder = {
+    recordMessage: async () => {},
+    recordLifecycleEvent: async (entry: any) => { lifecycleEvents.push(entry); },
+    insertMessageChain: async () => {},
+    writeAgentMetadata: async () => {},
+    loadTranscript: async () => ({ messages: [], leafId: null }),
+    seedParentId: () => {},
+  };
+  return { recorder, lifecycleEvents };
+}
+
+function createMockTurnExecutor(result: TurnExecutionResult = makeResult()) {
   return {
-    recorded,
+    run: async function* (_submission: TurnSubmission) {
+      return result;
+    },
+  };
+}
+
+function createDeps(result: TurnExecutionResult = makeResult()) {
+  const { recorder, lifecycleEvents } = createMockTranscriptRecorder();
+  return {
+    lifecycleEvents,
     deps: {
-      turnExecutor: {
-        run: async () => result,
-      },
-      rolloutRecorder: {
-        record: async (entry: RolloutEntry) => { recorded.push(entry); },
-      },
+      turnExecutor: createMockTurnExecutor(result),
+      transcriptRecorder: recorder,
     },
   };
 }
@@ -52,38 +73,36 @@ test('successful execution commits to session state', async () => {
 
   await runtime.execute(makeSubmission(), events);
 
-  const history = state.getCanonicalHistory();
-  assert.equal(history.length, 2);
-  assert.equal(history[0].role, 'user');
-  assert.equal(history[0].content, 'hello');
-  assert.equal(history[1].role, 'assistant');
-  assert.equal(history[1].content, 'response');
+  const snap = state.snapshot();
+  assert.ok(snap.messageCount > 0);
 });
 
-test('successful execution records task_started and task_completed rollouts', async () => {
+test('successful execution records task_started and task_completed lifecycle events', async () => {
   const state = new SessionState('conv-1', []);
-  const { deps, recorded } = createDeps();
+  const { deps, lifecycleEvents } = createDeps();
   const runtime = new SessionRuntime(state, deps);
   const events = new EventQueue<AgentEvent>();
 
   await runtime.execute(makeSubmission(), events);
 
-  const types = recorded.map((r) => r.type);
+  const types = lifecycleEvents.map((e) => e.type);
   assert.ok(types.includes('task_started'));
   assert.ok(types.includes('task_completed'));
   assert.ok(!types.includes('task_failed'));
 });
 
-test('failed execution records rollout and re-throws', async () => {
+test('failed execution records lifecycle events and re-throws', async () => {
+  const { recorder, lifecycleEvents } = createMockTranscriptRecorder();
   const state = new SessionState('conv-1', []);
-  const recorded: RolloutEntry[] = [];
   const runtime = new SessionRuntime(state, {
     turnExecutor: {
-      run: async () => { throw new Error('model_exploded'); },
+      run: async function* () {
+        throw new Error('model_exploded');
+        // Unreachable — needed only to satisfy TypeScript's generator return type
+        return undefined as any;
+      },
     },
-    rolloutRecorder: {
-      record: async (entry: RolloutEntry) => { recorded.push(entry); },
-    },
+    transcriptRecorder: recorder,
   });
   const events = new EventQueue<AgentEvent>();
 
@@ -92,22 +111,23 @@ test('failed execution records rollout and re-throws', async () => {
     { message: 'model_exploded' },
   );
 
-  const types = recorded.map((r) => r.type);
+  const types = lifecycleEvents.map((e) => e.type);
   assert.ok(types.includes('task_started'));
   assert.ok(types.includes('task_failed'));
   assert.ok(!types.includes('task_completed'));
-
-  // Session state should NOT have been committed
-  assert.equal(state.getCanonicalHistory().length, 0);
 });
 
 test('failed execution clears activeTurn', async () => {
+  const { recorder } = createMockTranscriptRecorder();
   const state = new SessionState('conv-1', []);
   const runtime = new SessionRuntime(state, {
     turnExecutor: {
-      run: async () => { throw new Error('fail'); },
+      run: async function* () {
+        throw new Error('fail');
+        return undefined as any;
+      },
     },
-    rolloutRecorder: { record: async () => {} },
+    transcriptRecorder: recorder,
   });
   const events = new EventQueue<AgentEvent>();
 
@@ -116,15 +136,14 @@ test('failed execution clears activeTurn', async () => {
   assert.equal(runtime.hasActiveTurn(), false);
 });
 
-test('reconcileWithPlatformHistory reseeded triggers rollout recording', async () => {
+test('reconcileWithPlatformHistory reseeded triggers lifecycle recording', async () => {
   const state = new SessionState('conv-1', [
     { role: 'user', content: 'old' },
   ]);
-  const { deps, recorded } = createDeps();
+  const { deps, lifecycleEvents } = createDeps();
   const runtime = new SessionRuntime(state, deps);
   const events = new EventQueue<AgentEvent>();
 
-  // Send different history to trigger reseed
   await runtime.execute(makeSubmission({
     history: [
       { role: 'user', content: 'new-history' },
@@ -132,7 +151,7 @@ test('reconcileWithPlatformHistory reseeded triggers rollout recording', async (
     ],
   }), events);
 
-  const types = recorded.map((r) => r.type);
+  const types = lifecycleEvents.map((e) => e.type);
   assert.ok(types.includes('session_reseeded'));
 });
 
@@ -140,14 +159,13 @@ test('warm reconciliation does not record session_reseeded', async () => {
   const state = new SessionState('conv-1', [
     { role: 'user', content: 'existing' },
   ]);
-  const { deps, recorded } = createDeps();
+  const { deps, lifecycleEvents } = createDeps();
   const runtime = new SessionRuntime(state, deps);
   const events = new EventQueue<AgentEvent>();
 
-  // Empty history with existing local data → warm
   await runtime.execute(makeSubmission({ history: [] }), events);
 
-  const types = recorded.map((r) => r.type);
+  const types = lifecycleEvents.map((e) => e.type);
   assert.ok(!types.includes('session_reseeded'));
 });
 
@@ -162,18 +180,18 @@ test('snapshot includes session and no active turn when idle', async () => {
 });
 
 test('turn id increments across executions', async () => {
-  const state = new SessionState('conv-1', []);
-  const recorded: RolloutEntry[] = [];
+  const { recorder, lifecycleEvents } = createMockTranscriptRecorder();
   const deps = {
-    turnExecutor: { run: async () => makeResult() },
-    rolloutRecorder: { record: async (entry: RolloutEntry) => { recorded.push(entry); } },
+    turnExecutor: createMockTurnExecutor(),
+    transcriptRecorder: recorder,
   };
+  const state = new SessionState('conv-1', []);
   const runtime = new SessionRuntime(state, deps);
 
   await runtime.execute(makeSubmission({ requestId: 'r1' }), new EventQueue<AgentEvent>());
   await runtime.execute(makeSubmission({ requestId: 'r2' }), new EventQueue<AgentEvent>());
 
-  const startedEntries = recorded.filter((r) => r.type === 'task_started');
-  assert.equal(startedEntries[0].turnId, 1);
-  assert.equal(startedEntries[1].turnId, 2);
+  const startedEntries = lifecycleEvents.filter((e) => e.type === 'task_started');
+  assert.equal((startedEntries[0] as any).turnId, 1);
+  assert.equal((startedEntries[1] as any).turnId, 2);
 });

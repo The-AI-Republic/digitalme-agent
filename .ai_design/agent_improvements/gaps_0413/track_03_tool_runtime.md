@@ -1,110 +1,123 @@
-# Track 03 (Tool Runtime) -- Gap Analysis
+# Track 03 -- Tool Runtime Remediation Plan
 
-## Executive Summary
+## Status
 
-Track 03 is **substantially complete**. All six steps from the design doc have been implemented. The core architecture -- `ToolExecutor`, policy boundary, result budgeting, concurrency batching, and session summary integration -- is in place and well tested. A few minor gaps remain.
+Track 03 is already implemented at the subsystem level. The remaining work is **targeted completion and cleanup**, not a fresh implementation of the original design.
 
----
+This document is implementation-ready and only covers the validated gaps that still matter in the current codebase.
 
-## Step 1: Extract ToolExecutor + Policy Boundary
+## Validated Remaining Gaps
 
-| Task | Status | Notes |
-|------|--------|-------|
-| Create `ToolExecutor.ts` | YES | 441 lines, fully implemented |
-| Create `ToolPolicyChecker.ts` | YES | `IToolPolicyChecker` interface + `DefaultToolPolicyChecker` |
-| Create execution types | YES | All specified types present |
-| TurnExecutor integration | YES | Inline dispatch replaced with `toolExecutor.runTools(...)` |
-| `TurnExecutor.executeTool()` deleted | YES | |
+### Gap 1: Schema generation is still ad hoc
 
-**Step 1 Verdict: COMPLETE.**
+- `src/tools/web-search.ts` uses a hand-rolled `zodToJsonSchema()` helper that only handles `ZodString`.
+- The original track explicitly called for `zod-to-json-schema` or an equivalent shared derivation path.
+- Risk:
+  - future tools with richer schemas will drift or expose incomplete JSON Schema to the model
+  - each tool may solve schema export differently
 
----
+### Gap 2: WebSearchTool coverage is shallow
 
-## Step 2: Richer Tool Interface + Structured Results + Registry Refactor
+- Existing tests validate schema shape, metadata, and summary behavior.
+- Existing tests do **not** cover:
+  - upstream success parsing
+  - `renderForModel()` output shape
+  - HTTP failure path
+  - invalid JSON / malformed upstream response
+- Risk:
+  - tool behavior can regress without failing tests
 
-| Task | Status | Notes |
-|------|--------|-------|
-| Extended `Tool<TInput>` interface | YES | All required fields present |
-| `ToolExecutionResult` with generic `TData` | YES | |
-| Registry refactor with factory | YES | `createToolRegistry(config)` |
-| Zod integration | YES | `zod` added as dependency |
-| `zod-to-json-schema` library | **NO** | Hand-rolled `zodToJsonSchema()` in `web-search.ts` only handles `ZodString` |
-| WebSearchTool migration | YES | Full structured result implementation |
-| CreatorSkillTool schema consistency | **PARTIAL** | Defines `definition.parameters` manually, not derived from `inputSchema` |
+### Gap 3: CreatorSkillTool schema export can drift from runtime schema
 
-**Gap:** The `zodToJsonSchema` function in `web-search.ts` is minimal and only handles `z.ZodString`. Won't scale as tools with richer schemas are added.
+- `src/tools/CreatorSkillTool.ts` defines `definition.function.parameters` manually.
+- `inputSchema` is defined separately with Zod.
+- Risk:
+  - the model-facing schema and runtime validator can diverge
 
-**Step 2 Verdict: SUBSTANTIALLY COMPLETE.** Missing `zod-to-json-schema` library.
+### Clarification: what is *not* a missing implementation gap
 
----
+- The repo **does** have TurnExecutor-level integration coverage for model -> `tool_calls` -> tool execution -> final text in `src/agent/TurnExecutor.test.ts`.
+- The remaining testing gap is narrower: richer end-to-end coverage for structured tool results and tool-specific failure/rendering behavior.
 
-## Step 3: Abort/Timeout Handling + Serial Result Budgeting
+## Remediation Scope
 
-| Task | Status | Notes |
-|------|--------|-------|
-| `ResultBudget.ts` | YES | Full implementation |
-| `truncateResult()` | YES | With newline-aware truncation |
-| Abort signal composition | YES | Per-tool timeout + request abort |
-| Error classification (all 6 categories) | YES | |
-| Serial budget enforcement | YES | |
+Implement the following only:
 
-**Step 3 Verdict: COMPLETE.**
+1. Standardize Zod -> JSON Schema derivation for tools.
+2. Upgrade `WebSearchTool` tests to cover real execution paths.
+3. Remove manual schema duplication in `CreatorSkillTool`.
 
----
+Do **not** re-open completed ToolExecutor architecture work in this pass.
 
-## Step 4: Concurrency Safety + Batch Partitioning
+## Implementation Plan
 
-| Task | Status | Notes |
-|------|--------|-------|
-| Preprocessing step | YES | `preprocessCalls()` |
-| Batch partitioning | YES | `partitionIntoBatches()` |
-| `Promise.allSettled()` for concurrent | YES | With worker pool and `MAX_CONCURRENCY = 5` |
-| Original call order preserved | YES | Pre-allocated results array |
-| Real-time event callbacks | YES | |
+### Step 1: Introduce shared schema derivation
 
-**Step 4 Verdict: COMPLETE.**
+**Target files**
+- `src/tools/web-search.ts`
+- `src/tools/CreatorSkillTool.ts`
+- optionally a new shared helper such as `src/tools/schema.ts`
+- `package.json`
 
----
+**Changes**
+- Add `zod-to-json-schema` dependency, or add one shared equivalent helper if the team prefers no new dependency.
+- Replace the local `zodToJsonSchema()` in `web-search.ts` with the shared derivation path.
+- Use the same derivation path for `CreatorSkillTool.definition.function.parameters`.
 
-## Step 5: Concurrent Aggregate Budget Normalization
+**Acceptance criteria**
+- No tool in the current repo manually hand-builds JSON Schema while also owning a Zod `inputSchema`.
+- `web_search` and `CreatorSkill` definitions are both derived from their runtime schemas.
 
-| Task | Status | Notes |
-|------|--------|-------|
-| `normalizeBatch()` | YES | Largest-first truncation |
-| `result.data` never truncated | YES | |
-| Deterministic behavior | YES | Tested |
+### Step 2: Expand WebSearchTool tests
 
-**Step 5 Verdict: COMPLETE.**
+**Target files**
+- `src/tools/web-search.test.ts`
 
----
+**Changes**
+- Add tests that mock `fetch` and verify:
+  - successful upstream response produces structured `data`
+  - `renderForModel()` includes heading/abstract/results as expected
+  - non-2xx response returns `success: false`
+  - invalid JSON response returns `success: false`
+- Keep the current lightweight schema/metadata tests.
 
-## Step 6: Session/Prompt Integration for Tool Summaries
+**Acceptance criteria**
+- `WebSearchTool.execute()` success and failure paths are directly covered.
+- `renderForModel()` behavior is asserted from actual execution results, not only from synthetic fixtures.
 
-| Task | Status | Notes |
-|------|--------|-------|
-| Every record includes `summary` | YES | |
-| `tool.summarizeResult()` used when provided | YES | |
-| `SessionState` stores tool-use summaries | YES | |
-| Summary storage separate from model-facing content | YES | |
+### Step 3: Eliminate CreatorSkillTool schema duplication
 
-**Step 6 Verdict: COMPLETE.**
+**Target files**
+- `src/tools/CreatorSkillTool.ts`
+- `src/tools/CreatorSkillTool.test.ts`
 
----
+**Changes**
+- Derive `definition.function.parameters` from `creatorSkillInputSchema`.
+- Keep tool behavior unchanged.
+- Add or update a test that confirms the exported parameters remain aligned with the Zod schema.
 
-## Remaining Gaps
+**Acceptance criteria**
+- `CreatorSkillTool` has one source of truth for input shape.
+- Existing CreatorSkillTool behavior and tests remain green.
 
-### Missing (NO)
+## Test Plan
 
-1. **`zod-to-json-schema` library dependency** -- Minimal hand-rolled function only supports `ZodString`. Won't scale.
-2. **WebSearchTool structured result tests** -- No test exercises actual HTTP for structured data return, `renderForModel()`, or failure paths.
-3. **Full TurnExecutor integration test** -- No test exercises model -> tool_calls -> executor -> tool result -> model final text loop.
+Run at minimum:
 
-### Partial
+- `node --loader ts-node/esm --test src/tools/web-search.test.ts`
+- `node --loader ts-node/esm --test src/tools/CreatorSkillTool.test.ts`
+- `node --loader ts-node/esm --test src/tools/execution/ToolExecutor.test.ts`
+- `node --loader ts-node/esm --test src/agent/TurnExecutor.test.ts`
 
-1. **CreatorSkillTool schema drift risk** -- `definition.parameters` defined manually rather than derived from `inputSchema`.
+## Out of Scope
 
-### Deviations (Acceptable)
+- Reworking ToolExecutor architecture
+- Replacing callback-based execution with an async generator boundary
+- Reopening policy/runtime design decisions already landed
+- Adding new tools beyond what the current validated gaps require
 
-1. Promise-based execution with callbacks instead of async generator yield pattern -- reasonable simplification.
-2. Worker pool pattern with `MAX_CONCURRENCY` cap -- improvement over naive `Promise.allSettled`.
-3. `policyConfig: {}` at call site -- plumbing exists but no real policy config threaded yet.
+## Source References
+
+- Gap analysis source: `gaps_0413/track_03_tool_runtime.md` (this file supersedes the earlier wording)
+- Original design: `agent_improvements/03_tool_runtime/IMPLEMENTATION_PLAN.md`
+- Original task inventory: `agent_improvements/03_tool_runtime/tasks.md`

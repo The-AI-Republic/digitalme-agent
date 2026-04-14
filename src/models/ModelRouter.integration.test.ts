@@ -178,6 +178,7 @@ test('TurnExecutor works without router (backwards compatible)', async () => {
     systemPromptBuilder: makeFakeBuilder(),
     modelClientFactory: {
       createClient: () => primaryClient,
+      createFromConfig: () => primaryClient,
     },
   });
 
@@ -206,6 +207,7 @@ test('TurnExecutor does not auto-enable router for fallback_model-only configs',
     systemPromptBuilder: makeFakeBuilder(),
     modelClientFactory: {
       createClient: () => primaryClient,
+      createFromConfig: () => primaryClient,
     },
   });
 

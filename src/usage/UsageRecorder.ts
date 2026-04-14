@@ -73,6 +73,8 @@ export class UsageRecorder {
       model,
       tokenUsage.inputTokens,
       tokenUsage.outputTokens,
+      tokenUsage.cacheReadTokens ?? 0,
+      tokenUsage.cacheWriteTokens ?? 0,
     );
 
     const record: ModelUsageRecord = {
@@ -85,6 +87,9 @@ export class UsageRecorder {
       executionContext: this.options.executionContext ?? 'main',
       inputTokens: tokenUsage.inputTokens,
       outputTokens: tokenUsage.outputTokens,
+      cacheReadTokens: tokenUsage.cacheReadTokens,
+      cacheWriteTokens: tokenUsage.cacheWriteTokens,
+      thinkingTokens: tokenUsage.thinkingTokens,
       estimatedCostUsd,
       turnNumber: this.turnNumber,
       toolCallCount: this.toolCallCount,
