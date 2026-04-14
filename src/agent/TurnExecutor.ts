@@ -57,7 +57,7 @@ export class TurnExecutor {
     }
 
     if (!inputScreenResult.safe) {
-      console.log(`[guardrail] input blocked: category=${inputScreenResult.category ?? 'unknown'} rule=${inputScreenResult.matchedRule ?? 'unknown'}`);
+      console.log(`[guardrail] input blocked: category=${inputScreenResult.category ?? 'unknown'}`);
       events.push({
         type: 'guardrail_block',
         phase: 'input',
@@ -101,14 +101,14 @@ export class TurnExecutor {
         } catch {
           // Fail-closed: if validator throws, block the response
           outputResult = {
-            violations: [{ rule: 'validator_error', severity: 'critical' as const, category: 'blocked_keyword' as const }],
+            violations: [{ rule: 'validator_error', severity: 'critical' as const, category: 'error' as const }],
             action: 'block' as const,
             replacementResponse: guardrailConfig.messages.output_blocked,
           };
         }
 
         if (outputResult.action === 'block') {
-          console.log(`[guardrail] output blocked: violations=${outputResult.violations.map((v) => v.rule).join(',')}`);
+          console.log(`[guardrail] output blocked: categories=${outputResult.violations.map((v) => v.category).join(',')}`);
           events.push({
             type: 'guardrail_block',
             phase: 'output',
@@ -117,7 +117,7 @@ export class TurnExecutor {
           });
           finalText = outputResult.replacementResponse ?? guardrailConfig.messages.output_blocked;
         } else if (outputResult.action === 'modify' && outputResult.modifiedText !== undefined) {
-          console.log(`[guardrail] output modified: violations=${outputResult.violations.map((v) => v.rule).join(',')}`);
+          console.log(`[guardrail] output modified: categories=${outputResult.violations.map((v) => v.category).join(',')}`);
           finalText = outputResult.modifiedText;
         }
 

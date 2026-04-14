@@ -17,12 +17,12 @@ export const JAILBREAK_PATTERNS: readonly GuardrailPattern[] = [
   },
   {
     name: 'role_reassignment',
-    regex: /you\s+are\s+now\s+/i,
+    regex: /you\s+are\s+now\s+(an?\s+)?(different|unrestricted|uncensored|jailbroken|unfiltered|rogue|evil)\b/i,
     category: 'jailbreak',
   },
   {
     name: 'dan_mode',
-    regex: /\bDAN\b/,
+    regex: /\bDAN\b/i,
     category: 'jailbreak',
   },
   {

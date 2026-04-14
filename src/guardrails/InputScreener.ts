@@ -39,11 +39,12 @@ export function screenInput(message: string, config: GuardrailConfig): InputScre
     }
   }
 
-  // 3. Blocked keywords (case-insensitive substring)
+  // 3. Blocked keywords (case-insensitive, word-boundary match)
   if (config.blocked_keywords.length > 0) {
-    const lower = message.toLowerCase();
     for (const keyword of config.blocked_keywords) {
-      if (lower.includes(keyword.toLowerCase())) {
+      const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`\\b${escaped}\\b`, 'i');
+      if (pattern.test(message)) {
         return {
           safe: false,
           category: 'blocked_keyword',

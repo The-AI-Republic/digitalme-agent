@@ -14,7 +14,7 @@ export type ViolationSeverity = 'critical' | 'medium' | 'low';
 export interface Violation {
   rule: string;
   severity: ViolationSeverity;
-  category: 'blocked_keyword' | 'pii' | 'external_link' | 'length';
+  category: 'blocked_keyword' | 'pii' | 'external_link' | 'length' | 'error';
 }
 
 export interface OutputValidationResult {

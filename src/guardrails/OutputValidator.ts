@@ -13,11 +13,12 @@ export function validateOutput(text: string, config: GuardrailConfig): OutputVal
 
   const violations: Violation[] = [];
 
-  // 1. Blocked keywords — critical
+  // 1. Blocked keywords — critical (word-boundary match)
   if (config.blocked_keywords.length > 0) {
-    const lower = text.toLowerCase();
     for (const keyword of config.blocked_keywords) {
-      if (lower.includes(keyword.toLowerCase())) {
+      const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`\\b${escaped}\\b`, 'i');
+      if (pattern.test(text)) {
         violations.push({
           rule: keyword,
           severity: 'critical',
