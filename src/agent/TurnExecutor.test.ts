@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { TurnExecutor } from './TurnExecutor.js';
 import type { CompletionRequest, ModelStepResult, ModelClient } from '../models/ModelClient.js';
+import { ModelRouter } from '../models/ModelRouter.js';
 import type { AgentEvent, TurnSubmission, TurnExecutionResult, ExecutionOptions } from './types.js';
 import { consumeGenerator } from './types.js';
 import type { ToolExecutionResult, Tool, ToolDefinition, ToolMetadata } from '../tools/types.js';
@@ -222,10 +223,16 @@ test('TurnExecutor ends the loop when the model returns final assistant text', a
 
   const { events } = await collectEvents(executor.run(submission));
 
-  assert.deepEqual(events, [
+  // Filter out usage events (tested separately in usage module tests)
+  const coreEvents = events.filter(e => e.type !== 'usage');
+  assert.deepEqual(coreEvents, [
     { type: 'text_delta', content: 'final answer' },
     { type: 'done', truncated: undefined, tokenUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }, terminalReason: { reason: 'completed' } },
   ]);
+
+  // Verify a usage event was emitted
+  const usageEvents = events.filter(e => e.type === 'usage');
+  assert.equal(usageEvents.length, 1);
 });
 
 test('TurnExecutor continues after a tool call and ends on the next final text step', async () => {
@@ -258,7 +265,9 @@ test('TurnExecutor continues after a tool call and ends on the next final text s
 
   const { events } = await collectEvents(executor.run(submission));
 
-  assert.deepEqual(events, [
+  // Filter out usage events (tested separately in usage module tests)
+  const coreEvents = events.filter(e => e.type !== 'usage');
+  assert.deepEqual(coreEvents, [
     { type: 'tool_start', name: 'test_tool', callId: 'call-1' },
     { type: 'tool_end', name: 'test_tool', callId: 'call-1', success: true },
     { type: 'text_delta', content: 'tool-informed answer' },
@@ -535,6 +544,56 @@ test('ExecutionOptions.model overrides config default', async () => {
 
   await collectEvents(executor.run(
     { requestId: 'req-mdl', conversationId: 'conv-mdl', userMessage: 'hi', history: [] },
+    { model: 'gpt-4o-mini' },
+  ));
+
+  assert.equal(client.requests[0]?.model, 'gpt-4o-mini');
+});
+
+test('ExecutionOptions.model bypasses router resolution when a router is injected', async () => {
+  const client = new FakeModelClient([
+    { type: 'final_text', text: 'ok' },
+  ]);
+  const router = new ModelRouter({
+    ...config,
+    routing: {
+      ...config.routing,
+      task_models: {
+        ...config.routing.task_models,
+        summary: {
+          provider: 'openai',
+          name: 'gpt-4o-mini',
+          api_key: 'summary-key',
+          base_url: null,
+          max_output_tokens: 4096,
+        },
+      },
+    },
+  }, {
+    createClient() {
+      return client;
+    },
+    createFromConfig() {
+      return client;
+    },
+  });
+
+  const executor = new TurnExecutor(config, {
+    systemPromptBuilder: makeFakeBuilder(),
+    modelClientFactory: {
+      createClient() {
+        return client;
+      },
+      getRouter() {
+        return router;
+      },
+    },
+    modelRouter: router,
+    toolRegistry: makeToolRegistry(makeFakeTool()),
+  });
+
+  await collectEvents(executor.run(
+    { requestId: 'req-mdl-router', conversationId: 'conv-mdl-router', userMessage: 'hi', history: [] },
     { model: 'gpt-4o-mini' },
   ));
 

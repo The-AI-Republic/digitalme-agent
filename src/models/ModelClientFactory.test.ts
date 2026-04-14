@@ -29,6 +29,10 @@ function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfi
       base_url: null,
       heartbeat_interval_seconds: 20,
     },
+    skills: {
+      bundled_dir: './skills',
+      local_dir: '/app/skills-local',
+    },
     model: {
       provider: modelProvider,
       name: 'test-model',
@@ -60,6 +64,8 @@ function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfi
       reactive_compact: { max_retries: 1, aggressive_preserve_messages: 3 },
       max_output_recovery: { max_retries: 2 },
     },
+    quotas: { enabled: false, on_quota_exceeded: 'graceful_refuse', quota_warning_threshold: 0.8 },
+    routing: { task_models: {}, health: { enabled: true, window_size: 20, failure_threshold: 0.5, recovery_after_seconds: 60 } },
     forked_agents: { enabled: true, max_concurrent: 2 },
     hooks: { post_turn: { enabled: true, timeout_ms: 30000 } },
   };
@@ -90,4 +96,32 @@ test('ModelClientFactory creates OpenAI-compatible clients for compatible provid
 test('ModelClientFactory reuses a client instance across calls', () => {
   const factory = new ModelClientFactory(makeConfig('openai'));
   assert.equal(factory.createClient(), factory.createClient());
+});
+
+test('ModelClientFactory.createFromConfig creates a fresh client', () => {
+  const factory = new ModelClientFactory(makeConfig('openai'));
+  const singleton = factory.createClient();
+  const fresh = factory.createFromConfig({
+    provider: 'anthropic',
+    name: 'claude-sonnet',
+    api_key: 'key',
+    base_url: null,
+    max_output_tokens: 8192,
+  });
+  assert.ok(fresh instanceof AnthropicClient);
+  assert.notEqual(singleton, fresh);
+});
+
+test('ModelClientFactory.getRouter returns a ModelRouter', () => {
+  const factory = new ModelClientFactory(makeConfig('openai'));
+  const router = factory.getRouter();
+  assert.ok(router);
+  assert.equal(typeof router.resolve, 'function');
+});
+
+test('ModelClientFactory.getRouter returns the same instance on subsequent calls', () => {
+  const factory = new ModelClientFactory(makeConfig('openai'));
+  const router1 = factory.getRouter();
+  const router2 = factory.getRouter();
+  assert.equal(router1, router2);
 });

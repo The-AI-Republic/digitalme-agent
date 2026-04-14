@@ -3,6 +3,8 @@ import type { Message, TokenUsage } from '../models/ModelClient.js';
 import type { IToolRegistry } from '../tools/registry.js';
 import type { TurnExecutor } from './TurnExecutor.js';
 import type { TerminalReason } from './types/recovery.js';
+import type { ModelUsageRecord, QuotaWarningEvent as UsageQuotaWarning } from '../usage/types.js';
+import type { SpanContext } from '@opentelemetry/api';
 
 export interface TurnSubmission {
   requestId: string;
@@ -19,7 +21,10 @@ export type AgentEvent =
   | { type: 'tool_end'; name: string; callId: string; success: boolean }
   | { type: 'done'; truncated?: boolean; tokenUsage?: TokenUsage; terminalReason?: TerminalReason }
   | { type: 'error'; message: string }
-  | { type: 'recovery'; reason: string; detail?: Record<string, unknown> };
+  | { type: 'recovery'; reason: string; detail?: Record<string, unknown> }
+  | { type: 'usage'; record: ModelUsageRecord }
+  | { type: 'quota_warning'; quotaType: string; currentUsage: number; limit: number; percentUsed: number }
+  | { type: 'quota_exceeded'; reason: string; refusalMessage: string };
 
 export interface ToolSummaryEntry {
   callId: string;
@@ -37,6 +42,8 @@ export interface TurnExecutionResult {
   toolCallCount: number;
   /** Tool-use summaries for logging/monitoring and future prompt projection. NOT model-facing. */
   toolSummaries?: ToolSummaryEntry[];
+  /** Span context of the interaction that produced this result — used to link fork/hook spans. */
+  interactionSpanContext?: SpanContext;
 }
 
 export interface ExecutionOptions {
@@ -48,11 +55,16 @@ export interface ExecutionOptions {
   model?: string;
   /** Override tool registry (default: constructor-injected registry) */
   toolRegistry?: IToolRegistry;
+  /** Optional guardrail scope for future fan-facing vs internal policy separation. */
+  guardrailScope?: 'public' | 'internal';
 }
 
 export type TurnExecutorLike = {
   run: TurnExecutor['run'];
 };
+
+/** Re-exported for downstream consumers that need the import type without circular deps. */
+export type { ModelUsageRecord } from '../usage/types.js';
 
 export interface ForkedAgentConfig {
   forkLabel: string;

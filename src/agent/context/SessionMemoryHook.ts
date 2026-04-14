@@ -58,6 +58,7 @@ export function createSessionMemoryHook(sessionMemory: SessionMemory) {
       forkSemaphore: hookContext.forkSemaphore,
       config: { forkLabel: 'session_memory', skipTranscript: true },
       transcriptRecorder: hookContext.transcriptRecorder,
+      interactionSpanContext: hookContext.interactionSpanContext,
       onResult: async (result) => {
         if (result.finalText) {
           await sessionMemory.completeExtraction(result.finalText);

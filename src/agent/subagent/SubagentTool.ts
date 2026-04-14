@@ -4,17 +4,25 @@ import { generateId } from '../../models/ModelClient.js';
 import type { IToolRegistry } from '../../tools/registry.js';
 import type { Tool, ToolContext, ToolDefinition, ToolExecutionResult, ToolMetadata } from '../../tools/types.js';
 import { DEFAULT_TOOL_METADATA } from '../../tools/types.js';
-import type { AgentEvent, ExecutionOptions, TurnExecutionResult, TurnExecutorLike, TurnSubmission } from '../types.js';
+import type { AgentEvent, ExecutionOptions, TurnExecutorLike, TurnSubmission } from '../types.js';
 import { consumeGenerator } from '../types.js';
 import type { AgentDefinition } from './AgentDefinition.js';
 import { getBuiltInAgent } from './BuiltInAgents.js';
-import type { ITranscriptRecorder } from '../transcript/types.js';
+import type {
+  ITranscriptRecorder,
+  SubagentStartedEntry,
+  SubagentCompletedEntry,
+  SubagentFailedEntry,
+} from '../transcript/types.js';
+import { startSubagentSpan, endSpan, endSpanWithError } from '../../telemetry/spans.js';
+import type { Span } from '@opentelemetry/api';
 
 export interface SubagentToolDeps {
   turnExecutor: TurnExecutorLike;
   parentToolRegistry: IToolRegistry;
   modelName: string;
   transcriptRecorder?: ITranscriptRecorder;
+  interactionSpan?: Span;
 }
 
 const subagentInputSchema = z.object({
@@ -136,11 +144,37 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool<SubagentInput> 
         ],
       };
 
+      const toolCount = toolRegistry.listNames().length;
+      const recorder = deps.transcriptRecorder;
+
+      // Record subagent_started
+      if (recorder) {
+        const startedEntry: SubagentStartedEntry = {
+          type: 'subagent_started',
+          conversationId: context.conversationId,
+          taskId: submission.requestId,
+          timestamp: new Date().toISOString(),
+          subagentType: args.subagent_type,
+          model: modelName,
+          toolCount,
+        };
+        recorder.recordLifecycleEvent(startedEntry).catch(() => {});
+      }
+
+      const startTime = Date.now();
+
+      // Start a child span for the subagent (if parent interaction span available)
+      const subagentSpan = deps.interactionSpan
+        ? startSubagentSpan(args.subagent_type, modelName, deps.interactionSpan)
+        : undefined;
+
       try {
         const result = await consumeGenerator(
           deps.turnExecutor.run(submission, options),
           (_event: AgentEvent) => { /* discard */ },
         );
+
+        const durationMs = Date.now() - startTime;
 
         // Record sidechain transcript for the subagent's internal history
         if (deps.transcriptRecorder && result.newMessages.length > 0) {
@@ -163,12 +197,60 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool<SubagentInput> 
           }
         }
 
+        // Record subagent_completed
+        if (recorder) {
+          const completedEntry: SubagentCompletedEntry = {
+            type: 'subagent_completed',
+            conversationId: context.conversationId,
+            taskId: submission.requestId,
+            timestamp: new Date().toISOString(),
+            subagentType: args.subagent_type,
+            tokenUsage: result.tokenUsage,
+            toolCallCount: result.toolCallCount,
+            completedTurns: result.completedTurns,
+            durationMs,
+            model: modelName,
+          };
+          recorder.recordLifecycleEvent(completedEntry).catch(() => {});
+        }
+
+        // End subagent span
+        if (subagentSpan) {
+          endSpan(subagentSpan, {
+            'subagent.type': args.subagent_type,
+            'subagent.duration_ms': durationMs,
+            'subagent.tool_call_count': result.toolCallCount,
+            'model.name': modelName,
+          });
+        }
+
         return {
           success: true,
           data: { finalText: result.finalText },
           renderForModel: () => result.finalText,
         };
       } catch (err) {
+        // Record subagent_failed
+        if (recorder) {
+          const failedEntry: SubagentFailedEntry = {
+            type: 'subagent_failed',
+            conversationId: context.conversationId,
+            taskId: submission.requestId,
+            timestamp: new Date().toISOString(),
+            subagentType: args.subagent_type,
+            error: err instanceof Error ? err.message : String(err),
+          };
+          recorder.recordLifecycleEvent(failedEntry).catch(() => {});
+        }
+
+        // End subagent span with error
+        if (subagentSpan) {
+          endSpanWithError(subagentSpan, err, {
+            'subagent.type': args.subagent_type,
+            'subagent.duration_ms': Date.now() - startTime,
+          });
+        }
+
         const errorMsg = `Subagent failed: ${err instanceof Error ? err.message : String(err)}`;
         return {
           success: false,

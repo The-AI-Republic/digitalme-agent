@@ -55,4 +55,14 @@ export const PROMPT_SECTIONS: PromptSectionDefinition[] = [
     cachePolicy: 'volatile',
     boundary: 'dynamic',
   },
+  {
+    name: 'skills',
+    template: 'skills',
+    buildTemplateVars: (ctx) => ({
+      skillListing: ctx.skillListing ?? '',
+    }),
+    cachePolicy: 'volatile',
+    boundary: 'dynamic',
+    enabledWhen: (ctx) => Boolean(ctx.skillListing),
+  },
 ];
