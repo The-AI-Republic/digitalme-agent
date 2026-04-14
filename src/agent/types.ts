@@ -24,7 +24,9 @@ export type AgentEvent =
   | { type: 'recovery'; reason: string; detail?: Record<string, unknown> }
   | { type: 'usage'; record: ModelUsageRecord }
   | { type: 'quota_warning'; quotaType: string; currentUsage: number; limit: number; percentUsed: number }
-  | { type: 'quota_exceeded'; reason: string; refusalMessage: string };
+  | { type: 'quota_exceeded'; reason: string; refusalMessage: string }
+  | { type: 'guardrail_block'; phase: 'input' | 'output'; category: string; rule: string }
+  | { type: 'guardrail_modify'; category: string; rule: string };
 
 export interface ToolSummaryEntry {
   callId: string;

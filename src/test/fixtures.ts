@@ -114,4 +114,24 @@ export const testConfig: AgentConfig = {
       timeout_ms: 30000,
     },
   },
+  guardrails: {
+    enabled: false,
+    blocked_keywords: [],
+    response_rules: {
+      max_response_length: 2000,
+      block_external_links: false,
+    },
+    pii_detection: {
+      enabled: false,
+      block_in_input: true,
+      block_in_output: true,
+    },
+    jailbreak_detection: {
+      enabled: false,
+    },
+    messages: {
+      input_blocked: "I can't respond to that. Let me know if there's something else I can help with!",
+      output_blocked: "Sorry, I wasn't able to generate a suitable response. Please try again.",
+    },
+  },
 };

@@ -44,6 +44,8 @@ import { UsageRecorder } from '../usage/UsageRecorder.js';
 import { ConversationUsageTracker } from '../usage/ConversationUsageTracker.js';
 import { CostAwareRouter } from '../usage/CostAwareRouter.js';
 import type { UsageAggregator } from '../usage/UsageAggregator.js';
+import { screenInput } from '../guardrails/InputScreener.js';
+import { validateOutput } from '../guardrails/OutputValidator.js';
 
 /** Shared signal that never fires — avoids per-call AbortController allocation. */
 const NEVER_ABORT = new AbortController().signal;
@@ -298,6 +300,37 @@ export class TurnExecutor {
       });
     }
 
+    // --- Input guardrail: screen fan message before model call ---
+    const guardrailConfig = this.config.guardrails;
+    let inputScreenResult;
+    try {
+      inputScreenResult = screenInput(submission.userMessage, guardrailConfig);
+    } catch {
+      // Fail-closed: if screener throws, block the message
+      inputScreenResult = { safe: false, category: 'error' as const, action: 'block' as const, matchedRule: 'screener_error' };
+    }
+
+    if (!inputScreenResult.safe) {
+      yield {
+        type: 'guardrail_block',
+        phase: 'input',
+        category: inputScreenResult.category ?? 'unknown',
+        rule: inputScreenResult.matchedRule ?? 'unknown',
+      };
+      yield { type: 'text_delta', content: guardrailConfig.messages.input_blocked };
+      yield { type: 'done', terminalReason: { reason: 'completed' } };
+      spanEnded = true;
+      endSpan(interactionSpan, { 'terminal.reason': 'guardrail_input_blocked' });
+      return {
+        finalText: guardrailConfig.messages.input_blocked,
+        tokenUsage: undefined,
+        completedTurns: 0,
+        toolCallCount: 0,
+        newMessages: context.messages.slice(baselineLength),
+        interactionSpanContext: capturedSpanContext,
+      };
+    }
+
     try {
     while (executionState.getIterationIndex() < maxTurns) {
       this.throwIfAborted(context.signal);
@@ -466,7 +499,39 @@ export class TurnExecutor {
 
       // --- Normal final text ---
       if (result.type === 'final_text') {
-        const fullText = recovery.accumulatedText + result.text;
+        let fullText = recovery.accumulatedText + result.text;
+
+        // --- Output guardrail: validate response before delivery ---
+        let outputResult;
+        try {
+          outputResult = validateOutput(fullText, guardrailConfig);
+        } catch {
+          // Fail-closed: if validator throws, block the response
+          outputResult = {
+            violations: [{ rule: 'validator_error', severity: 'critical' as const, category: 'error' as const }],
+            action: 'block' as const,
+            replacementResponse: guardrailConfig.messages.output_blocked,
+          };
+        }
+
+        if (outputResult.action === 'block') {
+          yield {
+            type: 'guardrail_block',
+            phase: 'output',
+            category: outputResult.violations[0]?.category ?? 'unknown',
+            rule: outputResult.violations[0]?.rule ?? 'unknown',
+          };
+          fullText = outputResult.replacementResponse ?? guardrailConfig.messages.output_blocked;
+        } else if (outputResult.action === 'modify' && outputResult.modifiedText !== undefined) {
+          for (const violation of outputResult.violations) {
+            yield {
+              type: 'guardrail_modify',
+              category: violation.category,
+              rule: violation.rule,
+            };
+          }
+          fullText = outputResult.modifiedText;
+        }
 
         // Push final assistant message to context
         const finalMsg: Message = {
@@ -485,8 +550,8 @@ export class TurnExecutor {
           });
         }
 
-        if (result.text) {
-          yield { type: 'text_delta', content: result.text };
+        if (fullText) {
+          yield { type: 'text_delta', content: fullText };
         }
         yield { type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage, terminalReason: { reason: 'completed' } };
         recordTurnCompleted(modelName, Date.now() - turnStartTime, true);
