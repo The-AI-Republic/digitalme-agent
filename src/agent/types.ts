@@ -15,7 +15,8 @@ export type AgentEvent =
   | { type: 'tool_start'; name: string; callId: string }
   | { type: 'tool_end'; name: string; callId: string; success: boolean }
   | { type: 'done'; truncated?: boolean; tokenUsage?: TokenUsage }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | { type: 'guardrail_block'; phase: 'input' | 'output'; category: string; rule: string };
 
 export interface TurnExecutionResult {
   finalText: string;

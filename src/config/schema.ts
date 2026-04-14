@@ -50,6 +50,30 @@ export const agentConfigSchema = z.object({
   security: z.object({
     hmac_tolerance_seconds: z.number().int().positive().default(300),
   }),
+  guardrails: z.object({
+    enabled: z.boolean().default(false),
+    blocked_keywords: z.array(z.string()).default([]),
+    response_rules: z.object({
+      max_response_length: z.number().int().positive().default(2000),
+      block_external_links: z.boolean().default(false),
+    }).default({}),
+    pii_detection: z.object({
+      enabled: z.boolean().default(false),
+      block_in_input: z.boolean().default(true),
+      block_in_output: z.boolean().default(true),
+    }).default({}),
+    jailbreak_detection: z.object({
+      enabled: z.boolean().default(false),
+    }).default({}),
+    messages: z.object({
+      input_blocked: z.string().default(
+        "I can't respond to that. Let me know if there's something else I can help with!",
+      ),
+      output_blocked: z.string().default(
+        'Sorry, I wasn\'t able to generate a suitable response. Please try again.',
+      ),
+    }).default({}),
+  }).default({}),
 });
 
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
