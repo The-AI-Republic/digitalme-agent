@@ -8,7 +8,7 @@ export type {
   UsageSnapshot,
 } from './types.js';
 
-export { getCostEstimate, getModelPricing, registerPricing, listPricings } from './pricing.js';
+export { getCostEstimate, getModelPricing, registerPricing, resetPricing, listPricings } from './pricing.js';
 export type { ModelPricing } from './pricing.js';
 
 export { UsageRecorder } from './UsageRecorder.js';

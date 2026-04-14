@@ -7,6 +7,12 @@
 
 import type { ConversationUsage, ModelUsageRecord } from './types.js';
 
+const USD_PRECISION = 1_000_000;
+
+function roundUsd(value: number): number {
+  return Math.round((value + Number.EPSILON) * USD_PRECISION) / USD_PRECISION;
+}
+
 /**
  * Tracks cumulative usage for a single conversation.
  *
@@ -40,20 +46,21 @@ export class ConversationUsageTracker {
     this.usage.lastUpdatedAt = Date.now();
     this.usage.totalInputTokens += record.inputTokens;
     this.usage.totalOutputTokens += record.outputTokens;
-    this.usage.totalEstimatedCostUsd += record.estimatedCostUsd;
+    this.usage.totalEstimatedCostUsd = roundUsd(this.usage.totalEstimatedCostUsd + record.estimatedCostUsd);
     this.usage.modelCallCount += 1;
 
     // Context breakdown
     if (record.executionContext === 'background') {
-      this.usage.backgroundWorkCost += record.estimatedCostUsd;
+      this.usage.backgroundWorkCost = roundUsd(this.usage.backgroundWorkCost + record.estimatedCostUsd);
     } else {
-      this.usage.mainConversationCost += record.estimatedCostUsd;
+      this.usage.mainConversationCost = roundUsd(this.usage.mainConversationCost + record.estimatedCostUsd);
     }
 
     // Model breakdown
     const modelKey = `${record.provider}:${record.model}`;
-    this.usage.costByModel[modelKey] =
-      (this.usage.costByModel[modelKey] ?? 0) + record.estimatedCostUsd;
+    this.usage.costByModel[modelKey] = roundUsd(
+      (this.usage.costByModel[modelKey] ?? 0) + record.estimatedCostUsd,
+    );
   }
 
   /** Increment the turn counter (call once per turn start). */

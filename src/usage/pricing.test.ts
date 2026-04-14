@@ -1,7 +1,11 @@
-import test from 'node:test';
+import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { getCostEstimate, getModelPricing, registerPricing, listPricings } from './pricing.js';
+import { getCostEstimate, getModelPricing, registerPricing, resetPricing, listPricings } from './pricing.js';
+
+afterEach(() => {
+  resetPricing();
+});
 
 test('getModelPricing returns known pricing for openai gpt-4o', () => {
   const pricing = getModelPricing('openai', 'gpt-4o');
@@ -81,14 +85,21 @@ test('registerPricing overrides existing pricing', () => {
   });
   const pricing = getModelPricing('openai', 'gpt-4o');
   assert.equal(pricing.inputTokenCostPer1M, 99.0);
+});
 
-  // Restore original pricing
+test('resetPricing restores the built-in pricing table', () => {
   registerPricing({
     provider: 'openai',
     model: 'gpt-4o',
-    inputTokenCostPer1M: 2.5,
-    outputTokenCostPer1M: 10.0,
+    inputTokenCostPer1M: 99.0,
+    outputTokenCostPer1M: 99.0,
   });
+
+  resetPricing();
+
+  const pricing = getModelPricing('openai', 'gpt-4o');
+  assert.equal(pricing.inputTokenCostPer1M, 2.5);
+  assert.equal(pricing.outputTokenCostPer1M, 10.0);
 });
 
 test('listPricings returns all registered models', () => {

@@ -8,6 +8,12 @@
 
 import type { ConversationUsage, ModelUsageRecord, UsageSnapshot } from './types.js';
 
+const USD_PRECISION = 1_000_000;
+
+function roundUsd(value: number): number {
+  return Math.round((value + Number.EPSILON) * USD_PRECISION) / USD_PRECISION;
+}
+
 interface DailyBucket {
   date: string; // YYYY-MM-DD
   totalCostUsd: number;
@@ -46,7 +52,7 @@ export class UsageAggregator {
       };
       this.dailyBuckets.set(date, bucket);
     }
-    bucket.totalCostUsd += record.estimatedCostUsd;
+    bucket.totalCostUsd = roundUsd(bucket.totalCostUsd + record.estimatedCostUsd);
     bucket.totalInputTokens += record.inputTokens;
     bucket.totalOutputTokens += record.outputTokens;
     bucket.conversations.add(record.conversationId);
@@ -69,7 +75,7 @@ export class UsageAggregator {
     let total = 0;
     for (const [date, bucket] of this.dailyBuckets) {
       if (date.startsWith(prefix)) {
-        total += bucket.totalCostUsd;
+        total = roundUsd(total + bucket.totalCostUsd);
       }
     }
     return total;
@@ -84,7 +90,7 @@ export class UsageAggregator {
   getTotalCost(): number {
     let total = 0;
     for (const usage of this.conversations.values()) {
-      total += usage.totalEstimatedCostUsd;
+      total = roundUsd(total + usage.totalEstimatedCostUsd);
     }
     return total;
   }
@@ -107,7 +113,7 @@ export class UsageAggregator {
           modelCallCount: usage.modelCallCount,
           turnCount: usage.turnCount,
         });
-        totalCostUsd += usage.totalEstimatedCostUsd;
+        totalCostUsd = roundUsd(totalCostUsd + usage.totalEstimatedCostUsd);
         totalInput += usage.totalInputTokens;
         totalOutput += usage.totalOutputTokens;
       }

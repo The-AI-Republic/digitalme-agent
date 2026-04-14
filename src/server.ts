@@ -19,7 +19,7 @@ export function createServer(config: AgentConfig, agent: Agent) {
   registerHealthRoutes(app, agent);
   registerVerifyRoutes(app, config);
   registerTurnRoutes(app, config, agent);
-  registerUsageRoutes(app, agent);
+  registerUsageRoutes(app, config, agent);
 
   return app;
 }

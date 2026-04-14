@@ -42,11 +42,16 @@ const PRICING_TABLE: ModelPricing[] = [
   { provider: 'groq', model: 'llama-3.1-8b-instant', inputTokenCostPer1M: 0.05, outputTokenCostPer1M: 0.08 },
 ];
 
-/** Index for fast lookups. Key = "provider:model" */
-const pricingIndex = new Map<string, ModelPricing>();
-for (const entry of PRICING_TABLE) {
-  pricingIndex.set(`${entry.provider}:${entry.model}`, entry);
+function createPricingIndex(entries: readonly ModelPricing[]): Map<string, ModelPricing> {
+  const index = new Map<string, ModelPricing>();
+  for (const entry of entries) {
+    index.set(`${entry.provider}:${entry.model}`, entry);
+  }
+  return index;
 }
+
+/** Index for fast lookups. Key = "provider:model" */
+let pricingIndex = createPricingIndex(PRICING_TABLE);
 
 /** Default pricing used when a model is not in the registry. Conservative estimate. */
 const DEFAULT_PRICING: ModelPricing = {
@@ -96,6 +101,14 @@ export function getCostEstimate(
  */
 export function registerPricing(pricing: ModelPricing): void {
   pricingIndex.set(`${pricing.provider}:${pricing.model}`, pricing);
+}
+
+/**
+ * Reset the pricing registry to the built-in defaults.
+ * Intended for tests that override model pricing.
+ */
+export function resetPricing(): void {
+  pricingIndex = createPricingIndex(PRICING_TABLE);
 }
 
 /**
