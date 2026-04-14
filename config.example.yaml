@@ -49,19 +49,8 @@ fallback_model:
   api_key: ${FALLBACK_API_KEY}
   max_output_tokens: 8192
 
-# --- Routing (optional): task-specific models and provider health tracking ---
+# --- Routing: provider health tracking ---
 routing:
-  task_models:
-    summary:          # Cheaper model for conversation summarization
-      provider: openai
-      name: gpt-5.4-mini
-      api_key: ${MODEL_API_KEY}
-      max_output_tokens: 4096
-    extraction:       # Model for session memory extraction
-      provider: openai
-      name: gpt-5.4-mini
-      api_key: ${MODEL_API_KEY}
-      max_output_tokens: 4096
   health:
     enabled: true
     window_size: 20               # Recent calls in the sliding window
