@@ -3,6 +3,7 @@ import type { Message, TokenUsage } from '../models/ModelClient.js';
 import type { IToolRegistry } from '../tools/registry.js';
 import type { TurnExecutor } from './TurnExecutor.js';
 import type { TerminalReason } from './types/recovery.js';
+import type { ModelUsageRecord, QuotaWarningEvent as UsageQuotaWarning } from '../usage/types.js';
 import type { SpanContext } from '@opentelemetry/api';
 
 export interface TurnSubmission {
@@ -20,7 +21,10 @@ export type AgentEvent =
   | { type: 'tool_end'; name: string; callId: string; success: boolean }
   | { type: 'done'; truncated?: boolean; tokenUsage?: TokenUsage; terminalReason?: TerminalReason }
   | { type: 'error'; message: string }
-  | { type: 'recovery'; reason: string; detail?: Record<string, unknown> };
+  | { type: 'recovery'; reason: string; detail?: Record<string, unknown> }
+  | { type: 'usage'; record: ModelUsageRecord }
+  | { type: 'quota_warning'; quotaType: string; currentUsage: number; limit: number; percentUsed: number }
+  | { type: 'quota_exceeded'; reason: string; refusalMessage: string };
 
 export interface ToolSummaryEntry {
   callId: string;
@@ -58,6 +62,9 @@ export interface ExecutionOptions {
 export type TurnExecutorLike = {
   run: TurnExecutor['run'];
 };
+
+/** Re-exported for downstream consumers that need the import type without circular deps. */
+export type { ModelUsageRecord } from '../usage/types.js';
 
 export interface ForkedAgentConfig {
   forkLabel: string;

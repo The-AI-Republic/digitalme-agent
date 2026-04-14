@@ -5,6 +5,7 @@ import { Agent } from './agent/Agent.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerVerifyRoutes } from './routes/verify.js';
 import { registerTurnRoutes } from './routes/turns.js';
+import { registerUsageRoutes } from './routes/usage.js';
 
 export function createServer(config: AgentConfig, agent: Agent) {
   const app = express();
@@ -18,6 +19,7 @@ export function createServer(config: AgentConfig, agent: Agent) {
   registerHealthRoutes(app, agent);
   registerVerifyRoutes(app, config);
   registerTurnRoutes(app, config, agent);
+  registerUsageRoutes(app, config, agent);
 
   return app;
 }

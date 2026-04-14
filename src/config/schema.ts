@@ -123,6 +123,17 @@ export const agentConfigSchema = z.object({
       max_retries: z.number().int().nonnegative().default(2),
     }).default({}),
   }).default({}),
+  quotas: z.object({
+    enabled: z.boolean().default(false),
+    max_cost_per_conversation_usd: z.number().positive().optional(),
+    max_cost_per_day_usd: z.number().positive().optional(),
+    max_cost_per_month_usd: z.number().positive().optional(),
+    max_tokens_per_conversation: z.number().int().positive().optional(),
+    max_turns_per_conversation: z.number().int().positive().optional(),
+    on_quota_exceeded: z.enum(['graceful_refuse', 'downgrade_model', 'silent_stop']).default('graceful_refuse'),
+    quota_warning_threshold: z.number().min(0).max(1).default(0.8),
+    refusal_message: z.string().optional(),
+  }).default({}),
   routing: z.object({
     task_models: z.object({
       /** Model to use for conversation summarization. Falls back to primary if omitted. */

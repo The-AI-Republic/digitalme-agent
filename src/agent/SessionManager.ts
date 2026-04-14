@@ -9,6 +9,7 @@ import { SessionState } from './SessionState.js';
 import { TurnExecutor } from './TurnExecutor.js';
 import { TranscriptRecorder } from './transcript/TranscriptRecorder.js';
 import type { ITranscriptRecorder } from './transcript/types.js';
+import { UsageAggregator } from '../usage/UsageAggregator.js';
 import { ToolRegistry, createToolRegistry } from '../tools/registry.js';
 import { SkillRegistry } from '../skills/SkillRegistry.js';
 import { buildSkillListingSection } from '../skills/SkillListingBuilder.js';
@@ -27,6 +28,7 @@ export class SessionManager {
   private readonly runtimeConfig: SessionRuntimeConfig;
   private readonly storageDir: string;
   private readonly getProcessState: () => ProcessRuntimeState;
+  readonly usageAggregator: UsageAggregator;
   private readonly skillRegistry?: SkillRegistry;
 
   constructor(
@@ -35,6 +37,7 @@ export class SessionManager {
   ) {
     this.getProcessState = deps.getState ?? (() => initialProcessRuntimeState());
     this.transcriptRecorder = deps.transcriptRecorder ?? new TranscriptRecorder();
+    this.usageAggregator = new UsageAggregator();
     if (deps.turnExecutor) {
       this.turnExecutor = deps.turnExecutor;
     } else {
@@ -52,6 +55,7 @@ export class SessionManager {
         transcriptRecorder: this.transcriptRecorder,
         toolRegistry,
         skillListing,
+        usageAggregator: this.usageAggregator,
       });
 
       if (skillRegistry.size > 0) {
@@ -110,6 +114,11 @@ export class SessionManager {
       activeTurns,
       sessionTtlSeconds: this.config.limits.session_ttl_seconds,
       maxActiveSessions: this.config.limits.max_active_sessions,
+      usage: {
+        totalCostUsd: this.usageAggregator.getTotalCost(),
+        dailyCostUsd: this.usageAggregator.getDailyCost(),
+        monthlyCostUsd: this.usageAggregator.getMonthlyCost(),
+      },
     };
   }
 
@@ -155,6 +164,7 @@ export class SessionManager {
         transcriptRecorder: this.transcriptRecorder,
       },
       this.runtimeConfig,
+      this.usageAggregator,
     );
     this.sessions.set(submission.conversationId, runtime);
     return runtime;
@@ -169,6 +179,7 @@ export class SessionManager {
       }
       if (runtime.state.getLastAccessedAt() < cutoff) {
         runtime.abortForkedAgents();
+        this.usageAggregator.removeConversation(conversationId);
         this.cleanupConversationTempDir(conversationId).catch(() => { /* best-effort */ });
         this.sessions.delete(conversationId);
       }

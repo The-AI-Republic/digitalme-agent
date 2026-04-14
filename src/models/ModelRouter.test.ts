@@ -72,6 +72,7 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
       max_output_recovery: { max_retries: 2 },
     },
     skills: { bundled_dir: './skills', local_dir: '/app/skills-local' },
+    quotas: { enabled: false, on_quota_exceeded: 'graceful_refuse', quota_warning_threshold: 0.8 },
     routing: { task_models: {}, health: { enabled: true, window_size: 20, failure_threshold: 0.5, recovery_after_seconds: 60 } },
     forked_agents: { enabled: true, max_concurrent: 2 },
     hooks: { post_turn: { enabled: true, timeout_ms: 30000 } },

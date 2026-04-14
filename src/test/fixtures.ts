@@ -90,6 +90,11 @@ export const testConfig: AgentConfig = {
       max_retries: 2,
     },
   },
+  quotas: {
+    enabled: false,
+    on_quota_exceeded: 'graceful_refuse',
+    quota_warning_threshold: 0.8,
+  },
   routing: {
     task_models: {},
     health: {

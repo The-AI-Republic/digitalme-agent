@@ -223,10 +223,16 @@ test('TurnExecutor ends the loop when the model returns final assistant text', a
 
   const { events } = await collectEvents(executor.run(submission));
 
-  assert.deepEqual(events, [
+  // Filter out usage events (tested separately in usage module tests)
+  const coreEvents = events.filter(e => e.type !== 'usage');
+  assert.deepEqual(coreEvents, [
     { type: 'text_delta', content: 'final answer' },
     { type: 'done', truncated: undefined, tokenUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }, terminalReason: { reason: 'completed' } },
   ]);
+
+  // Verify a usage event was emitted
+  const usageEvents = events.filter(e => e.type === 'usage');
+  assert.equal(usageEvents.length, 1);
 });
 
 test('TurnExecutor continues after a tool call and ends on the next final text step', async () => {
@@ -259,7 +265,9 @@ test('TurnExecutor continues after a tool call and ends on the next final text s
 
   const { events } = await collectEvents(executor.run(submission));
 
-  assert.deepEqual(events, [
+  // Filter out usage events (tested separately in usage module tests)
+  const coreEvents = events.filter(e => e.type !== 'usage');
+  assert.deepEqual(coreEvents, [
     { type: 'tool_start', name: 'test_tool', callId: 'call-1' },
     { type: 'tool_end', name: 'test_tool', callId: 'call-1', success: true },
     { type: 'text_delta', content: 'tool-informed answer' },

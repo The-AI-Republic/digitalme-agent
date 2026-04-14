@@ -16,6 +16,8 @@ import type {
   TaskCompletedEntry,
   TaskFailedEntry,
 } from './transcript/types.js';
+import { ConversationUsageTracker } from '../usage/ConversationUsageTracker.js';
+import type { UsageAggregator } from '../usage/UsageAggregator.js';
 
 export interface SessionRuntimeDeps {
   turnExecutor: TurnExecutorLike;
@@ -46,16 +48,21 @@ export class SessionRuntime {
   private readonly forkedAgentsEnabled: boolean;
   private readonly hooksEnabled: boolean;
   readonly sessionMemory?: SessionMemory;
+  readonly usageTracker: ConversationUsageTracker;
+  private readonly usageAggregator?: UsageAggregator;
 
   constructor(
     readonly state: SessionState,
     private readonly deps: SessionRuntimeDeps,
     runtimeConfig?: SessionRuntimeConfig,
+    usageAggregator?: UsageAggregator,
   ) {
     this.forkedAgentsEnabled = runtimeConfig?.forkedAgentsEnabled ?? true;
     this.hooksEnabled = runtimeConfig?.hooksEnabled ?? true;
     this.forkSemaphore = new ForkSemaphore(runtimeConfig?.maxConcurrentForks ?? 2);
     this.hookRegistry = new PostTurnHookRegistry(runtimeConfig?.hookTimeoutMs ?? 30_000, deps.transcriptRecorder);
+    this.usageTracker = new ConversationUsageTracker(state.conversationId);
+    this.usageAggregator = usageAggregator;
 
     // Register session memory extraction hook if enabled
     const smConfig = runtimeConfig?.sessionMemoryConfig;
@@ -139,6 +146,7 @@ export class SessionRuntime {
           { ...submission, promptHistory: this.state.getMessages() },
           undefined,
           activeTurn,
+          this.usageTracker,
         ),
         (event) => events.push(event),
       );
@@ -158,6 +166,14 @@ export class SessionRuntime {
         }).catch(() => {
           // Swallowed — hook errors never crash the main agent
         });
+      }
+
+      // Update usage tracker tool call count from result
+      this.usageTracker.setToolCallCount(result.toolCallCount);
+
+      // Sync conversation usage to aggregator
+      if (this.usageAggregator) {
+        this.usageAggregator.updateConversation(this.usageTracker.getUsage());
       }
 
       const completedEntry: TaskCompletedEntry = {
@@ -197,6 +213,7 @@ export class SessionRuntime {
       session: this.state.snapshot(),
       activeTurn: this.activeTurn?.snapshot(),
       activeForkedAgents: this.activeForkedAgents.size,
+      usage: this.usageTracker.getUsage(),
     };
   }
 

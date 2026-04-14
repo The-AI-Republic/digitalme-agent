@@ -14,7 +14,7 @@ function createMockSessionManager() {
       async execute(_submission: TurnSubmission, events: EventQueue<AgentEvent>) {
         events.push({ type: 'done' });
       },
-      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+      getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000, usage: { totalCostUsd: 0, dailyCostUsd: 0, monthlyCostUsd: 0 } }; },
       beginDrain() { calls.push('beginDrain'); },
     },
     calls,
@@ -77,7 +77,7 @@ test('Agent submit rejects duplicate request IDs', async () => {
       await new Promise<void>(r => { resolve = r; });
       events.push({ type: 'done' });
     },
-    getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+    getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000, usage: { totalCostUsd: 0, dailyCostUsd: 0, monthlyCostUsd: 0 } }; },
     beginDrain() {},
   };
 
@@ -113,7 +113,7 @@ test('failed request increments failedRequests counter', async () => {
     async execute() {
       throw new Error('boom');
     },
-    getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000 }; },
+    getStats() { return { activeSessions: 0, activeTurns: 0, sessionTtlSeconds: 1800, maxActiveSessions: 1000, usage: { totalCostUsd: 0, dailyCostUsd: 0, monthlyCostUsd: 0 } }; },
     beginDrain() {},
   };
 
