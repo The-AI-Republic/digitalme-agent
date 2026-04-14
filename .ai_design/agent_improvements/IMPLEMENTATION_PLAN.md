@@ -6,13 +6,25 @@ This plan turns the architectural memo into a concrete implementation sequence f
 
 Detailed per-sector plans live in:
 
-- `01_prompt_management/IMPLEMENTATION_PLAN.md`
+### Runtime Hardening (tracks 01-08)
+
+- `01_prompt_management/IMPLEMENTATION_PLAN.md` **(DONE)**
 - `02_context_management/IMPLEMENTATION_PLAN.md`
 - `03_tool_runtime/IMPLEMENTATION_PLAN.md`
 - `04_recovery_and_continuation/IMPLEMENTATION_PLAN.md`
 - `05_transcript_and_artifact_storage/IMPLEMENTATION_PLAN.md`
 - `06_runtime_state_and_observers/IMPLEMENTATION_PLAN.md`
 - `07_internal_events_and_observability/IMPLEMENTATION_PLAN.md`
+- `08_forked_and_subagents/IMPLEMENTATION_PLAN.md` **(DONE)**
+
+### Operational Maturity (tracks 09-13)
+
+- `09_model_routing_and_intelligence/IMPLEMENTATION_PLAN.md`
+- `10_creator_guardrails_and_safety/IMPLEMENTATION_PLAN.md`
+- `11_usage_tracking_and_quotas/IMPLEMENTATION_PLAN.md`
+- `12_configuration_lifecycle/IMPLEMENTATION_PLAN.md` [deferred]
+- `13_structured_analytics/IMPLEMENTATION_PLAN.md` [deferred]
+- `14_creator_skills/IMPLEMENTATION_PLAN.md`
 
 It assumes:
 
@@ -528,6 +540,55 @@ Improve observability without changing the external SSE contract.
 - expand internal event vocabulary
 - wire rollout and metrics to internal events
 
+### PR 8: Model Routing (Track 09)
+
+- add `ModelSpec`, `ModelRoles`, `ExecutionContext` types
+- add `ModelRouter` with context-based model selection
+- add `ModelFallbackTracker` for automatic failover
+- update forked agents and memory extraction to use background model
+
+### PR 9: Creator Guardrails (Track 10)
+
+- add structured guardrails schema to creator config
+- add `InputScreener` with pattern-based checks
+- add `OutputValidator` for post-model response checking
+- add `JailbreakDetector` with extensible pattern library
+- add `GuardrailLogger` integrated with transcripts and events
+
+### PR 10: Usage Tracking (Track 11)
+
+- add `UsageRecorder` for per-request token/cost capture
+- add `ConversationUsageTracker` for cumulative tracking
+- add `QuotaEnforcer` with pre-turn checks
+- add model pricing registry
+- wire quota pressure into model routing
+
+### PR 11: Configuration Lifecycle (Track 12) [deferred]
+
+- ~~add config versioning with content hash~~
+- ~~add `ConfigDiffer` and `ConfigReloader` for hot-reload~~
+- ~~add `PlatformOverrides` merge logic~~
+- ~~add simple `FeatureGates` system~~
+
+### PR 12: Structured Analytics (Track 13) [deferred]
+
+- ~~add typed metric events and `MetricsLogger`~~
+- ~~add `PerformanceProfiler` with checkpoint API~~
+- ~~add `ErrorBuffer` ring buffer~~
+- ~~add `MetricsAggregator` with rolling windows~~
+- ~~enhance `/health` endpoint with operational metrics~~
+
+### PR 13: Creator Skills (Track 14)
+
+- add `SkillParser` for SKILL.md (YAML frontmatter + markdown body, Claude Code compatible format)
+- add `SkillScanner` to scan `/app/skills/` (bundled) and `/app/skills-local/` (creator's `~/.digitalme/skills/`)
+- add `SkillRegistry` to merge bundled + local skills into one flat list (local overrides bundled on name collision)
+- add `CreatorSkillTool` with `$ARGUMENTS` expansion, inline and forked execution paths
+- add `SkillListingBuilder` for model-facing discovery in system prompt
+- wire guardrail checks on skill input/output
+- add `SkillTracker` for execution metrics
+- add bundled default skills: `faq-lookup`, `contact-info`, `off-topic-redirect`
+
 ## Risks
 
 - over-centralizing state too early and recreating a giant product-runtime object
@@ -536,6 +597,11 @@ Improve observability without changing the external SSE contract.
 - increasing transcript storage volume without retention rules
 - coupling observers too tightly to request execution paths
 - copying `claudy` threshold math directly instead of tuning to DigitalMe runtime behavior
+- guardrail false positives degrading normal fan conversations
+- model routing complexity outweighing cost savings at current scale
+- quota enforcement creating poor fan experience when limits are too tight
+- config hot-reload introducing race conditions with in-flight turns
+- metrics overhead affecting turn latency (keep instrumentation cheap)
 
 ## Non-Goals For This Plan
 
@@ -547,6 +613,9 @@ This plan does not include:
 - interactive permission UI
 - background agent swarms
 - changing the external DigitalMe platform protocol
+- ML-based content classifiers (pattern-based guardrails first)
+- external monitoring service integration (structured logs first)
+- real-time billing integration (usage data export first)
 
 ## Success Criteria
 
@@ -558,3 +627,8 @@ This plan is successful if:
 - tool execution becomes policy-aware and observable
 - internal transcripts are good enough for debugging and audits
 - process and conversation runtime state become easier to inspect and evolve
+- creator-defined safety boundaries are enforced at runtime, not just in prompts
+- background work uses cheaper models with measurable cost reduction
+- usage quotas prevent runaway costs with graceful degradation
+- config changes take effect without requiring new sessions
+- every turn produces structured metrics instead of console.log

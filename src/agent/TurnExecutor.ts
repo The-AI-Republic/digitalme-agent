@@ -25,7 +25,21 @@ import {
 } from './types/recovery.js';
 import { categorizeApiError, exponentialBackoff } from './apiRetry.js';
 import { tryReactiveCompact } from './reactiveCompact.js';
-import type { ITranscriptRecorder } from './transcript/types.js';
+import type { ITranscriptRecorder, CompactCompletedEntry } from './transcript/types.js';
+import {
+  startInteractionSpan,
+  startModelCallSpan,
+  endSpan,
+  endSpanWithError,
+} from '../telemetry/spans.js';
+import {
+  recordTurnCompleted,
+  recordModelCall,
+  recordTokens,
+  recordToolCall,
+  recordError,
+} from '../telemetry/metrics.js';
+import type { Span, SpanContext } from '@opentelemetry/api';
 
 /** Shared signal that never fires — avoids per-call AbortController allocation. */
 const NEVER_ABORT = new AbortController().signal;
@@ -126,6 +140,12 @@ export class TurnExecutor {
     const toolRegistry = options?.toolRegistry ?? this.toolRegistry;
     const recorder = this.transcriptRecorder;
 
+    // Start interaction span — capture context for background work
+    const interactionSpan: Span = startInteractionSpan(submission.conversationId);
+    const capturedSpanContext: SpanContext = interactionSpan.spanContext();
+    const turnStartTime = Date.now();
+    let spanEnded = false;
+
     const executionState = activeTurn?.executionState ?? new TurnExecutionState();
 
     // Resolve the model before prompt construction so the prompt can reference the resolved model
@@ -201,6 +221,7 @@ export class TurnExecutor {
       });
     }
 
+    try {
     while (executionState.getIterationIndex() < maxTurns) {
       this.throwIfAborted(context.signal);
       executionState.incrementIteration();
@@ -220,6 +241,31 @@ export class TurnExecutor {
         context.messages.push(...prepared.messages);
       }
 
+      // Record context compaction to transcript
+      if (prepared.compactionType && recorder) {
+        const trigger = prepared.compactionType === 'reactive' ? 'reactive' as const : 'proactive' as const;
+        const completedEntry: CompactCompletedEntry = {
+          type: 'compact_completed',
+          conversationId: submission.conversationId,
+          taskId: submission.requestId,
+          turnId: activeTurn?.turnId,
+          timestamp: new Date().toISOString(),
+          trigger,
+          messagesRemoved: prepared.messagesRemoved,
+          tokensSaved: prepared.tokensSaved,
+        };
+        recorder.recordLifecycleEvent(completedEntry).catch(() => {});
+
+        // Also emit as OTEL span event on the interaction span
+        interactionSpan.addEvent('compact', {
+          'compact.type': prepared.compactionType,
+          'compact.trigger': trigger,
+          'compact.pressure_band': prepared.pressure,
+          'compact.messages_removed': prepared.messagesRemoved,
+          'compact.tokens_saved': prepared.tokensSaved,
+        });
+      }
+
       // --- Call model (with retry/fallback, error capture) ---
       let callResult: { result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] };
       try {
@@ -228,6 +274,7 @@ export class TurnExecutor {
           { model: resolvedModelName, messages: context.messages, tools: toolRegistry.listDefinitions(), signal: context.signal, systemPromptBlocks, maxOutputTokens },
           recovery,
           resolvedProvider,
+          interactionSpan,
         );
       } catch (error) {
         // Emit any buffered recovery events before propagating the original error
@@ -235,8 +282,12 @@ export class TurnExecutor {
           for (const event of error.recoveryEvents) {
             yield event;
           }
+          spanEnded = true;
+          endSpanWithError(interactionSpan, error.cause);
           throw error.cause;
         }
+        spanEnded = true;
+        endSpanWithError(interactionSpan, error);
         throw error;
       }
 
@@ -261,17 +312,22 @@ export class TurnExecutor {
         // Recovery exhausted
         const lastText = recovery.accumulatedText || '';
         yield { type: 'done', terminalReason: { reason: 'prompt_too_long' } };
+        recordTurnCompleted(modelName, Date.now() - turnStartTime, false);
+        spanEnded = true;
+        endSpan(interactionSpan, { 'terminal.reason': 'prompt_too_long' });
         return {
           finalText: lastText,
           tokenUsage: executionState.getTokenUsage(),
           completedTurns: executionState.getIterationIndex(),
           toolCallCount: executionState.snapshot().toolCallCount,
           newMessages: context.messages.slice(baselineLength),
+          interactionSpanContext: capturedSpanContext,
         };
       }
 
       if (result.tokenUsage) {
         executionState.setTokenUsage(result.tokenUsage);
+        recordTokens(modelName, result.tokenUsage.inputTokens ?? 0, result.tokenUsage.outputTokens ?? 0);
       }
 
       // --- Handle max output truncation ---
@@ -306,12 +362,16 @@ export class TurnExecutor {
           yield { type: 'text_delta', content: result.text };
         }
         yield { type: 'done', terminalReason: { reason: 'max_output_exhausted' }, tokenUsage: result.tokenUsage };
+        recordTurnCompleted(modelName, Date.now() - turnStartTime, true);
+        spanEnded = true;
+        endSpan(interactionSpan, { 'terminal.reason': 'max_output_exhausted' });
         return {
           finalText: recovery.accumulatedText,
           tokenUsage: result.tokenUsage,
           completedTurns: executionState.getIterationIndex(),
           toolCallCount: executionState.snapshot().toolCallCount,
           newMessages: context.messages.slice(baselineLength),
+          interactionSpanContext: capturedSpanContext,
         };
       }
 
@@ -340,6 +400,13 @@ export class TurnExecutor {
           yield { type: 'text_delta', content: result.text };
         }
         yield { type: 'done', truncated: result.truncated, tokenUsage: result.tokenUsage, terminalReason: { reason: 'completed' } };
+        recordTurnCompleted(modelName, Date.now() - turnStartTime, true);
+        spanEnded = true;
+        endSpan(interactionSpan, {
+          'terminal.reason': 'completed',
+          'turns.completed': executionState.getIterationIndex(),
+          'tools.call_count': executionState.snapshot().toolCallCount,
+        });
         return {
           finalText: fullText,
           tokenUsage: result.tokenUsage,
@@ -347,6 +414,7 @@ export class TurnExecutor {
           toolCallCount: executionState.snapshot().toolCallCount,
           toolSummaries,
           newMessages: context.messages.slice(baselineLength),
+          interactionSpanContext: capturedSpanContext,
         };
       }
 
@@ -417,6 +485,7 @@ export class TurnExecutor {
           durationMs: record.durationMs,
           success: record.result.success,
         });
+        recordToolCall(record.toolName, record.durationMs, record.result.success);
         if (!emittedToolStart.has(record.callId)) {
           yield { type: 'tool_start', name: record.toolName, callId: record.callId };
         }
@@ -473,13 +542,22 @@ export class TurnExecutor {
     // Max turns reached — return gracefully, do not throw.
     const lastText = recovery.accumulatedText || '';
     yield { type: 'done', terminalReason: { reason: 'max_turns' } };
+    recordTurnCompleted(modelName, Date.now() - turnStartTime, true);
+    spanEnded = true;
+    endSpan(interactionSpan, { 'terminal.reason': 'max_turns' });
     return {
       finalText: lastText,
       tokenUsage: executionState.getTokenUsage(),
       completedTurns: executionState.getIterationIndex(),
       toolCallCount: executionState.snapshot().toolCallCount,
       newMessages: context.messages.slice(baselineLength),
+      interactionSpanContext: capturedSpanContext,
     };
+    } finally {
+      if (!spanEnded) {
+        endSpanWithError(interactionSpan, 'generator_abandoned');
+      }
+    }
   }
 
   /**
@@ -493,19 +571,24 @@ export class TurnExecutor {
     initialRequest: Parameters<ModelClient['generate']>[0],
     recovery: RecoveryState,
     provider?: string,
+    parentSpan?: Span,
   ): Promise<{ result: ModelStepResult | { type: 'context_overflow' }; events: AgentEvent[] }> {
     let consecutive529 = 0;
     let client = primaryClient;
     let request = initialRequest;
     let currentProvider = provider ?? this.config.model.provider;
+    let currentModel = initialRequest.model;
     const events: AgentEvent[] = [];
 
     for (let attempt = 0; attempt <= RECOVERY_LIMITS.MAX_API_RETRIES; attempt++) {
       const startTime = Date.now();
+      const attemptSpan = parentSpan ? startModelCallSpan(currentModel, parentSpan) : undefined;
       try {
         const result = await client.generate(request);
         // Record success for health tracking
         this.modelRouter?.recordSuccess(currentProvider, request.model, Date.now() - startTime);
+        recordModelCall(currentModel, true);
+        if (attemptSpan) endSpan(attemptSpan);
         return { result, events };
       } catch (error) {
         const latencyMs = Date.now() - startTime;
@@ -517,6 +600,9 @@ export class TurnExecutor {
         if (category === 'overloaded' || category === 'rate_limit' || category === 'server_error') {
           this.modelRouter?.recordFailure(currentProvider, request.model, latencyMs, category);
         }
+        recordModelCall(currentModel, false);
+        recordError('model_call');
+        if (attemptSpan) endSpanWithError(attemptSpan, error);
 
         if (category === 'context_overflow') {
           return { result: { type: 'context_overflow' as const }, events };
@@ -537,7 +623,8 @@ export class TurnExecutor {
             }
             currentProvider = this.config.fallback_model.provider;
             // Switch to the fallback model name so the client uses it
-            request = { ...request, model: this.config.fallback_model.name };
+            currentModel = this.config.fallback_model.name;
+            request = { ...request, model: currentModel };
             // Reset retry budget so fallback gets a full chance
             // -1 because the for-loop increment runs before the next iteration
             attempt = -1;
