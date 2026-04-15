@@ -33,6 +33,7 @@ const config: AgentConfig = {
     provider: 'openai',
     name: 'gpt-4o',
     api_key: 'model-key',
+    context_window_size: 128000,
     max_output_tokens: 8192,
     base_url: null,
   },
@@ -50,7 +51,6 @@ const config: AgentConfig = {
     hmac_tolerance_seconds: 300,
   },
   context: {
-    model_metadata: {},
     default_context_window_size: 128000,
     default_max_output_tokens: 4096,
     microcompact: { enabled: true, gap_threshold_minutes: 60, keep_recent_results: 5 },

@@ -566,6 +566,7 @@ test('ExecutionOptions.modelConfig uses the configured provider client', async (
     name: 'claude-haiku',
     api_key: 'fast-key',
     base_url: null,
+    context_window_size: 200000,
     max_output_tokens: 2048,
   };
 
@@ -607,6 +608,7 @@ test('ExecutionOptions.modelConfig records usage with the resolved provider and 
     name: 'claude-sonnet-4-6',
     api_key: 'fast-key',
     base_url: null,
+    context_window_size: 200000,
     max_output_tokens: 2048,
   };
 
@@ -644,6 +646,7 @@ test('ExecutionOptions rejects simultaneous model and modelConfig overrides', as
     name: 'claude-haiku',
     api_key: 'fast-key',
     base_url: null,
+    context_window_size: 200000,
     max_output_tokens: 2048,
   };
 
@@ -716,6 +719,7 @@ test('ExecutionOptions.model bypasses router resolution when a router is injecte
       name: 'gpt-4o-mini',
       api_key: 'summary-key',
       base_url: null,
+      context_window_size: 128000,
       max_output_tokens: 4096,
     },
   }, {

@@ -40,6 +40,7 @@ model:
   name: gpt-5.4
   api_key: ${MODEL_API_KEY}
   base_url:
+  context_window_size: 128000
   max_output_tokens: 8192
 
 # --- Fallback model (optional): used when the primary provider is unhealthy ---
@@ -47,6 +48,7 @@ fallback_model:
   provider: anthropic
   name: claude-sonnet-4-20250514
   api_key: ${FALLBACK_API_KEY}
+  context_window_size: 128000
   max_output_tokens: 8192
 
 # --- Fast model (optional): cheap helper-model class for lightweight internal tasks ---
@@ -54,6 +56,7 @@ fast_model:
   provider: openai
   name: gpt-5.4-mini
   api_key: ${MODEL_API_KEY}
+  context_window_size: 128000
   max_output_tokens: 4096
 
 # --- Routing: provider health tracking ---
@@ -74,13 +77,6 @@ limits:
 
 # --- Context: context window management and compaction ---
 context:
-  model_metadata:
-    gpt-5.4:
-      context_window_size: 128000
-      max_output_tokens: 16384
-    gpt-5.4-mini:
-      context_window_size: 128000
-      max_output_tokens: 16384
   default_context_window_size: 128000
   default_max_output_tokens: 4096
   microcompact:

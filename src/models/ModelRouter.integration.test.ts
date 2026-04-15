@@ -205,6 +205,7 @@ test('TurnExecutor auto-enables router for fallback_model-only configs', async (
     name: 'claude-sonnet',
     api_key: 'key2',
     base_url: null,
+    context_window_size: 200000,
     max_output_tokens: 8192,
   };
 
@@ -238,6 +239,7 @@ test('ModelRouter health-aware routing with fallback model config', async () => 
     name: 'claude-sonnet',
     api_key: 'key2',
     base_url: null,
+    context_window_size: 200000,
     max_output_tokens: 8192,
   };
 

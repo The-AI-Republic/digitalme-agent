@@ -259,6 +259,7 @@ test('recovery: 529 x3 with fallback configured -> switches model', async () => 
       name: 'gpt-4o-mini',
       api_key: 'fallback-key',
       base_url: null,
+      context_window_size: 128000,
       max_output_tokens: 4096,
     },
   };
@@ -288,6 +289,7 @@ test('recovery: fallback gets a fresh retry budget (full MAX_API_RETRIES attempt
       name: 'gpt-4o-mini',
       api_key: 'fallback-key',
       base_url: null,
+      context_window_size: 128000,
       max_output_tokens: 4096,
     },
   };
@@ -321,6 +323,7 @@ test('recovery: fallback uses the fallback model name in requests', async () => 
       name: 'gpt-4o-mini',
       api_key: 'fallback-key',
       base_url: null,
+      context_window_size: 128000,
       max_output_tokens: 4096,
     },
   };
@@ -536,6 +539,7 @@ test('recovery: fallback event includes from/to model names', async () => {
       name: 'gpt-4o-mini',
       api_key: 'fallback-key',
       base_url: null,
+      context_window_size: 128000,
       max_output_tokens: 4096,
     },
   };

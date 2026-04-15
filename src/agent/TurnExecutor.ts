@@ -126,14 +126,22 @@ export class TurnExecutor {
 
   private buildDefaultContextDeps(): PrepareContextDeps {
     const ctx = this.config.context;
+    const modelMetadata = Object.fromEntries(
+      [
+        this.config.model,
+        this.config.fallback_model,
+        this.config.fast_model,
+      ]
+        .filter((model): model is ModelConfig => model != null)
+        .map((model) => [model.name, {
+          contextWindowSize: model.context_window_size,
+          maxOutputTokens: model.max_output_tokens,
+        }]),
+    );
+
     return {
       tokenBudget: new TokenBudget({
-        modelMetadata: Object.fromEntries(
-          Object.entries(ctx.model_metadata).map(([k, v]) => [k, {
-            contextWindowSize: v.context_window_size,
-            maxOutputTokens: v.max_output_tokens,
-          }]),
-        ),
+        modelMetadata,
         defaultContextWindowSize: ctx.default_context_window_size,
         defaultMaxOutputTokens: ctx.default_max_output_tokens,
         microcompactRatio: ctx.thresholds.microcompact_ratio,

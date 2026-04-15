@@ -9,6 +9,7 @@ const REMOVED_CONFIG_FIELDS = [
   'routing.task_models',
   'context.summary.model',
   'context.session_memory.extraction_model',
+  'context.model_metadata',
 ] as const;
 
 function interpolateEnv(input: string): string {

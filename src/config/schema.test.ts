@@ -34,7 +34,7 @@ test('agentConfigSchema accepts a valid full config', () => {
     },
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
-    model: { provider: 'openai', name: 'gpt-4o', api_key: 'model-key' },
+    model: { provider: 'openai', name: 'gpt-4o', api_key: 'model-key', context_window_size: 128000 },
     limits: {},
     security: {},
   };
@@ -57,7 +57,7 @@ test('agentConfigSchema rejects missing soul name', () => {
     soul: { name: '', description: 'a description' },
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
-    model: { provider: 'openai', name: 'gpt-4o', api_key: 'model-key' },
+    model: { provider: 'openai', name: 'gpt-4o', api_key: 'model-key', context_window_size: 128000 },
     limits: {},
     security: {},
   };
@@ -70,7 +70,7 @@ test('agentConfigSchema rejects missing auth fields', () => {
     soul: { name: 'Test', description: 'a description' },
     server: {},
     auth: {},
-    model: { provider: 'openai', name: 'gpt-4o', api_key: 'model-key' },
+    model: { provider: 'openai', name: 'gpt-4o', api_key: 'model-key', context_window_size: 128000 },
     limits: {},
     security: {},
   };
@@ -83,7 +83,7 @@ test('agentConfigSchema accepts anthropic as valid provider', () => {
     soul: { name: 'Test', description: 'a description' },
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
-    model: { provider: 'anthropic', name: 'claude-sonnet-4-6', api_key: 'key' },
+    model: { provider: 'anthropic', name: 'claude-sonnet-4-6', api_key: 'key', context_window_size: 200000 },
     limits: {},
     security: {},
   };
@@ -98,7 +98,7 @@ test('agentConfigSchema accepts all valid model providers', () => {
       soul: { name: 'Test', description: 'a description' },
       server: {},
       auth: { api_key: 'key', signing_secret: 'secret' },
-      model: { provider, name: 'model-name', api_key: 'key' },
+      model: { provider, name: 'model-name', api_key: 'key', context_window_size: 128000 },
       limits: {},
       security: {},
     };
@@ -112,7 +112,7 @@ test('agentConfigSchema rejects negative port', () => {
     soul: { name: 'Test', description: 'a description' },
     server: { port: -1 },
     auth: { api_key: 'key', signing_secret: 'secret' },
-    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key' },
+    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key', context_window_size: 128000 },
     limits: {},
     security: {},
   };
@@ -126,7 +126,7 @@ test('agentConfigSchema accepts optional nullable platform base_url', () => {
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
     platform: { base_url: null },
-    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key' },
+    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key', context_window_size: 128000 },
     limits: {},
     security: {},
   };
@@ -142,7 +142,7 @@ test('agentConfigSchema rejects blank blocked keywords', () => {
     soul: { name: 'Test', description: 'a description' },
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
-    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key' },
+    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key', context_window_size: 128000 },
     limits: {},
     security: {},
     guardrails: {
@@ -166,7 +166,7 @@ test('agentConfigSchema accepts soul with optional fields', () => {
     },
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
-    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key' },
+    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key', context_window_size: 128000 },
     limits: {},
     security: {},
   };
@@ -185,7 +185,7 @@ test('agentConfigSchema accepts subagents config', () => {
     soul: { name: 'Test', description: 'a description' },
     server: {},
     auth: { api_key: 'key', signing_secret: 'secret' },
-    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key' },
+    model: { provider: 'openai', name: 'gpt-4o', api_key: 'key', context_window_size: 128000 },
     limits: {},
     security: {},
     subagents: { enabled: true, max_concurrent: 3 },

@@ -37,6 +37,7 @@ function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfi
       provider: modelProvider,
       name: 'test-model',
       api_key: 'model-key',
+      context_window_size: 128000,
       max_output_tokens: 8192,
       base_url: null,
     },
@@ -54,7 +55,6 @@ function makeConfig(modelProvider: AgentConfig['model']['provider']): AgentConfi
       hmac_tolerance_seconds: 300,
     },
     context: {
-      model_metadata: {},
       default_context_window_size: 128000,
       default_max_output_tokens: 4096,
       microcompact: { enabled: true, gap_threshold_minutes: 60, keep_recent_results: 5 },
@@ -118,6 +118,7 @@ test('ModelClientFactory.createFromConfig creates a fresh client', () => {
     provider: 'anthropic',
     name: 'claude-sonnet',
     api_key: 'key',
+    context_window_size: 200000,
     base_url: null,
     max_output_tokens: 8192,
   });

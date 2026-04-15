@@ -87,6 +87,10 @@ routing:
       name: gpt-4o-mini
       api_key: model-key
 context:
+  model_metadata:
+    gpt-4o:
+      context_window_size: 128000
+      max_output_tokens: 16384
   summary:
     model: gpt-4o-mini
   session_memory:
@@ -96,7 +100,7 @@ context:
   try {
     assert.throws(
       () => loadConfig(filePath),
-      /Config contains removed fields: routing\.task_models, context\.summary\.model, context\.session_memory\.extraction_model/,
+      /Config contains removed fields: routing\.task_models, context\.summary\.model, context\.session_memory\.extraction_model, context\.model_metadata/,
     );
   } finally {
     fs.rmSync(path.dirname(filePath), { recursive: true, force: true });

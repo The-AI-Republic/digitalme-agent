@@ -29,6 +29,7 @@ export const testConfig: AgentConfig = {
     name: 'gpt-4o',
     api_key: 'model-key',
     base_url: null,
+    context_window_size: 128000,
     max_output_tokens: 8192,
   },
   fast_model: undefined,
@@ -45,9 +46,6 @@ export const testConfig: AgentConfig = {
     hmac_tolerance_seconds: 300,
   },
   context: {
-    model_metadata: {
-      'gpt-4o': { context_window_size: 128000, max_output_tokens: 16384 },
-    },
     default_context_window_size: 128000,
     default_max_output_tokens: 4096,
     microcompact: {

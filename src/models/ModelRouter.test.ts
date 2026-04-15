@@ -25,6 +25,7 @@ const primaryModel: ModelConfig = {
   name: 'gpt-4o',
   api_key: 'key',
   base_url: null,
+  context_window_size: 128000,
   max_output_tokens: 8192,
 };
 
@@ -33,6 +34,7 @@ const fallbackModel: ModelConfig = {
   name: 'claude-sonnet',
   api_key: 'key2',
   base_url: null,
+  context_window_size: 200000,
   max_output_tokens: 8192,
 };
 
@@ -41,6 +43,7 @@ const fastModel: ModelConfig = {
   name: 'gpt-4o-mini',
   api_key: 'key',
   base_url: null,
+  context_window_size: 128000,
   max_output_tokens: 4096,
 };
 
@@ -56,7 +59,6 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     limits: { max_message_length: 4000, max_history_messages: 100, max_turns: 10, max_concurrent: 50, max_pending: 1000, max_active_sessions: 1000, session_ttl_seconds: 1800 },
     security: { hmac_tolerance_seconds: 300 },
     context: {
-      model_metadata: {},
       default_context_window_size: 128000,
       default_max_output_tokens: 4096,
       microcompact: { enabled: true, gap_threshold_minutes: 60, keep_recent_results: 5 },

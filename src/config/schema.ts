@@ -18,6 +18,7 @@ export const modelSchema = z.object({
   name: z.string().min(1),
   api_key: z.string().min(1),
   base_url: z.string().optional().nullable(),
+  context_window_size: z.number().int().positive().default(128000),
   max_output_tokens: z.number().int().positive().default(8192),
 });
 
@@ -74,13 +75,6 @@ export const agentConfigSchema = z.object({
     hmac_tolerance_seconds: z.number().int().positive().default(300),
   }),
   context: z.object({
-    model_metadata: z.record(z.object({
-      context_window_size: z.number().int().positive(),
-      max_output_tokens: z.number().int().positive(),
-    })).default({
-      'gpt-4o': { context_window_size: 128000, max_output_tokens: 16384 },
-      'gpt-4o-mini': { context_window_size: 128000, max_output_tokens: 16384 },
-    }),
     default_context_window_size: z.number().int().positive().default(128000),
     default_max_output_tokens: z.number().int().positive().default(4096),
     microcompact: z.object({
